@@ -86,6 +86,27 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- Auth callback.
+                 Supabase's confirmation and password-reset emails end in a
+                 link. Without this filter the app cannot be the destination
+                 of that link: the rider taps it, confirms their address in a
+                 browser, and never returns — the account works and the app
+                 still shows a sign-in form, which reads as a broken
+                 confirmation.
+
+                 `singleTop` on the activity above means the link re-uses the
+                 running instance rather than stacking a second one, and
+                 `BROWSABLE` is what makes it reachable from a browser at
+                 all. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data
+                    android:scheme="purecycling"
+                    android:host="login-callback"/>
+            </intent-filter>
         </activity>
 
         <!-- geolocator's foreground service, declared explicitly rather than

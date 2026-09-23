@@ -34,6 +34,43 @@ abstract final class SupabaseConfig {
     return '未配置（缺少 ${missing.join('、')}）';
   }
 
+  // -------------------------------------------------------------------------
+  // Auth redirect
+  // -------------------------------------------------------------------------
+
+  /// The custom URL scheme the app registers to receive auth callbacks.
+  ///
+  /// Every email Supabase sends — address confirmation, password reset, email
+  /// change — ends in a link. Without a scheme of its own the app cannot be
+  /// the destination of that link, so the rider taps it, lands in a browser,
+  /// confirms their address there, and never gets back to the app they were
+  /// trying to use. The account is confirmed and the app still shows a sign-in
+  /// form, which reads as "the confirmation did not work".
+  ///
+  /// `purecycling` rather than the reverse-DNS bundle id: URL schemes are a
+  /// single global namespace per device, and a short distinctive one is less
+  /// likely to collide with another app than `app.purecycling.cycling` would
+  /// be to collide with… itself.
+  static const String redirectScheme = 'purecycling';
+
+  /// The path component. Distinguishes an auth callback from any other deep
+  /// link the app may register later.
+  static const String redirectPath = 'login-callback';
+
+  /// Passed to every auth call that sends an email, and registered in
+  /// `Info.plist` / `AndroidManifest.xml`.
+  ///
+  /// **It must also be listed in the Supabase dashboard** under
+  /// Authentication → URL Configuration → Redirect URLs. Supabase refuses to
+  /// redirect anywhere not on that allow-list, and the failure is silent from
+  /// the app's side — the email simply arrives with a link that goes to the
+  /// project's Site URL instead.
+  static const String redirectUrl = '$redirectScheme://$redirectPath';
+
+  /// Every redirect URL a Supabase project needs to allow for this build to
+  /// work, for the setup instructions.
+  static const List<String> requiredRedirectUrls = [redirectUrl];
+
   /// Storage bucket for GPX files. Private: location traces are among the
   /// most sensitive data a phone holds (spec §44).
   static const String gpxBucket = 'rides';

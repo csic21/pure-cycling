@@ -17,18 +17,31 @@ class AuthFailure implements Exception {
 
 /// The signed-in account, reduced to what the UI needs.
 class AuthUser {
-  const AuthUser({required this.id, this.email, this.displayName});
+  const AuthUser({
+    required this.id,
+    this.email,
+    this.displayName,
+    this.isAnonymous = false,
+  });
 
   final String id;
   final String? email;
   final String? displayName;
 
+  /// Signed in without an account — the rider gets a real `auth.users` row so
+  /// rides sync and survive a reinstall, but there is no address to sign back
+  /// in with. The UI offers to attach one.
+  final bool isAnonymous;
+
   String get label {
     if (displayName != null && displayName!.trim().isNotEmpty) {
       return displayName!.trim();
     }
-    return email ?? '已登录';
+    return email ?? (isAnonymous ? '匿名账号' : '已登录');
   }
+
+  @override
+  String toString() => 'AuthUser($id, ${email ?? '-'}, anonymous=$isAnonymous)';
 }
 
 /// Authentication against Supabase Auth.
@@ -105,7 +118,7 @@ class AuthRepository {
       await _ensureProfile(user);
       return _toAuthUser(user);
     } on AuthException catch (e) {
-      throw AuthFailure(_describe(e));
+      throw AuthFailure(describeAuthError(e));
     }
   }
 
@@ -120,6 +133,10 @@ class AuthRepository {
         email: email.trim(),
         password: password,
         data: displayName == null ? null : {'display_name': displayName},
+        // Without this the confirmation link points at the project's Site URL
+        // and the rider confirms their address in a browser tab they cannot
+        // get back to the app from.
+        emailRedirectTo: SupabaseConfig.redirectUrl,
       );
       final user = response.user;
       if (user == null) return null;
@@ -130,7 +147,7 @@ class AuthRepository {
       }
       return _toAuthUser(user);
     } on AuthException catch (e) {
-      throw AuthFailure(_describe(e));
+      throw AuthFailure(describeAuthError(e));
     }
   }
 
@@ -152,7 +169,7 @@ class AuthRepository {
       return _toAuthUser(user);
     } on AuthException catch (e) {
       throw AuthFailure(
-        _describe(e),
+        describeAuthError(e),
         isConfiguration: true,
       );
     }
@@ -161,9 +178,37 @@ class AuthRepository {
   Future<void> sendPasswordReset(String email) async {
     final client = _requireClient();
     try {
-      await client.auth.resetPasswordForEmail(email.trim());
+      await client.auth.resetPasswordForEmail(
+        email.trim(),
+        redirectTo: SupabaseConfig.redirectUrl,
+      );
     } on AuthException catch (e) {
-      throw AuthFailure(_describe(e));
+      throw AuthFailure(describeAuthError(e));
+    }
+  }
+
+  /// Attaches an email and password to an anonymous account.
+  ///
+  /// Supabase sends a confirmation link; until it is followed the account has
+  /// the address on file but is not confirmed, and the rider can keep using
+  /// the app either way. Nothing is lost if they never get round to it — the
+  /// rides are already synced under the same user id, which does not change.
+  ///
+  /// Throws [AuthFailure] with a message that says what to do when the address
+  /// is already taken by another account, which is the one failure a rider
+  /// will actually hit.
+  Future<void> attachEmail({
+    required String email,
+    required String password,
+  }) async {
+    final client = _requireClient();
+    try {
+      await client.auth.updateUser(
+        UserAttributes(email: email.trim(), password: password),
+        emailRedirectTo: SupabaseConfig.redirectUrl,
+      );
+    } on AuthException catch (e) {
+      throw AuthFailure(describeAuthError(e));
     }
   }
 
@@ -214,13 +259,21 @@ class AuthRepository {
         id: user.id,
         email: user.email,
         displayName: user.userMetadata?['display_name'] as String?,
+        isAnonymous: user.isAnonymous,
       );
 
   /// Maps Supabase's error text to something a Chinese-speaking rider can
   /// act on. Unknown messages pass through unchanged rather than being
   /// flattened into a generic failure — an unexplained error is worse than an
   /// English one.
-  static String _describe(AuthException e) {
+  /// Maps a Supabase auth error to something a rider can act on.
+  ///
+  /// Public and pure so it can be tested directly. The mapping is worth
+  /// testing because the alternative to a good message here is an English
+  /// stack-trace fragment shown to somebody standing next to a bicycle — and
+  /// because two of these cases ("already registered", "not confirmed") are
+  /// the ones a rider actually hits, in a flow they cannot see the state of.
+  static String describeAuthError(AuthException e) {
     final message = e.message.toLowerCase();
     if (message.contains('invalid login credentials')) {
       return '邮箱或密码不正确';
@@ -228,8 +281,26 @@ class AuthRepository {
     if (message.contains('email not confirmed')) {
       return '邮箱尚未验证，请先点击验证邮件中的链接';
     }
-    if (message.contains('user already registered')) {
-      return '该邮箱已注册，请直接登录';
+    if (message.contains('user already registered') ||
+        message.contains('already been registered') ||
+        message.contains('already registered')) {
+      // Reachable two ways: signing up with an address that has an account
+      // already, and attaching an address to an anonymous account that
+      // belongs to one. Both need the same answer.
+      return '该邮箱已被注册，请直接登录，或换一个邮箱';
+    }
+    if (message.contains('email address') && message.contains('invalid')) {
+      return '邮箱格式不正确';
+    }
+    if (message.contains('email not confirmed') ||
+        message.contains('email address not confirmed')) {
+      return '邮箱尚未验证，请先点击验证邮件中的链接';
+    }
+    if (message.contains('same as the old') || message.contains('no changes')) {
+      return '新邮箱与当前邮箱相同';
+    }
+    if (message.contains('session') && message.contains('missing')) {
+      return '登录状态已失效，请重新登录';
     }
     if (message.contains('password should be at least')) {
       return '密码太短，至少需要 6 位';

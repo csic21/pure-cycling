@@ -1,15 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
-import '../../../app/router.dart';
 import '../../../app/theme.dart';
 import '../../../core/sync/supabase_config.dart';
 import '../../../core/sync/sync_service.dart';
 import '../../../core/utils/units.dart';
 import '../../../shared/widgets/settings_widgets.dart';
-import '../../auth/data/auth_repository.dart';
+import 'widgets/account_section.dart';
 import '../domain/app_settings.dart';
 
 /// Cloud sync (spec §16, §25, §39).
@@ -48,7 +46,7 @@ class SyncScreen extends ConsumerWidget {
                   '--dart-define=SUPABASE_ANON_KEY=... 传入配置。',
             )
           else ...[
-            _AccountSection(user: user),
+            AccountSection(user: user),
             _StatusSection(report: report, settings: settings),
           ],
 
@@ -89,70 +87,6 @@ class SyncScreen extends ConsumerWidget {
         ],
       ),
     );
-  }
-}
-
-class _AccountSection extends ConsumerWidget {
-  const _AccountSection({required this.user});
-
-  final AuthUser? user;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (user == null) {
-      return SettingsSection(
-        title: '账号',
-        rows: [
-          SettingsTile(
-            title: '登录以启用云同步',
-            subtitle: '登录后可以把骑行备份到云端，并在新手机上恢复',
-            leading: const Icon(Icons.login),
-            onTap: () => context.push(AppRoutes.login),
-          ),
-        ],
-      );
-    }
-
-    return SettingsSection(
-      title: '账号',
-      rows: [
-        SettingsTile(
-          title: user!.label,
-          subtitle: '已登录',
-          leading: const Icon(Icons.person_outline),
-        ),
-        SettingsTile(
-          title: '退出登录',
-          destructive: true,
-          leading: const Icon(Icons.logout, color: AppColors.danger),
-          onTap: () => _confirmSignOut(context, ref),
-        ),
-      ],
-      footnote: '退出登录不会删除任何本地记录。',
-    );
-  }
-
-  Future<void> _confirmSignOut(BuildContext context, WidgetRef ref) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('退出登录？'),
-        content: const Text('本地记录会全部保留，只是不再上传到云端。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('退出'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-    await ref.read(authRepositoryProvider).signOut();
   }
 }
 

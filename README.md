@@ -238,12 +238,30 @@ flutter test
 | `ride_recorder_test.dart` | 骑行落盘：摘要、轨迹、几何、同步队列、放弃清空 |
 | `app_flow_test.dart` | 界面冒烟：四个标签页、历史、详情、设置、路线、同步 |
 | `ride_flow_test.dart` | 记录流程：倒计时、实时速度、暂停/继续、权限、崩溃恢复 |
+| `auth_test.dart` | 深链配置、账号标签、Supabase 错误翻译 |
+| `account_section_test.dart` | 匿名 / 实名两种账号状态的界面 |
 
 SQL 迁移用真实 PostGIS 验证，包括 RLS 隔离和 user_id 伪造防护：
 
 ```sh
 scripts/verify-migrations.sh    # 需要 Docker
 ```
+
+---
+
+## 登录
+
+**不登录也能完整使用** —— 记录、码表、历史、GPX 全部在本地完成，没有一个功能需要登录。
+登录只做一件事：把骑行备份到云端，让换手机之后能找回来。
+
+已完成：邮箱密码注册/登录、邮箱验证、忘记密码、匿名登录、**匿名账号绑定邮箱**、
+退出登录、会话持久化与自动刷新。完整说明见 [docs/auth.md](docs/auth.md)。
+
+一个最容易漏的环节：Supabase 发出的邮件链接要能回到 App，需要在三个平台上注册
+`purecycling://` URL scheme，**并且**在 Supabase 控制台的
+Authentication → URL Configuration → Redirect URLs 里加上同一个地址。
+不加的话邮件照常发出，只是链接指向浏览器 —— 骑手确认完回不到 App，
+账号是好的但 App 还显示登录表单，看起来像「验证没生效」。
 
 ---
 
