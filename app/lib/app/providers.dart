@@ -1,0 +1,534 @@
+import 'dart:async';
+
+import 'package:battery_plus/battery_plus.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+// `show` rather than a bare import: the Supabase SDK also exports a type
+// called `AuthUser`, and this file's own `AuthUser` is the one in play.
+import 'package:supabase_flutter/supabase_flutter.dart' show Supabase;
+
+import '../core/database/database.dart';
+import '../core/location/elevation_tuning.dart';
+import '../core/location/location_service.dart';
+import '../core/map/amap/amap_client.dart';
+import '../core/map/amap/amap_place_provider.dart';
+import '../core/map/amap/amap_route_provider.dart';
+import '../core/map/amap/amap_traffic_light_provider.dart';
+import '../core/map/local/offline_providers.dart';
+import '../core/map/map_providers.dart';
+import '../core/sync/supabase_config.dart';
+import '../core/sync/sync_service.dart';
+import '../core/utils/geo.dart';
+import '../core/utils/units.dart';
+import '../features/auth/data/auth_repository.dart';
+import '../features/dashboard/domain/dashboard_config.dart';
+import '../features/dashboard/domain/dashboard_field.dart';
+import '../features/navigation/domain/navigation_state.dart';
+import '../features/ride/data/ride_recorder.dart';
+import '../features/ride/data/ride_repository.dart';
+import '../features/ride/data/ride_session.dart';
+import '../features/ride/domain/ride.dart';
+import '../features/ride/domain/ride_engine.dart';
+import '../features/ride/domain/track_point.dart';
+import '../features/routes/data/route_repository.dart';
+import '../features/routes/domain/route.dart';
+import '../features/sensors/data/sensor_manager.dart';
+import '../features/settings/data/settings_repository.dart';
+import '../features/settings/domain/app_settings.dart';
+
+// ---------------------------------------------------------------------------
+// Infrastructure
+// ---------------------------------------------------------------------------
+
+/// The local database. One instance for the process; drift handles its own
+/// connection pooling and WAL.
+final databaseProvider = Provider<AppDatabase>((ref) {
+  final db = AppDatabase();
+  ref.onDispose(db.close);
+  return db;
+});
+
+final locationServiceProvider = Provider<LocationService>(
+  (ref) => LocationService(),
+);
+
+final authRepositoryProvider = Provider<AuthRepository>(
+  (ref) => AuthRepository(),
+);
+
+/// The signed-in account, or null. Emits on sign-in and sign-out.
+final authUserProvider = StreamProvider<AuthUser?>((ref) {
+  return ref.watch(authRepositoryProvider).authStateChanges();
+});
+
+final rideRepositoryProvider = Provider<RideRepository>(
+  (ref) => RideRepository(ref.watch(databaseProvider)),
+);
+
+final routeRepositoryProvider = Provider<RouteRepository>(
+  (ref) => RouteRepository(ref.watch(databaseProvider)),
+);
+
+final settingsRepositoryProvider = Provider<SettingsRepository>(
+  (ref) => SettingsRepository(ref.watch(databaseProvider)),
+);
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+/// The live settings tree.
+///
+/// Async because the first read comes off disk. Everything downstream treats
+/// "still loading" as "defaults" by watching [currentSettingsProvider] instead
+/// of this one — there is no screen in this app that should show a spinner
+/// because a preference has not loaded yet.
+final settingsProvider =
+    AsyncNotifierProvider<SettingsNotifier, AppSettings>(SettingsNotifier.new);
+
+class SettingsNotifier extends AsyncNotifier<AppSettings> {
+  @override
+  Future<AppSettings> build() async {
+    final settings = await ref.watch(settingsRepositoryProvider).load();
+    _propagate(settings);
+    return settings;
+  }
+
+  /// Applies a change: persists it, republishes it, and tells the long-lived
+  /// services about it.
+  ///
+  /// Named `mutate` rather than `update` because `AsyncNotifier` already has
+  /// an `update` with a different contract, and shadowing it would be a
+  /// confusing trap for the next reader.
+  Future<void> mutate(AppSettings Function(AppSettings) transform) async {
+    final current = state.valueOrNull ?? const AppSettings();
+    final next = transform(current);
+
+    // Optimistic: the UI reflects the toggle immediately. A settings write
+    // that fails is a disk problem the user cannot act on, and the alternative
+    // — a switch that lags behind the finger — is worse than a lost
+    // preference.
+    state = AsyncData(next);
+    _propagate(next);
+
+    await ref.read(settingsRepositoryProvider).save(next);
+  }
+
+  void _propagate(AppSettings settings) {
+    ref.read(rideRecorderProvider).applySettings(settings);
+    ref.read(rideSessionProvider.notifier).applySettings(settings);
+    ref.read(syncServiceProvider).applySettings(settings);
+    ref.read(sensorManagerProvider).applySettings(settings);
+  }
+}
+
+/// Settings with defaults already applied.
+///
+/// Widgets watch this rather than the async provider so a build never has to
+/// reason about a loading state for something as mundane as the unit suffix.
+final currentSettingsProvider = Provider<AppSettings>((ref) {
+  return ref.watch(settingsProvider).valueOrNull ?? const AppSettings();
+});
+
+final unitFormatterProvider = Provider<UnitFormatter>((ref) {
+  return UnitFormatter(ref.watch(currentSettingsProvider).units);
+});
+
+// ---------------------------------------------------------------------------
+// Map services
+// ---------------------------------------------------------------------------
+
+/// The AMap web-service key, if the user supplied one.
+///
+/// Kept out of [AppSettings] because it is a credential rather than a
+/// preference: it is stored in the same key/value table but read here, and it
+/// is never uploaded to the cloud or included in an export.
+final amapKeyProvider = FutureProvider<String>((ref) async {
+  final key = await ref.watch(settingsRepositoryProvider).getString('amap_key');
+  return key ?? '';
+});
+
+/// The active map provider bundle (spec §33).
+///
+/// Pages depend on this and never on a vendor. Changing the map service is a
+/// change here and nowhere else — which is the entire point of the
+/// abstraction, and the reason the traffic-light provider can be a stub today
+/// without leaving a mark on the UI.
+final mapServicesProvider = Provider<MapServices>((ref) {
+  final settings = ref.watch(currentSettingsProvider);
+  final amapKey = ref.watch(amapKeyProvider).valueOrNull ?? '';
+
+  if (amapKey.trim().isEmpty) {
+    return MapServices(
+      places: const NullPlaceProvider(),
+      routes: const OfflineRouteProvider(),
+      trafficLights: const AmapTrafficLightProvider(),
+      tileSource: settings.mapStyle == MapStyle.dark
+          ? MapTileSource.cartoDark
+          : MapTileSource.osm,
+    );
+  }
+
+  final client = AmapClient(apiKey: amapKey);
+  ref.onDispose(client.close);
+
+  return MapServices(
+    places: AmapPlaceProvider(client: client),
+    routes: AmapRouteProvider(client: client),
+    trafficLights: const AmapTrafficLightProvider(),
+    // Tiles follow the routing provider's datum: a GCJ-02 route drawn on
+    // WGS-84 tiles is 300 m off, and this makes that impossible to configure
+    // by accident.
+    tileSource: MapTileSource.amapVector,
+  );
+});
+
+/// Whether the app can plan real bike routes, and why not if it cannot.
+final routingAvailabilityProvider = Provider<({bool available, String reason})>(
+  (ref) {
+    final services = ref.watch(mapServicesProvider);
+    // `isDegraded`, not `isConfigured`: the offline provider is configured —
+    // it always answers — but its answers are straight lines, and the rider
+    // has to be told that rather than shown a line across a river as if it
+    // were a bike route.
+    if (!services.routes.isDegraded) {
+      return (available: true, reason: '');
+    }
+    return (
+      available: false,
+      reason: '未配置高德 Key，当前只能使用直线路径。'
+          '在「设置 → 地图」中填入 Web 服务 Key 即可使用真实骑行路线。',
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Recording
+// ---------------------------------------------------------------------------
+
+final rideRecorderProvider = Provider<RideRecorder>((ref) {
+  final recorder = RideRecorder(
+    db: ref.watch(databaseProvider),
+    repository: ref.watch(rideRepositoryProvider),
+    locationService: ref.watch(locationServiceProvider),
+  );
+  ref.onDispose(recorder.dispose);
+  return recorder;
+});
+
+/// The ride session object, created once for the life of the app.
+///
+/// Deliberately a separate provider from the state that exposes it, and
+/// deliberately built with `ref.read` rather than `ref.watch`.
+///
+/// This object owns the recording engine. Watching anything here would mean
+/// that an unrelated provider change — the AMap key finishing its load from
+/// disk, the map style being toggled — tears down a ride in progress. `read`
+/// makes the identity stable for the process lifetime, which is what a ride
+/// needs.
+final rideSessionInstanceProvider = Provider<RideSession>((ref) {
+  final session = RideSession(
+    recorder: ref.read(rideRecorderProvider),
+    // A getter, not the provider itself: the routing provider is resolved
+    // when navigation starts, so a key entered mid-ride takes effect.
+    routeProvider: () => ref.read(mapServicesProvider).routes,
+    settings: ref.read(currentSettingsProvider),
+  );
+  ref.onDispose(session.dispose);
+  return session;
+});
+
+/// The ride in progress, including navigation if a route is loaded.
+final rideSessionProvider =
+    NotifierProvider<RideSessionNotifier, RideSessionState>(
+  RideSessionNotifier.new,
+);
+
+class RideSessionNotifier extends Notifier<RideSessionState> {
+  StreamSubscription<RideSessionState>? _sub;
+
+  /// The session, stable for the process lifetime.
+  ///
+  /// This field is assigned in the *initializer*, not inside `build()`. That
+  /// distinction is the whole reason this class is shaped the way it is:
+  /// Riverpod re-runs `build()` whenever a watched provider changes, and a
+  /// `late final` assigned inside `build()` throws
+  /// `LateInitializationError: field has already been initialized` on the
+  /// second run — taking the ride screen down with it.
+  late final RideSession _session = ref.read(rideSessionInstanceProvider);
+
+  @override
+  RideSessionState build() {
+    // Watching the instance provider, whose identity never changes, so this
+    // `build` runs exactly once.
+    ref.watch(rideSessionInstanceProvider);
+
+    _sub = _session.states.listen((s) => state = s);
+    ref.onDispose(() => _sub?.cancel());
+
+    return _session.state;
+  }
+
+  Future<bool> start({Route? route, RideCheckpoint? resumeFrom}) {
+    return _session.start(
+      settings: ref.read(currentSettingsProvider),
+      route: route,
+      resumeFrom: resumeFrom,
+    );
+  }
+
+  void beginRecording() => _session.recorder.beginRecording();
+
+  void pause() => _session.pause();
+
+  void resume() => _session.resume();
+
+  Future<Ride?> stop({String? name}) => _session.stop(name: name);
+
+  Future<void> discard() => _session.discard();
+
+  void navigateRoute(Route route) => _session.navigateRoute(route);
+
+  void clearRoute() => _session.clearRoute();
+
+  void requestMap() => _session.requestMap();
+
+  void requestMinimal() => _session.requestMinimal();
+
+  Future<void> reroute() => _session.reroute();
+
+  void applySettings(AppSettings settings) => _session.applySettings(settings);
+
+  Future<void> checkpointNow() => _session.checkpointNow();
+}
+
+/// The raw engine state, for widgets that want only the numbers.
+final rideStateProvider = Provider<RideState>(
+  (ref) => ref.watch(rideSessionProvider).ride,
+);
+
+/// Everything the dashboard needs: ride statistics, navigation progress, GPS
+/// quality and battery, in one object.
+final dashboardDataProvider = Provider<DashboardData>((ref) {
+  final session = ref.watch(rideSessionProvider);
+  final ride = session.ride;
+
+  return DashboardData(
+    stats: ride.stats,
+    navigation: session.navigation,
+    gpsAccuracyMeters: ride.gpsAccuracyMeters,
+    gpsSignalLost: ride.gpsSignalLost,
+    batteryPercent: ref.watch(batteryPercentProvider).valueOrNull,
+    now: DateTime.now(),
+  );
+});
+
+/// Battery level, refreshed slowly.
+///
+/// One minute is deliberate: a battery percentage that ticks every second is
+/// noise on the dashboard and a wakeup the platform does not need to serve.
+final batteryPercentProvider = StreamProvider<double>((ref) async* {
+  final battery = Battery();
+  try {
+    yield (await battery.batteryLevel).toDouble();
+  } catch (_) {
+    return;
+  }
+  yield* Stream<void>.periodic(const Duration(seconds: 60))
+      .asyncMap((_) async {
+        try {
+          return (await battery.batteryLevel).toDouble();
+        } catch (_) {
+          return -1.0;
+        }
+      })
+      .where((v) => v >= 0);
+});
+
+// ---------------------------------------------------------------------------
+// History
+// ---------------------------------------------------------------------------
+
+final ridesProvider = StreamProvider<List<Ride>>(
+  (ref) => ref.watch(rideRepositoryProvider).watchRides(),
+);
+
+final mostRecentRideProvider = StreamProvider<Ride?>(
+  (ref) => ref.watch(rideRepositoryProvider).watchMostRecent(),
+);
+
+/// The month shown on the home screen and at the top of the history list.
+final selectedMonthProvider = StateProvider<DateTime>((ref) {
+  final now = DateTime.now();
+  return DateTime(now.year, now.month);
+});
+
+final monthSummaryProvider = StreamProvider<RideSummary>((ref) {
+  final month = ref.watch(selectedMonthProvider);
+  return ref.watch(rideRepositoryProvider).watchMonthSummary(month);
+});
+
+/// One ride, by id.
+final rideProvider = StreamProvider.family<Ride?, String>(
+  (ref, rideId) => ref.watch(rideRepositoryProvider).watchRide(rideId),
+);
+
+/// A single ride's trace, for the detail screen's map and elevation chart.
+final trackPointsProvider = StreamProvider.family<List<TrackPoint>, String>(
+  (ref, rideId) => ref.watch(rideRepositoryProvider).watchTrackPoints(rideId),
+);
+
+/// The trace as coordinates, for the map.
+///
+/// Derived rather than stored: the track itself is the source of truth and the
+/// projection is cheap, so there is no reason to keep a second copy in sync.
+final trackGeometryProvider = Provider.family<List<GeoPoint>, String>(
+  (ref, rideId) {
+    final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+    if (points == null) return const [];
+    return points.map((p) => p.geo).toList(growable: false);
+  },
+);
+
+/// How much the climb total for a recorded ride can be trusted.
+///
+/// Derived from the vertical accuracy stored on each track point, which has
+/// been recorded since the beginning — so no schema change was needed to
+/// answer "did this ride have a barometer?", and rides recorded before the
+/// question was asked still get an honest answer.
+///
+/// The median rather than the mean: one optimistic fix in a tunnel should not
+/// make a whole ride look precise.
+final elevationQualityProvider = Provider.family<ElevationQuality, String>(
+  (ref, rideId) {
+    final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+    if (points == null || points.isEmpty) return ElevationQuality.approximate;
+
+    final accuracies = <double>[];
+    for (final point in points) {
+      final accuracy = point.verticalAccuracy;
+      // Zero and negative both mean the platform did not report one.
+      if (accuracy != null && accuracy > 0 && accuracy.isFinite) {
+        accuracies.add(accuracy);
+      }
+    }
+
+    // A ride where most fixes carried no vertical accuracy is an unknown, and
+    // unknown is treated as the pessimistic case.
+    if (accuracies.length < points.length ~/ 2) {
+      return ElevationQuality.approximate;
+    }
+
+    accuracies.sort();
+    return ElevationTuning.forVerticalAccuracy(
+      accuracies[accuracies.length ~/ 2],
+    ).quality;
+  },
+);
+
+/// Elevation samples for the profile chart, bucketed for drawing.
+///
+/// Averaged within each bucket rather than sampled at bucket boundaries: a
+/// point-sampled profile can miss a short steep ramp entirely, which is
+/// exactly the feature a rider is looking for.
+final elevationSamplesProvider = Provider.family<List<double>, String>(
+  (ref, rideId) {
+    final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+    if (points == null) return const [];
+
+    final altitudes = <double>[];
+    for (final point in points) {
+      final altitude = point.altitude;
+      if (altitude != null && altitude.isFinite) altitudes.add(altitude);
+    }
+    if (altitudes.length < 2) return const [];
+
+    const buckets = 120;
+    if (altitudes.length <= buckets) return altitudes;
+
+    final out = <double>[];
+    final step = altitudes.length / buckets;
+    for (var i = 0; i < buckets; i++) {
+      final start = (i * step).floor();
+      final end = ((i + 1) * step).ceil().clamp(0, altitudes.length);
+      if (end <= start) continue;
+      var sum = 0.0;
+      for (var j = start; j < end; j++) {
+        sum += altitudes[j];
+      }
+      out.add(sum / (end - start));
+    }
+    return out;
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+final savedRoutesProvider = StreamProvider<List<Route>>(
+  (ref) => ref.watch(routeRepositoryProvider).watchRoutes(),
+);
+
+final routeProvider = StreamProvider.family<Route?, String>(
+  (ref, id) => ref.watch(routeRepositoryProvider).watchRoute(id),
+);
+
+// ---------------------------------------------------------------------------
+// Sensors
+// ---------------------------------------------------------------------------
+
+final sensorManagerProvider = Provider<SensorManager>((ref) {
+  final manager = SensorManager(db: ref.watch(databaseProvider));
+  ref.onDispose(manager.dispose);
+  return manager;
+});
+
+// ---------------------------------------------------------------------------
+// Sync
+// ---------------------------------------------------------------------------
+
+final syncServiceProvider = Provider<SyncService>((ref) {
+  final service = SyncService(
+    db: ref.watch(databaseProvider),
+    rides: ref.watch(rideRepositoryProvider),
+    routes: ref.watch(routeRepositoryProvider),
+    resolveClient: () {
+      if (!SupabaseConfig.isConfigured) return null;
+      try {
+        return Supabase.instance.client;
+      } catch (_) {
+        return null;
+      }
+    },
+  );
+  ref.onDispose(service.dispose);
+  return service;
+});
+
+final syncReportProvider = StreamProvider<SyncReport>((ref) {
+  final service = ref.watch(syncServiceProvider);
+  // `start()` registers the connectivity listener; calling it from the
+  // provider means sync begins the first time anything reads this state, and
+  // never in a build with no cloud configured.
+  service.start();
+  return service.reports;
+});
+
+/// Any ride checkpoint left behind by a crash (spec §42).
+///
+/// Read once at startup by the home screen. Deliberately not a `StreamProvider`
+/// on the table: an unfinished ride has to be *offered*, and re-offering it
+/// every time the row changes would re-open the dialog under the user.
+final unfinishedRideProvider = FutureProvider<RideCheckpoint?>(
+  (ref) => ref.read(rideRecorderProvider).findUnfinishedRide(),
+);
+
+/// The dashboard configuration currently in effect.
+final dashboardConfigProvider = Provider<DashboardConfig>((ref) {
+  return ref.watch(currentSettingsProvider).dashboard;
+});
+
+/// Which navigation presentation the ride screen is in.
+final navigationModeProvider = Provider<NavigationMode?>((ref) {
+  return ref.watch(rideSessionProvider).navigation?.mode;
+});

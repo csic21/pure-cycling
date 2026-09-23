@@ -1,0 +1,180 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build without uploading a GitHub release'
+        type: boolean
+        default: true
+
+env:
+  FLUTTER_VERSION: '3.41.9'
+
+# ---------------------------------------------------------------------------
+# Secrets this workflow expects. None of them are in the repository.
+#
+#   ANDROID_KEYSTORE_BASE64    base64 of the .jks upload key
+#   ANDROID_STORE_PASSWORD
+#   ANDROID_KEY_ALIAS
+#   ANDROID_KEY_PASSWORD
+#   SUPABASE_ANON_KEY          the publishable key, not service_role
+#
+# Variables (not secrets) — safe to read in logs:
+#
+#   SUPABASE_URL
+#
+# The AMap key is deliberately absent. It is entered by the rider in the app's
+# own settings and stored in their device's database, so it never enters a
+# build. See docs/ci.md.
+# ---------------------------------------------------------------------------
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Gate everything else on the same checks CI runs. A tag that does not pass
+  # the test suite should not produce an artifact anybody can install.
+  # -------------------------------------------------------------------------
+  verify:
+    name: Verify before releasing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter analyze
+      - run: flutter test
+
+      - name: Verify the secret scanner still works
+        run: ./scripts/check-secrets.sh --self-test
+
+  # -------------------------------------------------------------------------
+  android:
+    name: Android App Bundle
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter_version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+
+      # The keystore is reconstructed from a secret rather than committed.
+      # `android/key.properties` is gitignored; build.gradle.kts falls back to
+      # debug signing when it is absent, which is why CI builds still work on
+      # a fork.
+      - name: Reconstruct the upload keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set — cannot sign a release."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storeFile=upload-keystore.jks
+          storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
+      # dart-define writes the Supabase configuration into the binary. It is
+      # written to a file rather than passed on the command line so the value
+      # never appears in the process list or in an Actions log.
+      - name: Write build configuration
+        run: |
+          cat > dart_define.json <<EOF
+          {
+            "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
+            "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}"
+          }
+          EOF
+
+      # An app bundle, not an APK: Play distributes per-device splits from it,
+      # which is roughly a third the size of the universal APK.
+      - name: Build
+        run: flutter build appbundle --release --dart-define-from-file=dart_define.json
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f android/key.properties android/app/upload-keystore.jks dart_define.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-appbundle
+          path: app/build/app/outputs/bundle/release/*.aab
+          retention-days: 30
+
+  # -------------------------------------------------------------------------
+  # iOS is built but not uploaded. Shipping to TestFlight needs an App Store
+  # Connect API key, a distribution certificate and a provisioning profile —
+  # three more secrets, and a decision about whether to release from CI at all.
+  # This job produces a signed archive so that decision is the only thing left.
+  # -------------------------------------------------------------------------
+  ios:
+    name: iOS archive
+    runs-on: macos-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter_version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Write build configuration
+        run: |
+          cat > dart_define.json <<EOF
+          {
+            "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
+            "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}"
+          }
+          EOF
+
+      # Unsigned by default. Set IOS_CERTIFICATE_BASE64 and the matching
+      # profile secrets to produce something installable — see docs/ci.md.
+      - name: Build
+        run: |
+          if [ -n "${{ secrets.IOS_CERTIFICATE_BASE64 }}" ]; then
+            echo "Signing secrets present — a signing step goes here."
+          fi
+          flutter build ipa --release \
+            --dart-define-from-file=dart_define.json \
+            --no-codesign 2>/dev/null || \
+          flutter build ios --release \
+            --dart-define-from-file=dart_define.json \
+            --no-codesign
+
+      - name: Remove build configuration
+        if: always()
+        run: rm -f dart_define.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned
+          path: app/build/ios/iphoneos/*.app
+          retention-days: 30

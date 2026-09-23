@@ -1,0 +1,35 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  errors:
+    # A missing `await` in this codebase is almost always a real bug: the
+    # recording path, the sync queue and the ride engine are all async, and
+    # silently dropping a future there is how a ride loses its last minute of
+    # trace. Promoted to an error rather than the default warning.
+    unawaited_futures: error
+    # Same reasoning for a discarded `Future` in a collection literal.
+    discarded_futures: error
+
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
+
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+
+linter:
+  rules:
+    # A builder that returns a widget built from a closure over `this` captures
+    # state that may have changed; prefer explicit arguments.
+    - prefer_final_locals
+    - prefer_final_in_for_each
+    - unnecessary_lambdas
+    - avoid_unused_constructor_parameters
+    - use_super_parameters
+    - unawaited_futures
+    # Numeric formatting is the entire interface; a stray implicit conversion
+    # would show up as a wrong speed rather than as a crash.
+    - avoid_dynamic_calls
+    - avoid_types_as_parameter_names

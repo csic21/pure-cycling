@@ -1,0 +1,118 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ==================== 定位 ====================
+         The core permission. `FINE` is what actually gives a usable fix;
+         `COARSE` is requested alongside it because Android 12+ lets the user
+         grant only the approximate tier, and a ride recorded at ±2 km is
+         useless — so the app must be able to detect and explain that case.
+
+         `ACCESS_BACKGROUND_LOCATION` is what makes a locked-screen ride work.
+         On Android 11+ it cannot be requested in the same dialog as the
+         foreground permission; the app asks for it separately, and continues
+         without it (with the screen on) if the rider declines. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- ==================== 后台记录 ====================
+         Android kills background apps that are not running a foreground
+         service. Without this, a ride ends the moment the rider pockets the
+         phone — which is the entire use case. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Android 13+ requires explicit consent for the persistent notification
+         that a foreground service must show. Denying it does not stop
+         recording; it only hides the notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Keeps the CPU awake while a fix is being acquired and a track point
+         written. Scoped to the foreground service, so it does not prevent
+         normal sleep once the ride ends. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- ==================== 蓝牙传感器 ====================
+         Android 12 split Bluetooth into runtime permissions. `BLUETOOTH_SCAN`
+         is declared `neverForLocation` because this app scans for heart rate
+         straps and power meters, not for position — claiming otherwise would
+         be a lie that grants broader location access than the app needs.
+
+         `maxSdkVersion` on the legacy pair keeps Android 11 and below working,
+         where the old permissions are the only mechanism available. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+
+    <!-- ==================== 其他 ==================== -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Sensors are an enhancement, never a requirement: the app installs and
+         records on a phone without Bluetooth or without a barometer, and the
+         dashboard shows a placeholder for those fields. -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="true" />
+
+    <application
+        android:label="纯粹骑行"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <!-- geolocator's foreground service, declared explicitly rather than
+             left to manifest merging: this is the component that keeps the
+             ride alive when the screen is off, and it should be visible in the
+             app's own manifest rather than appearing from a dependency. -->
+        <service
+            android:name="com.baseflow.geolocator.GeolocatorLocationService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>

@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch cancels the first. On a repository where
+# CI takes several minutes, a queue of superseded runs is pure noise.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned, not `latest`. A Flutter upgrade changes the analyzer's rule set and
+  # the drift code generator's output; both would turn an unrelated PR red.
+  FLUTTER_VERSION: '3.41.9'
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Does the repository contain a credential?
+  #
+  # First and fastest, because a leaked key is the one failure that cannot be
+  # fixed by pushing another commit.
+  # -------------------------------------------------------------------------
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the scanner still works
+        run: ./scripts/check-secrets.sh --self-test
+      - name: Scan for committed credentials
+        run: ./scripts/check-secrets.sh
+
+  # -------------------------------------------------------------------------
+  # The bulk of the value: 150 tests over the recording pipeline, the
+  # navigation engine, the GPX codec, the datum conversion and the GATT
+  # parsers. None of them need a network or a device.
+  # -------------------------------------------------------------------------
+  analyze-and-test:
+    name: Analyze and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # The `*.g.dart` files are gitignored, so a clean checkout does not
+      # compile until these exist. They are regenerated rather than committed
+      # so a schema change can never be silently stale.
+      - name: Generate database code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test --reporter expanded
+
+  # -------------------------------------------------------------------------
+  # The migrations only fail against a real Postgres: RLS is enforced by the
+  # database, not by the client, and a policy typo is invisible until a second
+  # account can read the first one's rides.
+  # -------------------------------------------------------------------------
+  migrations:
+    name: Verify SQL migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The script starts its own PostGIS container, which is why this runs on
+      # a Linux runner: Docker is available and the image is native rather than
+      # emulated.
+      - name: Apply migrations and assert RLS isolation
+        run: ./scripts/verify-migrations.sh
+
+  # -------------------------------------------------------------------------
+  # A release build, not a debug one.
+  #
+  # Debug never runs R8, and R8 is where the proguard rules either work or
+  # strip a class that drift or Supabase reaches reflectively. That failure
+  # appears at runtime in a release-only build, which is the worst possible
+  # place to find it — so it gets caught here.
+  # -------------------------------------------------------------------------
+  build-android:
+    name: Build Android (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+
+      # No secrets here on purpose. Without `dart_define.json` the build
+      # compiles with empty Supabase configuration, which is the supported
+      # local-only mode — the app runs and records entirely offline. This job
+      # is checking that the release build *compiles* and that R8 keeps what it
+      # must; it is not producing something shippable.
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release-unsigned
+          path: app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # iOS only fails on macOS, and the failures it catches are real: a missing
+  # usage description in Info.plist, a pod that will not resolve, a background
+  # mode that was never declared.
+  # -------------------------------------------------------------------------
+  build-ios:
+    name: Build iOS (no codesign)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+
+      # `--no-codesign` because signing needs a certificate and a provisioning
+      # profile, which belong to the release workflow. This job is answering
+      # "does it compile for iOS", which is what regresses first.
+      - name: Build
+        run: flutter build ios --release --no-codesign

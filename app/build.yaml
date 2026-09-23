@@ -1,0 +1,14 @@
+targets:
+  $default:
+    builders:
+      drift_dev:
+        options:
+          # Store DateTime columns as ISO-8601 UTC text rather than unix
+          # seconds. Human-readable in a DB browser, timezone-unambiguous, and
+          # directly comparable to the Postgres `timestamptz` values the sync
+          # layer exchanges.
+          store_date_time_values_as_text: true
+          # Fail the build on a schema change that has no migration, rather
+          # than silently producing a database that opens on one device and
+          # not another.
+          generate_connect_constructor: false

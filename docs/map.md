@@ -1,0 +1,338 @@
+# 地图、路线与导航
+
+---
+
+## 坐标系：这份文档里最重要的一节
+
+GPS 芯片和系统定位 API 返回 **WGS-84**。
+高德（以及所有中国地图服务，出于法规）发布 **GCJ-02** 的瓦片和路线。
+
+两者相差 **50–500 米**。把 WGS-84 的轨迹直接画在 GCJ-02 的瓦片上，线条会偏移到隔壁街区。
+
+### 本项目遵循的规则
+
+```text
+内部全部 WGS-84
+  ├── SQLite
+  ├── RideEngine
+  ├── GPX 文件
+  └── Supabase
+
+只有 core/map/amap/ 下的代码做转换
+  ├── 请求前：  WGS-84 → GCJ-02   （否则吸附到 300 米外的道路上）
+  └── 响应后：  GCJ-02 → WGS-84   （否则轨迹与记录不一致）
+```
+
+瓦片源声明自己的基准：
+
+```dart
+enum MapDatum { wgs84, gcj02 }
+
+MapTileSource.amapVector  → MapDatum.gcj02
+MapTileSource.osm         → MapDatum.wgs84
+MapTileSource.cartoDark   → MapDatum.wgs84
+```
+
+`RouteMap` 在绘制时统一投影，所以不可能出现「路线是 GCJ-02、瓦片是 WGS-84」这种配置。
+
+### 反函数是迭代的
+
+GCJ-02 的偏移是用一个混淆多项式定义，没有解析反函数。所以反向用迭代：
+
+```dart
+for (var i = 0; i < 3; i++) {
+  final forward = wgs84ToGcj02Raw(lat, lng);
+  lat += point.lat - forward.lat;
+  lng += point.lng - forward.lng;
+}
+```
+
+三轮收敛到远低于厘米级 —— 远低于 GPS 噪声。
+
+**境外恒等。** 这个多项式只在中国境内有定义，在境外应用它会以一个 Arbitrary 的量
+移动一条在法国的骑行轨迹。`outOfChina` 是边界检查，整条多段线在境外时直接返回原列表
+（省掉逐点判断）。
+
+---
+
+## 地图服务抽象
+
+页面依赖 `MapServices` 这个组合对象，从不直接调用任何厂商 API：
+
+```dart
+class MapServices {
+  final PlaceProvider places;
+  final RouteProvider routes;
+  final TrafficLightProvider trafficLights;
+  final MapTileSource tileSource;   // 与 routes 的基准一致
+}
+```
+
+换地图服务是 `app/providers.dart` 里的一个工厂函数，
+而不是在表现层里搜索 `AMap.` 调用点。
+
+### 实现
+
+| 接口 | 高德 | 离线兜底 |
+|---|---|---|
+| `RouteProvider` | `AmapRouteProvider` (`/v5/direction/bicycling`) | `OfflineRouteProvider`（直线） |
+| `PlaceProvider` | `AmapPlaceProvider` (`/v3/place/text`) | `NullPlaceProvider` |
+| `TrafficLightProvider` | `AmapTrafficLightProvider`（明确不可用） | 同左 |
+| `MapProvider` | 瓦片源配置 | — |
+
+### 没有 Key 时的行为
+
+`MapServices` 组装成离线版本：直线路线 + 空搜索 + 不可用的红绿灯。
+
+**所有功能仍然可用**：记录、码表、历史、GPX 导入导出都不依赖地图。
+只有路线规划退化为直线，并且 UI 会明确标注这一点 —— 不会静默产出一条不是路线的路线。
+
+这也是规格 §40「不要从地图开始」的原因：路线规划和导航之前的每一件事都必须不依赖它。
+
+---
+
+## 路线规划
+
+### 高德 `/v5/direction/bicycling`
+
+```dart
+final body = await client.get('/v5/direction/bicycling', {
+  'origin': '116.4074,39.9042',        // 注意是 lng,lat，和高德一致
+  'destination': '...',
+  'show_fields': 'cost,polyline,navi', // 不加这个就没有几何数据
+  'alternative_route': '1',
+});
+```
+
+**坐标处理**：起点和终点在发送前转成 GCJ-02，返回的多段线转回 WGS-84。
+两个方向的转换都只在这个文件里发生。
+
+**转向类型**：用中文指令文本做关键词匹配，而不是用数字 `action` 码。
+高德的数字码在 v3 和 v5 之间有变化，官方文档也不一致，
+而指令字符串是稳定的、人工撰写的。`action` 只作为兜底。
+
+### 多途经点
+
+高德的骑行接口只接受一个起点和一个终点。途经点通过分段规划再拼接实现：
+几何数据接起来（丢掉重复的接缝点），指令重新索引到合并后的多段线上。
+
+### 结果里的爬升是 `null` 而不是 `0`
+
+`/v5/direction/bicycling` 不返回海拔数据。
+
+因此 `Route.elevationGainMeters` 是 `double?`，路线详情显示 `—`。
+**0 是一个断言，不是一个占位符** —— 显示「爬升 0 米」是在说这条路线是平的。
+
+V2 的「路线海拔剖面」需要第三方高程数据（例如 SRTM）补齐。
+
+### 路线偏好大部分是「不支持」
+
+规格 §10 说得很清楚：骑行路线规划 ≠ 拥有完整自行车道底层数据。
+高德的骑行规划器不暴露车道偏好参数。
+
+所以 `RoutePreference` 枚举里除了 `recommended`，其余都标了 `supported: false`，
+UI 会把它们标成不支持 —— 而不是发一个会被静默忽略的请求。
+
+「少红绿灯」「少机动车」「骑行道优先」这些需要第三方地图数据 + 自有骑行数据 + 路线评分系统。
+
+---
+
+## 导航
+
+### 两个引擎，不是一个大引擎
+
+`NavigationEngine` 独立于 `RideEngine`，在 `RideSession` 里汇合。
+
+分成两个的原因是它们的失败模式不同：骑行引擎的 bug 表现为里程不对，
+导航引擎的 bug 表现为转错弯。混在一起会让「距离为什么少了 200 米」
+变成一个需要同时理解投影算法的问题。
+
+### 进度是沿路径的距离，不是到航点的距离
+
+```dart
+distanceAlongRoute = cumulative[segmentIndex] + segmentLength × projectedFraction
+```
+
+骑手的位置被投影到最近的多段线线段上。
+
+投影**以上一次匹配的线段为锚点**，只扫描它周围的窗口（±40 段）：
+
+```dart
+var start = (_lastSegment - 40).clamp(0, last);
+var end = (_lastSegment + 40).clamp(0, last);
+```
+
+全量扫描偶尔会吸附到 30 米外的一条平行道路上，让进度瞬间跳一公里。
+窗口让这个错误不可能发生 —— 只要骑手真的在路线上，而偏航检测处理他们不在的情况。
+
+第一次定位、或者偏差明显很大时（> 200 米），会回退到全量扫描，
+避免因为窗口在错误的位置而误报偏航。
+
+### 进度是单调的
+
+```dart
+if (match.along > _along) _along = match.along;
+```
+
+投影短暂地跳回后方通常是窗口吸附到了错误的线段上。
+允许它会让剩余距离在骑行中**变大**，ETA 跟着乱跳。
+
+### 转向提示指向下一个动作
+
+```dart
+RouteInstruction? _nextTurn({int after = -1}) {
+  for (var i = after + 1; i < instructions.length; i++) {
+    final at = _instructionDistance[i];
+    if (at < _along - _passedSlackMeters) continue;   // 已经骑过去了
+
+    final isLast = i == instructions.length - 1;
+    if (!isLast && instructions[i].maneuver == Maneuver.straight) continue;
+
+    return instructions[i];
+  }
+  return null;
+}
+```
+
+两个细节：
+
+- **跳过直行步骤。** 一条写着「继续直行」两公里的横幅是噪声，骑手需要的是**下一个决策**。
+- **骑过去的动作不再是「下一个」。** 返回一个已通过的转向、距离显示 0，
+  会在转完弯之后把「左转 0 米」留在横幅上 —— 比什么都不说更糟。
+
+最后一条指令是例外（通常是「到达终点」，那是一个决策），但骑过去之后同样会被丢弃，
+横幅回落到「即将到达终点」。
+
+### ETA 用骑手自己的配速
+
+```dart
+var speedForEta = route.assumedSpeedMps;
+if (ground != null && ground.avgSpeedMps > 1.2 && _along > 500) {
+  speedForEta = ground.avgSpeedMps * 0.95;
+}
+```
+
+骑过一段路之后，骑手自己的平均速度比地图服务的估计更准 ——
+它知道这台车、这个人、以及他正在爬的坡。在那之前没有依据，就用服务商的值。
+
+`× 0.95` 是一个轻微的保守偏置：早到一点比晚到好。
+
+---
+
+## 偏航与重算
+
+### 偏差必须持续才算数
+
+```dart
+if (offBy > threshold) {
+  _offRouteSince ??= now;
+} else if (offBy < threshold * 0.6) {
+  _offRouteSince = null;   // 带滞回地重新清除
+}
+```
+
+```dart
+bool _isOffRouteAt(DateTime now) =>
+    now.difference(_offRouteSince!) >= const Duration(seconds: 5);
+```
+
+一次桥下的坏定位可以读出偏 60 米。把它当成偏航会给一个从没离开路线的骑手
+发一个重新规划请求。
+
+阈值下限硬编码为 30 米：
+
+```dart
+final threshold = _config.rerouteThresholdMeters < 30
+    ? 30.0
+    : _config.rerouteThresholdMeters;
+```
+
+城市中高楼旁的定位误差常有 30–40 米，阈值过低会把每次经过桥下都当成偏航。
+
+重算之间有 30 秒的节流 —— 否则一个故意绕路的骑手会每个定位点发一个请求。
+
+### 重算是「从当前位置到终点」，不是「回到原路线」
+
+```dart
+// Deliberately *not* trying to rejoin the original route mid-way.
+final rerouted = await _planLeg(origin: from, destination: destination, ...);
+```
+
+一旦骑手偏离，诚实的做法是从他现在的位置规划到他要去的终点。
+
+「回到原路线」的逻辑需要猜测原路线上某个点，而那正是导航 App 把用户送上
+一个他们刚骑下来的坡的方式。
+
+### 重算的时机用定位的时间戳
+
+```dart
+unawaited(_maybeReroute(at));   // at 是这次定位的时间戳，不是 DateTime.now()
+```
+
+混用两个时钟是「明明已经偏航很久了却不触发」的原因。这是测试发现的。
+
+---
+
+## 自动切图（规格 §8.2）
+
+### 极简导航是默认
+
+理由值得说明：看地图的骑手没有在看路。
+逐个转向的文字给出了唯一真正需要的信息 —— 往哪边、还有多远、上哪条路 ——
+耗电只是地图的一小部分，而且在阳光下地图本来就不可读。
+
+### 什么时候切到地图
+
+| 触发条件 | 理由 |
+|---|---|
+| 复杂路口 / 环岛 | 文字描述不清楚 |
+| 连续转向 | 间隔 < 150 米，记不住 |
+| 距离转向 < 150 米 | 需要空间感 |
+| 偏航 | 需要重新定位自己 |
+| 用户点击导航区域 | 他要求了 |
+
+### 什么时候切回去
+
+转弯完成后 5–10 秒（可配置）。
+
+**用户主动切的地图不会自动消失。** 他要求了，就应该留着，直到他自己关掉。
+`_mapUntil == null` 表示这是一个用户请求。
+
+地图上会显示一个角标说明为什么切过来了（「复杂路口」「环岛」「已偏离路线」）——
+没有它，一个自己变化的屏幕读起来像一个 bug。
+
+---
+
+## 红绿灯倒计时
+
+**没有实现，这是刻意的。**
+
+高德的红绿灯倒计时能力通过**两轮车导航 SDK** 提供 —— 设备端的电动自行车 / 巡航红绿灯倒计时 ——
+不是本项目使用的 Web 服务 REST 接口。接入它意味着一个授权的 SDK、一个专用的 Key，
+以及 Android/iOS 的原生集成。这些都不是靠一个公开接口就能做出的代码改动。
+
+规格 §11 要求在接入前确认：
+
+```text
+平台支持情况 / iOS / Android 支持情况 / 授权方式
+商务费用 / 普通自行车是否可用 / 数据覆盖城市
+```
+
+`TrafficLightProvider` 这个接缝是真实存在的：许可拿到之后，`lightsAhead` 会有实现体，
+而上层什么都不用改。
+
+诚实地报告「不可用」是这个选择的关键。**一个返回空列表的 provider 看起来和
+「前方没有红绿灯」完全一样**，而骑手会合理地认为功能生效了。
+
+---
+
+## 地图渲染
+
+- **纯黑背景** —— 瓦片加载中或完全离线时，界面保持 OLED 黑而不是闪灰。
+- **禁止旋转** —— 装在车把上的码表不需要旋转的地图，
+  而且骑行中一个意外的双指旋转会让骑手迷失方向，戴着手套还很难转回来。
+- **高德栅格图只有浅色样式** —— 这是事实，没有参数能改变它。
+  夜间用颜色矩阵压暗（保亮度去饱和 + 强降值），而不是叠一层半透明黑色 ——
+  后者会把整张地图均匀变灰，丢掉让地图可读的道路层级。
+- **视野自适** —— 打开地图时适配路线、轨迹和当前位置的整体包围盒。
+  缩放到当前位置会把骑手正在看的那条骑行的形状藏起来。
