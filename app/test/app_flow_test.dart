@@ -152,6 +152,7 @@ void main() {
       expect(find.text('骑行详情'), findsOneWidget);
       expect(find.text('移动时间'), findsOneWidget);
       expect(find.text('导出 GPX'), findsOneWidget);
+      expect(find.text('导出 FIT'), findsOneWidget);
 
       await shutdownApp(tester, database);
     });

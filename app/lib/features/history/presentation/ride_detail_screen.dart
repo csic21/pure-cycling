@@ -128,10 +128,24 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
               const SizedBox(height: 32),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: OutlinedButton.icon(
-                  onPressed: () => _exportGpx(ride),
-                  icon: const Icon(Icons.ios_share, size: 20),
-                  label: const Text('导出 GPX'),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _exportGpx(ride),
+                        icon: const Icon(Icons.ios_share, size: 20),
+                        label: const Text('导出 GPX'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _exportFit(ride),
+                        icon: const Icon(Icons.ios_share, size: 20),
+                        label: const Text('导出 FIT'),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -162,6 +176,15 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
               onTap: () {
                 Navigator.pop(sheetContext);
                 _exportGpx(ride);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.ios_share),
+              title: const Text('导出 FIT'),
+              subtitle: const Text('Garmin / Strava 通用格式'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _exportFit(ride);
               },
             ),
             ListTile(
@@ -217,6 +240,23 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(file.path, mimeType: 'application/gpx+xml')],
+          subject: ride.displayName('骑行'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出失败：$e')),
+      );
+    }
+  }
+
+  Future<void> _exportFit(Ride ride) async {
+    try {
+      final file = await ref.read(rideRepositoryProvider).exportFit(ride);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'application/vnd.ant.fit')],
           subject: ride.displayName('骑行'),
         ),
       );

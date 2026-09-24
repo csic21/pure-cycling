@@ -11,7 +11,7 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-233 个测试通过          flutter test
+243 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
@@ -25,6 +25,9 @@ Auth 流程在真实 GoTrue 上验证通过        scripts/verify-auth-flow.sh
 
 V1.5 的语音播报已经实现：转向、偏航、重算和到达会用系统语音播报，默认关闭。
 策略与测试见 [docs/map.md](docs/map.md) 的「语音播报」一节。
+
+V2 的 FIT 导出也已经实现：骑行详情页可以导出 Garmin / Strava 通用的 FIT 文件，
+编码器用手写实现、用独立解析器验证，见 [docs/export.md](docs/export.md)。
 
 尚未在真机 GPS 上验证的部分见 [§ 需要在真机上验证的部分](#需要在真机上验证的部分)。
 
@@ -118,12 +121,13 @@ cycling-app/
 │   │   │   ├── location/     GPS 采集、校验、平滑、距离计算
 │   │   │   ├── map/          地图服务抽象 + 高德实现 + 坐标转换
 │   │   │   ├── gpx/          GPX 编解码
+│   │   │   ├── fit/          FIT 编解码（导出）
 │   │   │   ├── sync/         Supabase 客户端、同步队列
 │   │   │   └── utils/        地理计算、单位、格式化、ID
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 233 个测试（单元 + 界面）
+│   └── test/                 243 个测试（单元 + 界面）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
 ├── scripts/                  迁移验证、Auth 验证、本地栈、密钥扫描
@@ -262,6 +266,7 @@ flutter test
 | `account_section_test.dart` | 匿名 / 实名两种账号状态的界面 |
 | `voice_coach_test.dart` | 播报策略：远近两级、去重、隧道跳级、偏航 / 重算 / 到达、优先级与队列 |
 | `voice_session_test.dart` | 播报接线：会话是否真的把导航快照喂给了教练 |
+| `fit_codec_test.dart` | FIT 编码器：CRC、semicircle 往返、缩放字段、无效值、边界 —— 用独立解析器解码 |
 
 SQL 迁移和 Auth 流程都用**Supabase 官方镜像**验证，不需要云项目、不需要任何 key：
 
@@ -300,7 +305,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 233 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 243 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 
@@ -400,6 +405,8 @@ Android 那步特意用 **release** 而不是 debug：debug 不跑 R8，而 R8 �
 ---
 
 ## 手动构造一个 GPX 测试文件
+
+导出格式（GPX 与 FIT）的设计说明见 [docs/export.md](docs/export.md)。
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>

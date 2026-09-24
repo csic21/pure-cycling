@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../../core/database/dao/ride_dao.dart';
 import '../../../core/database/database.dart';
+import '../../../core/fit/fit_codec.dart';
 import '../../../core/gpx/gpx_codec.dart';
 import '../../../core/sync/sync_status.dart';
 import '../../../core/utils/geo.dart';
@@ -245,6 +246,32 @@ class RideRepository {
     final trace = await trackPoints(ride.id);
     final path = await writeGpxFile(ride, trace);
     await _rides.setGpxPath(ride.id, path);
+    return File(path);
+  }
+
+  // ---- FIT ----
+
+  /// Writes the ride's FIT to the app documents directory and returns the
+  /// absolute path.
+  ///
+  /// Not persisted on the ride row: unlike the GPX, nothing uploads this file,
+  /// so the path would be a column with no reader. It is regenerated from the
+  /// trace every time the rider exports it, which is also what keeps it
+  /// correct after a rename.
+  Future<String> writeFitFile(Ride ride, List<TrackPoint> trace) async {
+    final dir = await _exportsDirectory();
+    final file = File('${dir.path}/${_safeFileName(ride)}.fit');
+    await file.writeAsBytes(
+      FitCodec.encode(ride, trace),
+      flush: true,
+    );
+    return file.path;
+  }
+
+  /// Re-generates the FIT from the stored trace, for the export action.
+  Future<File> exportFit(Ride ride) async {
+    final trace = await trackPoints(ride.id);
+    final path = await writeFitFile(ride, trace);
     return File(path);
   }
 
