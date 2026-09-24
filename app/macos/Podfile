@@ -1,4 +1,4 @@
-platform :osx, '10.15'
+platform :osx, '12.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -38,5 +38,18 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
+
+    # Xcode 27 refuses to build anything targeting macOS below 12.0, while
+    # several pods still declare 10.11–10.15. Flutter's helper only lifts the
+    # pods that depend on Flutter, so the privacy-bundle targets keep their
+    # old value and fail the build. Lift every target to the Runner's own
+    # deployment target.
+    target.build_configurations.each do |config|
+      current = config.build_settings['MACOSX_DEPLOYMENT_TARGET']
+      next if current.nil?
+      if current.to_f < 12.0
+        config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '12.0'
+      end
+    end
   end
 end
