@@ -213,7 +213,10 @@ begin
   for r in
     select tablename from pg_tables
     where schemaname = 'public'
-      and tablename in ('profiles','rides','routes','bikes','user_settings')
+      and tablename in (
+        'profiles','rides','routes','bikes','user_settings',
+        'admins','admin_audit'
+      )
   loop
     if not exists (
       select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
@@ -295,6 +298,127 @@ begin
   end if;
   raise notice 'push_ride ignores a caller-supplied user_id';
 end $$;
+SQL
+
+echo "==> asserting the admin boundary"
+psql_stdin <<'SQL'
+-- ---------------------------------------------------------------------------
+-- Admin access. The assertion that matters is the last one: an admin can list
+-- accounts and read the audit log, and still cannot read a single ride.
+-- ---------------------------------------------------------------------------
+
+insert into auth.users (id, email) values
+  ('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa', 'admin@example.com');
+
+insert into public.admins (user_id, note) values
+  ('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa', 'created by verify-migrations.sh');
+
+-- One audit row, written the way the console writes it: with the service role.
+insert into public.admin_audit (admin_id, action, target_user_id, detail) values
+  ('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+   'verify_migrations',
+   '11111111-1111-7111-8111-111111111111',
+   '{"reason":"harness"}'::jsonb);
+
+set role authenticated;
+set request.jwt.claim.sub = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa';
+
+do $$
+declare
+  v_accounts bigint;
+  v_rider_email text;
+  v_rides bigint;
+  v_audit bigint;
+begin
+  select count(*) into v_accounts from public.admin_list_users();
+  if v_accounts < 3 then
+    raise exception 'admin_list_users returned % accounts, expected at least 3', v_accounts;
+  end if;
+
+  select email into v_rider_email
+    from public.admin_list_users()
+    where id = '11111111-1111-7111-8111-111111111111';
+  if v_rider_email <> 'rider@example.com' then
+    raise exception 'admin_list_users is missing the rider account (got %)',
+      coalesce(v_rider_email, 'NULL');
+  end if;
+
+  -- The privacy line: account metadata yes, location traces no.
+  select count(*) into v_rides from public.rides;
+  if v_rides <> 0 then
+    raise exception 'privacy leak: an admin can read % ride(s)', v_rides;
+  end if;
+
+  select count(*) into v_audit from public.admin_audit;
+  if v_audit < 1 then
+    raise exception 'an admin cannot read the audit log';
+  end if;
+
+  raise notice 'admin can list accounts and read the audit log, but not rides';
+end $$;
+
+-- The console derives 「已封禁」 from its own audit trail, so the state has to
+-- follow the latest disable/enable row.
+reset role;
+insert into public.admin_audit (admin_id, action, target_user_id)
+values ('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+        'disable_user',
+        '99999999-9999-7999-8999-999999999999');
+set role authenticated;
+set request.jwt.claim.sub = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa';
+
+do $$
+declare v_state text;
+begin
+  select access_state into v_state
+    from public.admin_list_users()
+    where id = '99999999-9999-7999-8999-999999999999';
+  if v_state <> 'disabled' then
+    raise exception 'access_state did not follow the audit trail: %',
+      coalesce(v_state, 'NULL');
+  end if;
+  raise notice 'access_state follows the console audit trail';
+end $$;
+
+-- The membership table is not reachable through the Data API at all.
+do $$
+begin
+  begin
+    perform 1 from public.admins;
+    raise exception 'public.admins is reachable through the Data API';
+  exception
+    when insufficient_privilege then
+      raise notice 'admins table is not exposed to the Data API';
+  end;
+end $$;
+
+-- …and a non-admin is refused by the list RPC and sees no audit rows.
+reset role;
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-7111-8111-111111111111';
+
+do $$
+declare v_audit bigint;
+begin
+  begin
+    perform 1 from public.admin_list_users();
+    raise exception 'a non-admin could call admin_list_users';
+  exception
+    when insufficient_privilege then
+      raise notice 'non-admins are refused by admin_list_users';
+  end;
+
+  -- Invisible rather than forbidden: the grant exists, the policy filters
+  -- every row.
+  select count(*) into v_audit from public.admin_audit;
+  if v_audit <> 0 then
+    raise exception 'audit leak: a non-admin can read % audit row(s)', v_audit;
+  end if;
+
+  raise notice 'non-admins see neither the account list nor the audit log';
+end $$;
+
+reset role;
 SQL
 
 echo "==> migrations OK"
