@@ -53,6 +53,7 @@ class NavigationSnapshot {
     this.snappedPoint,
     this.progress = 0,
     this.autoMapReason = MapAutoReason.none,
+    this.rerouteCount = 0,
   });
 
   final String routeId;
@@ -87,6 +88,15 @@ class NavigationSnapshot {
 
   final MapAutoReason autoMapReason;
 
+  /// How many times the route has been replanned, including the manual
+  /// 「重新规划」action.
+  ///
+  /// A counter rather than a boolean because a reroute can happen more than
+  /// once in a ride, and the voice coach has to announce each one — an
+  /// `offRoute` flag that goes true again after a successful reroute cannot
+  /// distinguish "still off route" from "off route a second time".
+  final int rerouteCount;
+
   Maneuver get maneuver =>
       currentInstruction?.maneuver ?? Maneuver.unknown;
 
@@ -108,6 +118,7 @@ class NavigationSnapshot {
     GeoPoint? snappedPoint,
     double? progress,
     MapAutoReason? autoMapReason,
+    int? rerouteCount,
   }) {
     return NavigationSnapshot(
       routeId: routeId,
@@ -128,6 +139,7 @@ class NavigationSnapshot {
       snappedPoint: snappedPoint ?? this.snappedPoint,
       progress: progress ?? this.progress,
       autoMapReason: autoMapReason ?? this.autoMapReason,
+      rerouteCount: rerouteCount ?? this.rerouteCount,
     );
   }
 
@@ -146,5 +158,6 @@ class NavigationSnapshot {
         snappedPoint: snappedPoint,
         progress: progress,
         autoMapReason: autoMapReason,
+        rerouteCount: rerouteCount,
       );
 }

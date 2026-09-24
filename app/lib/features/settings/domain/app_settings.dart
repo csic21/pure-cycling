@@ -75,8 +75,8 @@ class NavigationConfig {
   /// Switch to the map automatically at complex junctions (§8.2).
   final bool autoShowMap;
 
-  /// Spoken instructions. V1.5 — the toggle exists, the TTS backend is wired
-  /// but off by default because it eats battery and annoys on shared paths.
+  /// Spoken instructions. Off by default: voice eats battery, and on shared
+  /// paths a talking phone is more intrusive than a glance at the screen.
   final bool voicePrompts;
 
   final bool rerouteOnDeviation;

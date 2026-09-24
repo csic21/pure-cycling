@@ -99,16 +99,17 @@ class NavigationSettingsScreen extends ConsumerWidget {
           ),
 
           SettingsSection(
-            title: '语音（V1.5）',
+            title: '语音',
             rows: [
               SettingsSwitch(
                 title: '语音提示',
-                subtitle: '转向和偏航时播报语音提示',
+                subtitle: '转向、偏航和到达时播报；使用系统语音，不联网',
                 value: navigation.voicePrompts,
                 onChanged: (v) => update((c) => c.copyWith(voicePrompts: v)),
               ),
             ],
-            footnote: '语音播报属于 V1.5 范围，当前版本仅保留开关与接口。',
+            footnote: '播报会压低音乐音量而不是打断它，静音键打开时也会播报。'
+                '默认关闭：在安静路段上，语音可能比看屏幕更打扰。',
           ),
         ],
       ),

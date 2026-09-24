@@ -22,7 +22,9 @@ import '../core/utils/units.dart';
 import '../features/auth/data/auth_repository.dart';
 import '../features/dashboard/domain/dashboard_config.dart';
 import '../features/dashboard/domain/dashboard_field.dart';
+import '../features/navigation/data/flutter_tts_voice_backend.dart';
 import '../features/navigation/domain/navigation_state.dart';
+import '../features/navigation/domain/voice_backend.dart';
 import '../features/ride/data/ride_recorder.dart';
 import '../features/ride/data/ride_repository.dart';
 import '../features/ride/data/ride_session.dart';
@@ -215,6 +217,16 @@ final rideRecorderProvider = Provider<RideRecorder>((ref) {
   return recorder;
 });
 
+/// Where spoken navigation prompts go.
+///
+/// One backend for the process, and a provider rather than a direct
+/// construction so a test can record what would have been said without a
+/// speech engine. The real backend does not touch the platform until the
+/// rider enables voice prompts.
+final voiceBackendProvider = Provider<VoiceBackend>(
+  (ref) => FlutterTtsVoiceBackend(),
+);
+
 /// The ride session object, created once for the life of the app.
 ///
 /// Deliberately a separate provider from the state that exposes it, and
@@ -232,6 +244,7 @@ final rideSessionInstanceProvider = Provider<RideSession>((ref) {
     // when navigation starts, so a key entered mid-ride takes effect.
     routeProvider: () => ref.read(mapServicesProvider).routes,
     settings: ref.read(currentSettingsProvider),
+    voiceBackend: ref.read(voiceBackendProvider),
   );
   ref.onDispose(session.dispose);
   return session;

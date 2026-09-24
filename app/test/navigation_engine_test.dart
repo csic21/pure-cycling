@@ -268,6 +268,13 @@ void main() {
 
       expect(provider.rerouteCalls, greaterThan(0),
           reason: 'a rider who really left the route must be brought back');
+
+      // The counter the voice coach announces from is only on the next
+      // snapshot: a reroute re-emits the previous one rather than flashing a
+      // half-updated route on screen.
+      engine.onPosition(off, 0, now: t0.add(const Duration(seconds: 12)));
+      expect(engine.snapshot.rerouteCount, 1,
+          reason: 'the coach learns about a reroute by watching this counter');
     });
 
     test('does not reroute when the setting is off', () {

@@ -527,6 +527,7 @@ class NavigationEngine {
               ? MapAutoReason.userRequest
               : _autoMapReason(now))
           : MapAutoReason.none,
+      rerouteCount: _rerouteCount,
     );
   }
 

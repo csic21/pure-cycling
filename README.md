@@ -11,10 +11,10 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-215 个测试通过          flutter test
+233 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
-macOS 构建通过          flutter build macos
+macOS debug 构建通过    flutter build macos --debug
 SQL 迁移在 Supabase 官方镜像上验证通过   scripts/verify-migrations.sh
 Auth 流程在真实 GoTrue 上验证通过        scripts/verify-auth-flow.sh
 完整本地栈（含 PostgREST / Storage）通过 scripts/local-stack.sh
@@ -22,6 +22,9 @@ Auth 流程在真实 GoTrue 上验证通过        scripts/verify-auth-flow.sh
 ```
 
 **没有任何商业授权限制。** 所有依赖都是 MIT / BSD 类型。
+
+V1.5 的语音播报已经实现：转向、偏航、重算和到达会用系统语音播报，默认关闭。
+策略与测试见 [docs/map.md](docs/map.md) 的「语音播报」一节。
 
 尚未在真机 GPS 上验证的部分见 [§ 需要在真机上验证的部分](#需要在真机上验证的部分)。
 
@@ -120,7 +123,7 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 215 个测试（单元 + 界面）
+│   └── test/                 233 个测试（单元 + 界面）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
 ├── scripts/                  迁移验证、Auth 验证、本地栈、密钥扫描
@@ -257,6 +260,8 @@ flutter test
 | `ride_flow_test.dart` | 记录流程：倒计时、实时速度、暂停/继续、权限、崩溃恢复 |
 | `auth_test.dart` | 深链配置、账号标签、Supabase 错误翻译 |
 | `account_section_test.dart` | 匿名 / 实名两种账号状态的界面 |
+| `voice_coach_test.dart` | 播报策略：远近两级、去重、隧道跳级、偏航 / 重算 / 到达、优先级与队列 |
+| `voice_session_test.dart` | 播报接线：会话是否真的把导航快照喂给了教练 |
 
 SQL 迁移和 Auth 流程都用**Supabase 官方镜像**验证，不需要云项目、不需要任何 key：
 
@@ -295,7 +300,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 215 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 233 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 
@@ -385,6 +390,12 @@ Android 那步特意用 **release** 而不是 debug：debug 不跑 R8，而 R8 �
 - **纯 GPS 设备的爬升是估算值** —— 详见 [docs/elevation.md](docs/elevation.md)。
   没有气压计的手机，9 km 平路会虚报 15–32 m 爬升；这是物理限制而非实现缺陷。
   长爬坡几乎无损（300 m 报 299 m），UI 会把结果标注为「估算」。
+- **语音播报默认关闭** —— 它比看屏幕更打扰，也更耗电。开关在骑行中即时生效：
+  关掉立刻静音，打开从下一个定位开始播报。语速与音色跟随系统，App 不提供选择。
+- **macOS release 打包在当前工具链上不可用** —— Flutter 3.41.9 的
+  `release_unpack_macos` 用 `lipo <file> -verify_arch …`，而 Xcode 27 的 lipo
+  要求 `-verify_arch` 在前，直接报「requires exactly one input file」。
+  这是 SDK 侧的问题，仓库里改不了；debug 构建正常，开发和测试不受影响。
 
 ---
 

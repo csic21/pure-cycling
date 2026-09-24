@@ -264,6 +264,11 @@ NavigationProvider   （偏航重算在 NavigationEngine 内部完成）
 没有配置 Key 时，`MapServices` 会组装成离线版本：直线路线 + 空搜索 + 不可用的红绿灯。
 所有功能仍然可用，UI 会明确标注当前是直线路径。
 
+语音播报走同样的模式：`VoiceCoach` 是纯策略 —— 什么时候说、说什么、什么打断什么 ——
+`VoiceBackend` 是接口，`FlutterTtsVoiceBackend` 是唯一碰平台 TTS 的代码。
+策略全部在假后端上测试，所以「隧道出来会不会补报过时距离」这种问题
+不需要语音引擎就能回答。
+
 ---
 
 ## OLED 与功耗

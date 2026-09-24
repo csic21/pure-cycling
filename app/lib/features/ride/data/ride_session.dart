@@ -2,8 +2,11 @@ import 'dart:async';
 
 import '../../../core/location/location_service.dart';
 import '../../../core/map/map_providers.dart';
+import '../../navigation/data/flutter_tts_voice_backend.dart';
 import '../../navigation/domain/navigation_engine.dart';
 import '../../navigation/domain/navigation_state.dart';
+import '../../navigation/domain/voice_backend.dart';
+import '../../navigation/domain/voice_coach.dart';
 import '../../routes/domain/route.dart';
 import '../../settings/domain/app_settings.dart';
 import '../domain/ride.dart';
@@ -73,11 +76,18 @@ class RideSession {
     required RideRecorder recorder,
     required RouteProvider Function() routeProvider,
     required AppSettings settings,
+    VoiceBackend? voiceBackend,
   })  : _recorder = recorder,
         _routeProvider = routeProvider,
-        _settings = settings;
+        _settings = settings,
+        _voiceBackend = voiceBackend ?? FlutterTtsVoiceBackend();
 
   final RideRecorder _recorder;
+
+  /// Where spoken prompts go. The real one wraps the platform's TTS engine and
+  /// does nothing at all until the rider enables voice prompts; the tests
+  /// substitute a recorder.
+  final VoiceBackend _voiceBackend;
 
   /// Resolved when navigation starts, not when the session is created.
   ///
@@ -91,6 +101,7 @@ class RideSession {
   AppSettings _settings;
 
   NavigationEngine? _navigation;
+  VoiceCoach? _voice;
   StreamSubscription<RideState>? _rideSub;
   StreamSubscription<NavigationSnapshot>? _navSub;
 
@@ -177,6 +188,7 @@ class RideSession {
     _settings = settings;
     _recorder.applySettings(settings);
     _navigation?.applyConfig(settings.navigation);
+    _voice?.applyConfig(settings.navigation);
   }
 
   /// Ends the ride and tears down navigation.
@@ -253,8 +265,18 @@ class RideSession {
         },
       )..initialize();
 
+      // The coach is rebuilt with the engine: a new route means the
+      // announcement state — which turn, which band — starts over too.
+      final previous = _voice;
+      _voice = VoiceCoach(
+        backend: _voiceBackend,
+        config: _settings.navigation,
+      );
+      if (previous != null) unawaited(previous.dispose());
+
       _navSub?.cancel();
       _navSub = _navigation!.snapshots.listen((snapshot) {
+        _voice?.onSnapshot(snapshot);
         _emit(_state.copyWith(navigation: snapshot));
       });
     }
@@ -271,6 +293,9 @@ class RideSession {
   Future<void> _disposeNavigation() async {
     await _navSub?.cancel();
     _navSub = null;
+    final voice = _voice;
+    _voice = null;
+    await voice?.dispose();
     final nav = _navigation;
     _navigation = null;
     await nav?.dispose();
