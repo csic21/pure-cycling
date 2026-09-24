@@ -15,8 +15,10 @@ V1 功能已经完整实现并通过测试，可以构建运行。
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
+管理后台构建通过        cd admin && npm run build
 SQL 迁移在 Supabase 官方镜像上验证通过   scripts/verify-migrations.sh
 Auth 流程在真实 GoTrue 上验证通过        scripts/verify-auth-flow.sh
+管理员边界在本地整栈上验证通过          scripts/verify-admin-flow.sh
 完整本地栈（含 PostgREST / Storage）通过 scripts/local-stack.sh
 密钥扫描自检通过        scripts/check-secrets.sh --self-test
 ```
@@ -28,6 +30,10 @@ V1.5 的语音播报已经实现：转向、偏航、重算和到达会用系统
 
 V2 的 FIT 导出也已经实现：骑行详情页可以导出 Garmin / Strava 通用的 FIT 文件，
 编码器用手写实现、用独立解析器验证，见 [docs/export.md](docs/export.md)。
+
+管理后台（Next.js）也搭起来了：账号列表、封禁 / 解封、审计日志。
+它**看不到任何骑行内容**——这是产品承诺，有测试锁着。要不要独立后端、
+管理员边界在哪，见 [docs/backend.md](docs/backend.md)。
 
 尚未在真机 GPS 上验证的部分见 [§ 需要在真机上验证的部分](#需要在真机上验证的部分)。
 
@@ -128,9 +134,10 @@ cycling-app/
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
 │   └── test/                 243 个测试（单元 + 界面）
+├── admin/                    管理后台（Next.js，直连 Supabase）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
-├── scripts/                  迁移验证、Auth 验证、本地栈、密钥扫描
+├── scripts/                  迁移验证、Auth 验证、管理员边界验证、本地栈、密钥扫描
 └── .github/workflows/        CI 与发布流水线
 ```
 
@@ -271,9 +278,10 @@ flutter test
 SQL 迁移和 Auth 流程都用**Supabase 官方镜像**验证，不需要云项目、不需要任何 key：
 
 ```sh
-scripts/verify-migrations.sh    # 表结构 + RLS 隔离 + user_id 伪造防护
+scripts/verify-migrations.sh    # 表结构 + RLS 隔离 + user_id 伪造防护 + 管理员边界
 scripts/verify-auth-flow.sh     # 真实注册 + 匿名 + 令牌 + 跨账号隔离
 scripts/local-stack.sh          # 完整本地栈：PostgREST + Storage + Studio（开发用）
+scripts/verify-admin-flow.sh    # 管理员边界走真实 PostgREST（需要本地栈在跑）
 ```
 
 `verify-auth-flow.sh` 会真的注册两个账号（一个邮箱、一个匿名），

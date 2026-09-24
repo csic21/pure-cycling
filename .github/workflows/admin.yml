@@ -1,0 +1,51 @@
+name: Admin
+
+# Only the console. The Flutter app has its own workflow (ci.yml), and the
+# release pipeline (release.yml) must not wait on a Next.js build.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'admin/**'
+      - '.github/workflows/admin.yml'
+  pull_request:
+    paths:
+      - 'admin/**'
+      - '.github/workflows/admin.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: admin-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: admin
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Typecheck and build. No Supabase URL or keys are provided on purpose: the
+  # console reads them at request time, and a build that only works with a
+  # populated .env.local would fail for every contributor who has not run the
+  # local stack yet. That property is checked here by the absence of secrets.
+  #
+  # The admin boundary itself is not checked here — it needs the full local
+  # stack (GoTrue + PostgREST), which is what scripts/verify-admin-flow.sh
+  # does on a development machine. The policy-level half of it runs in
+  # ci.yml's migration job.
+  # -------------------------------------------------------------------------
+  build:
+    name: Typecheck and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build

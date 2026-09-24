@@ -93,11 +93,26 @@ base64 -i upload-keystore.jks | pbcopy   # macOS
 ```
 secrets            key 扫描（含自检）
 analyze-and-test   生成 Drift 代码 → flutter analyze → 243 个测试
-migrations         Docker 起 Supabase 官方 Postgres，跑迁移 + RLS 隔离验证
+migrations         Docker 起 Supabase 官方 Postgres，跑迁移 + RLS 隔离 + 管理员边界验证
 auth-flow          Docker 起真实 GoTrue，注册账号验证触发器与令牌
 build-android      release APK（R8 开着）
 build-ios          iOS 编译（不签名）
 ```
+
+### `admin.yml` — admin/ 或它的 workflow 有改动时
+
+```
+typecheck + build  npm ci → tsc --noEmit → next build
+```
+
+只挂在 `admin/**` 的路径上：Flutter 的流水线和发布流水线都不该等一个
+Next.js 构建。这里**故意不提供任何 Supabase URL 或 key** —— 后台在请求时才读配置，
+一个必须有 `.env.local` 才能构建的后台会让每个新克隆的人先卡一次。
+
+管理员边界的完整验证需要 GoTrue + PostgREST，所以放在本地：
+`scripts/verify-admin-flow.sh`（不进程 CI，理由和本地整栈一样：要拉整栈的镜像）。
+策略层面的那一半（`is_admin()`、`admin_list_users`、审计可见性、管理员读不到
+骑行）在 `migrations` job 里，每次 push 都跑。
 
 几个刻意的选择：
 

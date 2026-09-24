@@ -10,6 +10,9 @@
 app/dart_define.json
 .env
 .env.*
+# …but templates are committed on purpose: they are how a new clone learns
+# which variables exist. Only files that hold values are ignored.
+!**/.env.example
 
 # Android upload key. Losing it means you can never update the app under the
 # same listing; leaking it means somebody else can.
