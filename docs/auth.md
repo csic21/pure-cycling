@@ -131,9 +131,68 @@ Supabase 返回英文错误，骑手看不懂。`AuthRepository.describeAuthErro
 
 ---
 
+## 本地验证（不需要任何 key）
+
+仓库里有三个脚本，用 Docker 起**官方镜像**跑真实的 Supabase。
+前两个进 CI，第三个是开发用的整栈（见本节末尾）：
+
+```sh
+scripts/verify-migrations.sh   # 表结构 + RLS 隔离 + user_id 伪造防护
+scripts/verify-auth-flow.sh    # 真实注册 + 匿名 + 令牌 + 跨账号隔离
+```
+
+`verify-auth-flow.sh` 起 `supabase/postgres` 和 `supabase/gotrue` 两个容器，
+然后**真的注册两个账号**（一个邮箱、一个匿名），再验证：
+
+- GoTrue 写进 `auth.users` 的行满足我们声明的每一个外键
+- `on_auth_user_created` 触发器对真实创建的用户确实触发了
+- 匿名注册产生的行形状符合策略的假设
+- 令牌里的 `sub` 就是策略比较的那个 id
+- 两个账号各写各的、互不可见
+
+**为什么值得单独一个脚本**：这里同时有**三样各自独立演进的东西**在交界——
+本仓库的迁移、Supabase 的 `auth` schema、Supabase 的 Auth 服务。
+它们之间的不匹配只会在运行时暴露。
+
+写这个脚本时就抓到两个真问题：
+
+1. **`storage.buckets` 的列不是固定的。** `public` / `file_size_limit` /
+   `allowed_mime_types` 是 **storage-api 自己启动时跑迁移加上去的**。
+   裸 Postgres 镜像上没有（只有 `id | name | owner | created_at | updated_at`）。
+   而 `supabase db reset` 是在整个栈还在启动时应用迁移的——
+   原来的 `insert ... public` 成不成功取决于 storage-api 有没有先跑完。
+   现在迁移会先探测列是否存在。
+
+2. **`set -e` 会吞掉诊断。** 脚本里 psql 失败时 `set -e` 直接退出，
+   我自己写的错误处理根本没机会跑，表现成「静默停止」。已改成显式判断返回值。
+
+### 整栈：开发时用这个
+
+上面两个脚本快、进 CI，但都绕过了 API 层。开发时更想要的是**完整的
+Supabase**，于是有 `supabase/config.toml`：匿名登录开启、
+`purecycling://login-callback` 已登记、App 用不到的服务关掉。
+
+```sh
+scripts/local-stack.sh --reset
+```
+
+起的是 Kong + GoTrue + PostgREST + Storage + Studio + Inbucket，然后按 App
+的顺序验证一遍：邮箱注册、匿名注册、`push_ride`（App 真正调的那个 RPC）、
+GPX 上传下载、第二个账号读不到也下不到。最后打印指向本地的 `flutter run`。
+
+| | `verify-migrations.sh` | `verify-auth-flow.sh` | `local-stack.sh` |
+|---|---|---|---|
+| 覆盖 | 表结构、策略 | Auth 服务 | **App 打的整条请求路径** |
+| 起什么 | Postgres | Postgres + GoTrue | 完整 Supabase |
+| 进 CI | ✅ | ✅ | ❌（镜像多、耗时） |
+| 用途 | 提交门禁 | 提交门禁 | 本地开发 |
+
+---
+
 ## 配置清单
 
-要让登录和云同步真正跑起来：
+要让登录和云同步真正跑起来，**要么建一个云项目（下面的清单），要么直接用本地整栈
+（`scripts/local-stack.sh`）—— 后者不需要下面任何一项**。
 
 - [ ] Supabase 项目建好
 - [ ] 跑完 `supabase/migrations/` 里四个迁移（见 `scripts/verify-migrations.sh`）

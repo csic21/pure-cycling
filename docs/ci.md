@@ -19,8 +19,10 @@
 架构从第一天就是按「没有 key 也能开发」设计的：
 
 ```text
-150+ 个测试          没有一个需要 key
-SQL 迁移验证          用 Docker 起真实 PostGIS，不需要 Supabase 项目
+215 个测试            没有一个需要 key
+SQL 迁移验证          用 Docker 起 Supabase 官方镜像，不需要云项目
+Auth 流程验证         真的注册账号，不需要云项目、不需要 key
+本地整栈开发           supabase start，完整 Kong + PostgREST + Storage
 高德集成              用录制的响应测（test/amap_parsing_test.dart）
 没配置 key 时          App 完整可用，只有路线规划退化成直线
 ```
@@ -90,8 +92,9 @@ base64 -i upload-keystore.jks | pbcopy   # macOS
 
 ```
 secrets            key 扫描（含自检）
-analyze-and-test   生成 Drift 代码 → flutter analyze → 150+ 测试
-migrations         Docker 起真实 PostGIS，跑迁移 + RLS 隔离验证
+analyze-and-test   生成 Drift 代码 → flutter analyze → 215 个测试
+migrations         Docker 起 Supabase 官方 Postgres，跑迁移 + RLS 隔离验证
+auth-flow          Docker 起真实 GoTrue，注册账号验证触发器与令牌
 build-android      release APK（R8 开着）
 build-ios          iOS 编译（不签名）
 ```
@@ -101,6 +104,8 @@ build-ios          iOS 编译（不签名）
 **为什么是 release 而不是 debug 构建。** debug 根本不跑 R8，而 R8 正是我加的那份 proguard 规则唯一会暴露问题的地方——drift 和 Supabase 里有靠反射访问的类，被 strip 掉之后**只在 release 构建里、只在运行时**报错。那是最糟的发现时机。
 
 **为什么迁移要单独跑。** RLS 是**数据库**在强制执行的，不是客户端。一个 policy 写错了（比如把 `auth.uid() = user_id` 写成 `user_id = user_id`）在类型检查里完全合法，只有第二个账号能读到第一个账号的数据时才暴露。
+
+**为什么 Auth 流程还要再跑一次。** 迁移脚本用的是自己伪造的 `request.jwt.claim.sub`，它证明策略本身对，证明不了 Supabase 的 Auth 服务写出来的行和策略的假设一致。`verify-auth-flow.sh` 起真实的 GoTrue、注册真实的账号、用真实签发的令牌，验证触发器、匿名注册和跨账号隔离。三样独立演进的东西在这里交界，不匹配只会在运行时暴露（详见 [auth.md](auth.md)）。
 
 **为什么 GitHub Actions 版本固定。** Flutter 升级会改变分析器的规则集和 drift 代码生成器的输出，两者都会让一个无关的 PR 变红。
 
@@ -182,7 +187,8 @@ chmod +x .git/hooks/pre-commit
 | `.github/workflows/ci.yml` | 每次 push 的检查 |
 | `.github/workflows/release.yml` | 打 tag 时的构建 |
 | `scripts/check-secrets.sh` | 密钥扫描，含自检 |
-| `scripts/verify-migrations.sh` | 起真实 PostGIS 验证迁移 + RLS |
+| `scripts/verify-migrations.sh` | 起 Supabase 官方 Postgres 验证迁移 + RLS |
+| `scripts/verify-auth-flow.sh` | 起真实 GoTrue 验证注册、匿名与跨账号隔离 |
 | `app/dart_define.example.json` | 本地配置的模板（提交） |
 | `app/dart_define.json` | 真实值（不提交） |
 | `app/android/app/build.gradle.kts` | 有 keystore 就用它，没有就退到 debug 签名 |

@@ -11,11 +11,13 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-191 个测试通过          flutter test
+215 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS 构建通过          flutter build macos
-SQL 迁移在真实 PostGIS 上验证通过   scripts/verify-migrations.sh
+SQL 迁移在 Supabase 官方镜像上验证通过   scripts/verify-migrations.sh
+Auth 流程在真实 GoTrue 上验证通过        scripts/verify-auth-flow.sh
+完整本地栈（含 PostgREST / Storage）通过 scripts/local-stack.sh
 密钥扫描自检通过        scripts/check-secrets.sh --self-test
 ```
 
@@ -84,6 +86,21 @@ supabase db push          # 或者用 supabase CLI 的 migration 流程
 
 迁移文件按顺序包含：表结构、RLS 与 grant、上传 RPC、Storage 桶。
 
+#### 或者不建云项目，本地跑一整套
+
+`supabase/config.toml` 已经配好了：匿名登录开启、`purecycling://login-callback`
+已登记、App 用不到的服务（realtime / analytics / edge functions）关掉。所以：
+
+```sh
+scripts/local-stack.sh --reset    # 起栈、重放迁移、验证整条请求路径
+```
+
+它起的是真实的 Kong + GoTrue + PostgREST + Storage，然后**注册账号、调用
+`push_ride`、上传 GPX**，并验证第二个账号读不到、下载不了。跑完会打印指向本地的
+`flutter run` 命令，Studio 在 `127.0.0.1:54323`，本地收件箱在 `127.0.0.1:54324`。
+
+这个脚本**不进 CI**：`supabase start` 要拉十来个镜像。CI 用下面两个精简脚本覆盖同样的策略。
+
 ---
 
 ## 仓库结构
@@ -103,10 +120,10 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 191 个测试（单元 + 界面）
-├── supabase/migrations/      数据库迁移
+│   └── test/                 215 个测试（单元 + 界面）
+├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
-├── scripts/                  迁移验证、密钥扫描
+├── scripts/                  迁移验证、Auth 验证、本地栈、密钥扫描
 └── .github/workflows/        CI 与发布流水线
 ```
 
@@ -241,11 +258,18 @@ flutter test
 | `auth_test.dart` | 深链配置、账号标签、Supabase 错误翻译 |
 | `account_section_test.dart` | 匿名 / 实名两种账号状态的界面 |
 
-SQL 迁移用真实 PostGIS 验证，包括 RLS 隔离和 user_id 伪造防护：
+SQL 迁移和 Auth 流程都用**Supabase 官方镜像**验证，不需要云项目、不需要任何 key：
 
 ```sh
-scripts/verify-migrations.sh    # 需要 Docker
+scripts/verify-migrations.sh    # 表结构 + RLS 隔离 + user_id 伪造防护
+scripts/verify-auth-flow.sh     # 真实注册 + 匿名 + 令牌 + 跨账号隔离
+scripts/local-stack.sh          # 完整本地栈：PostgREST + Storage + Studio（开发用）
 ```
+
+`verify-auth-flow.sh` 会真的注册两个账号（一个邮箱、一个匿名），
+再验证触发器、令牌的 `sub`、以及两个账号互相看不见。
+**这里同时有三样独立演进的东西在交界**——本仓库的迁移、Supabase 的 `auth` schema、
+Supabase 的 Auth 服务——不匹配只会在运行时暴露。
 
 ---
 
@@ -271,7 +295,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 165 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 215 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 

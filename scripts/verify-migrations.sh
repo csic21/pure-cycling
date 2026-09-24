@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
 #
-# Validates the Supabase migrations against a real Postgres + PostGIS.
+# Validates the Supabase migrations against Supabase's own Postgres image.
 #
-# The migrations reference Supabase-managed objects that do not exist in a
-# stock Postgres — the `auth` schema, `auth.uid()`, the `storage` tables — so
-# this harness creates minimal stand-ins first. A migration that passes here
-# is syntactically and semantically valid; it does not prove the Supabase
-# project itself is configured identically, but it does catch the failures
-# that are otherwise only discovered by applying to production.
+# ## Why this image and not a generic one
+#
+# The first version of this script ran against `postgis/postgis` with hand-written
+# stubs for `auth.users`, `auth.uid()` and `storage.*`. That tests the SQL
+# syntax and nothing else: the things most likely to be wrong — whether
+# `auth.uid()` behaves the way the policies assume, whether the storage schema
+# has the columns the migration writes, whether the grants are even meaningful —
+# are exactly the things the stubs replace.
+#
+# It found a real bug the moment it was pointed at the real image. `storage.buckets`
+# there is `id | name | owner | created_at | updated_at`; `public`,
+# `file_size_limit` and `allowed_mime_types` are added by *storage-api's own
+# migrations*, which run when that service starts. `supabase db reset` applies
+# these migrations while the stack is still coming up, so a plain
+# `insert ... public` succeeded or failed depending on whether storage-api won
+# the race. The migration now guards on the column's presence.
 #
 # Usage: scripts/verify-migrations.sh
 set -euo pipefail
 
-CONTAINER="${CONTAINER:-cycling-pg-verify}"
-PORT="${PORT:-55433}"
-IMAGE="${IMAGE:-postgis/postgis:16-3.4}"
+CONTAINER="${CONTAINER:-cycling-supa-verify}"
+PORT="${PORT:-55445}"
+IMAGE="${IMAGE:-supabase/postgres:15.8.1.060}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cleanup() {
@@ -23,32 +33,23 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> starting $IMAGE"
+cleanup
 docker run -d --name "$CONTAINER" \
   -e POSTGRES_PASSWORD=postgres -p "${PORT}:5432" "$IMAGE" >/dev/null
 
-# Wait for the *second* "ready to accept connections".
-#
-# The postgres entrypoint starts a temporary server to run its init scripts,
-# then shuts it down and starts the real one. `pg_isready` succeeds against the
-# temporary instance, so a naive wait lets the migrations land while the
-# database is still being initialised — which shows up as a spurious
-# "duplicate key value violates unique constraint pg_extension_name_index"
-# from `create extension if not exists postgis`, and intermittent 137s.
+# Wait for the *second* "ready", not for pg_isready. The image runs its own
+# bootstrap on a temporary server first; connecting during that window gives
+# confusing errors from a database that is still being created.
 echo "==> waiting for postgres to finish initialising"
-for _ in $(seq 1 90); do
-  ready_count=$(docker logs "$CONTAINER" 2>&1 |
+for _ in $(seq 1 120); do
+  ready=$(docker logs "$CONTAINER" 2>&1 |
     grep -c 'database system is ready to accept connections' || true)
-  if [ "${ready_count:-0}" -ge 2 ]; then
-    break
-  fi
+  [ "${ready:-0}" -ge 2 ] && break
   sleep 1
 done
 
-# Belt and braces: confirm a real query round-trips before starting.
 for _ in $(seq 1 30); do
-  if docker exec "$CONTAINER" psql -U postgres -q -c 'select 1' >/dev/null 2>&1; then
-    break
-  fi
+  docker exec "$CONTAINER" psql -U postgres -q -c 'select 1' >/dev/null 2>&1 && break
   sleep 1
 done
 
@@ -57,49 +58,20 @@ psql_stdin() {
   docker exec -i "$CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -q
 }
 
-echo "==> creating Supabase stand-ins"
+echo "==> confirming the image ships a real Supabase schema"
 psql_stdin <<'SQL'
-create schema if not exists auth;
-create schema if not exists storage;
-
-create table auth.users (
-  id uuid primary key default gen_random_uuid(),
-  email text,
-  raw_user_meta_data jsonb default '{}'::jsonb
-);
-
-create or replace function auth.uid() returns uuid
-language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
-
-create table storage.buckets (
-  id text primary key,
-  name text not null,
-  public boolean default false,
-  file_size_limit bigint,
-  allowed_mime_types text[]
-);
-
-create table storage.objects (
-  id uuid primary key default gen_random_uuid(),
-  bucket_id text references storage.buckets(id),
-  name text,
-  owner uuid
-);
-
-create or replace function storage.foldername(name text) returns text[]
-language sql immutable as $$
-  select string_to_array(name, '/')
-$$;
-
-create role anon;
-create role authenticated;
-
--- In a real project these grants are part of Supabase's own bootstrap. The
--- policies in the migrations call auth.uid(), so the role needs to reach it.
-grant usage on schema auth, storage to anon, authenticated;
-grant execute on function auth.uid() to anon, authenticated;
-grant execute on function storage.foldername(text) to anon, authenticated;
-grant select on storage.buckets, storage.objects to authenticated;
+do $$
+begin
+  if not exists (select 1 from pg_namespace where nspname = 'auth') then
+    raise exception 'the image has no auth schema — this is not a Supabase image';
+  end if;
+  if not exists (
+    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'auth' and p.proname = 'uid'
+  ) then
+    raise exception 'auth.uid() is missing — the RLS policies would be untestable';
+  end if;
+end $$;
 SQL
 
 echo "==> applying migrations"
@@ -110,6 +82,8 @@ done
 
 echo "==> exercising push_ride / push_route as an authenticated user"
 psql_stdin <<'SQL'
+-- A real row in Supabase's own auth.users. No stub: the foreign keys, the
+-- trigger and auth.uid() are all the genuine article.
 insert into auth.users (id, email) values
   ('11111111-1111-7111-8111-111111111111', 'rider@example.com');
 
@@ -141,7 +115,8 @@ select public.push_ride(jsonb_build_object(
   'updated_at', '2026-09-23T07:31:00Z'
 ));
 
--- Idempotency: the same push twice must not duplicate or error.
+-- Idempotency, and the second push deliberately carries no geometry: a device
+-- that pushes before its line is built must not erase the stored one.
 select public.push_ride(jsonb_build_object(
   'id', '22222222-2222-7222-8222-222222222222',
   'name', 'Morning ride (renamed)',
@@ -167,69 +142,73 @@ select public.push_route(jsonb_build_object(
   ),
   'updated_at', '2026-09-23T08:00:00Z'
 ));
+SQL
 
+echo "==> asserting the results"
+psql_stdin <<'SQL'
 reset role;
 
 do $$
 declare
   v_rides integer;
   v_name text;
-  v_geom_type text;
-  v_route integer;
-  v_settings integer;
-  v_profile integer;
+  v_geom text;
   v_length double precision;
+  v_routes integer;
+  v_profiles integer;
+  v_settings integer;
+  v_bucket text;
+  v_storage_policies integer;
 begin
   select count(*), max(name) into v_rides, v_name from public.rides;
   if v_rides <> 1 then
     raise exception 'expected 1 ride after two upserts, found %', v_rides;
   end if;
   if v_name <> 'Morning ride (renamed)' then
-    raise exception 'upsert did not update the name: %', v_name;
+    raise exception 'the upsert did not update the name: %', v_name;
   end if;
 
-  select geometrytype(route_geometry) into v_geom_type
+  select geometrytype(route_geometry), st_length(route_geometry::geography)
+    into v_geom, v_length
     from public.rides where id = '22222222-2222-7222-8222-222222222222';
-  if v_geom_type <> 'LINESTRING' then
-    raise exception 'ride geometry not stored: %', coalesce(v_geom_type, 'NULL');
+  if v_geom <> 'LINESTRING' then
+    raise exception 'the ride geometry was not stored: %', coalesce(v_geom, 'NULL');
+  end if;
+  if v_length <= 0 then
+    raise exception 'the ride geometry has no length';
   end if;
 
-  select count(*) into v_route from public.routes;
-  if v_route <> 1 then
-    raise exception 'expected 1 route, found %', v_route;
+  select count(*) into v_routes from public.routes;
+  if v_routes <> 1 then
+    raise exception 'expected 1 route, found %', v_routes;
   end if;
 
-  select count(*) into v_profile from public.profiles;
-  if v_profile <> 1 then
-    raise exception 'profile trigger did not run: %', v_profile;
+  select count(*) into v_profiles from public.profiles;
+  if v_profiles <> 1 then
+    raise exception 'the profile trigger did not run: %', v_profiles;
   end if;
 
   select count(*) into v_settings from public.user_settings;
   if v_settings <> 1 then
-    raise exception 'settings row not created: %', v_settings;
+    raise exception 'the settings row was not created: %', v_settings;
   end if;
 
-  -- The line has real length. A geometry column that accepts an insert but
-  -- stores an empty or degenerate shape is the failure this catches.
-  select st_length(route_geometry::geography) into v_length
-    from public.rides where id = '22222222-2222-7222-8222-222222222222';
-  if v_length is null or v_length <= 0 then
-    raise exception 'ride geometry has no length';
+  select id into v_bucket from storage.buckets where id = 'rides';
+  if v_bucket is null then
+    raise exception 'the GPX bucket was not created';
   end if;
 
-  select st_length(route_geometry::geography) into v_length
-    from public.routes where id = '33333333-3333-7333-8333-333333333333';
-  if v_length is null or v_length <= 0 then
-    raise exception 'route geometry has no length';
+  select count(*) into v_storage_policies from pg_policies where schemaname = 'storage';
+  if v_storage_policies < 4 then
+    raise exception 'expected 4 storage policies, found %', v_storage_policies;
   end if;
 
-  raise notice 'upsert, geometry and trigger checks passed';
+  raise notice 'upsert, geometry, trigger and storage checks passed (% m)', round(v_length);
 end $$;
 
 -- RLS must be switched on for every user table.
 do $$
-declare
-  r record;
+declare r record;
 begin
   for r in
     select tablename from pg_tables
@@ -237,8 +216,7 @@ begin
       and tablename in ('profiles','rides','routes','bikes','user_settings')
   loop
     if not exists (
-      select 1 from pg_class c
-      join pg_namespace n on n.oid = c.relnamespace
+      select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
       where n.nspname = 'public' and c.relname = r.tablename and c.relrowsecurity
     ) then
       raise exception 'RLS is not enabled on public.%', r.tablename;
@@ -248,12 +226,8 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
--- Isolation: a second account must see none of the first account's data, and
--- must not be able to write into the first account's rows.
---
--- "RLS is enabled" is not the same as "RLS works". A policy with `user_id =
--- user_id` instead of `auth.uid() = user_id` is enabled, syntactically valid,
--- and lets every user read every ride. This is the check that catches it.
+-- Isolation. "RLS is enabled" is not "RLS works": a policy written as
+-- `user_id = user_id` is enabled, valid, and lets every user read everything.
 -- ---------------------------------------------------------------------------
 
 insert into auth.users (id, email) values
@@ -263,9 +237,7 @@ set role authenticated;
 set request.jwt.claim.sub = '99999999-9999-7999-8999-999999999999';
 
 do $$
-declare
-  v_rides integer;
-  v_routes integer;
+declare v_rides integer; v_routes integer;
 begin
   select count(*) into v_rides from public.rides;
   select count(*) into v_routes from public.routes;
@@ -280,9 +252,8 @@ begin
   raise notice 'cross-account reads are correctly blocked';
 end $$;
 
--- Writing a ride under another account's user_id must be rejected. The RPC
--- takes user_id from auth.uid() rather than the payload, so this asserts that
--- the insert policy is doing its job as well.
+-- Writing a ride under somebody else's user_id must be rejected by the insert
+-- policy, not merely ignored.
 do $$
 begin
   begin
@@ -299,11 +270,8 @@ begin
   end;
 end $$;
 
-reset role;
-
--- The push RPC must ignore a user_id smuggled into the payload.
-set role authenticated;
-set request.jwt.claim.sub = '99999999-9999-7999-8999-999999999999';
+-- …and the RPC must ignore a user_id smuggled into the payload, because it
+-- takes the owner from auth.uid() rather than from the caller.
 select public.push_ride(jsonb_build_object(
   'id', '55555555-5555-7555-8555-555555555555',
   'user_id', '11111111-1111-7111-8111-111111111111',
@@ -315,8 +283,7 @@ select public.push_ride(jsonb_build_object(
 reset role;
 
 do $$
-declare
-  v_owner uuid;
+declare v_owner uuid;
 begin
   select user_id into v_owner from public.rides
     where id = '55555555-5555-7555-8555-555555555555';

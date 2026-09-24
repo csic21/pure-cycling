@@ -187,7 +187,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         if (!auth.isSignedIn) {
           setState(() {
             _busy = false;
-            _notice = '注册成功，请到邮箱点击验证链接后再登录。';
+            _notice = '注册成功。请到邮箱点击验证链接 —— '
+                '点击后会自动回到 App 并登录，不用再输一次密码。';
             _isSignUp = false;
           });
           return;

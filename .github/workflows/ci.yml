@@ -35,9 +35,9 @@ jobs:
         run: ./scripts/check-secrets.sh
 
   # -------------------------------------------------------------------------
-  # The bulk of the value: 150 tests over the recording pipeline, the
-  # navigation engine, the GPX codec, the datum conversion and the GATT
-  # parsers. None of them need a network or a device.
+  # The bulk of the value: 215 tests over the recording pipeline, the
+  # navigation engine, the GPX codec, the datum conversion, the GATT parsers,
+  # and the screens themselves. None of them need a network or a device.
   # -------------------------------------------------------------------------
   analyze-and-test:
     name: Analyze and test
@@ -77,11 +77,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The script starts its own PostGIS container, which is why this runs on
-      # a Linux runner: Docker is available and the image is native rather than
-      # emulated.
+      # The script starts Supabase's own Postgres image, which is why this
+      # runs on a Linux runner: Docker is available and the image is native
+      # rather than emulated.
       - name: Apply migrations and assert RLS isolation
         run: ./scripts/verify-migrations.sh
+
+  # -------------------------------------------------------------------------
+  # The seam between our migrations and Supabase's own auth server.
+  #
+  # The migration job above proves the policies work against a claim it made
+  # up. This one registers real accounts through the real GoTrue and checks
+  # that the trigger fires, the anonymous path produces a usable row, and two
+  # accounts cannot see each other. Three separately-versioned things meet
+  # here — this repo, Supabase's auth schema, and Supabase's auth server — and
+  # this is the only place a mismatch between them shows up.
+  # -------------------------------------------------------------------------
+  auth-flow:
+    name: Verify auth flow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Register accounts against the real auth server
+        run: ./scripts/verify-auth-flow.sh
 
   # -------------------------------------------------------------------------
   # A release build, not a debug one.
