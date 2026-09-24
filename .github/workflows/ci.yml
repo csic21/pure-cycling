@@ -17,6 +17,14 @@ env:
   # the drift code generator's output; both would turn an unrelated PR red.
   FLUTTER_VERSION: '3.41.9'
 
+# The Flutter project lives in `app/`; there is no pubspec at the repository
+# root. Every `run` step starts there, and the few that call repository scripts
+# override back to `.`. Without this, `flutter pub get` fails with
+# "No pubspec.yaml file found" before the job does anything.
+defaults:
+  run:
+    working-directory: app
+
 jobs:
   # -------------------------------------------------------------------------
   # Does the repository contain a credential?
@@ -30,8 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify the scanner still works
+        working-directory: .
         run: ./scripts/check-secrets.sh --self-test
       - name: Scan for committed credentials
+        working-directory: .
         run: ./scripts/check-secrets.sh
 
   # -------------------------------------------------------------------------
@@ -81,6 +91,7 @@ jobs:
       # runs on a Linux runner: Docker is available and the image is native
       # rather than emulated.
       - name: Apply migrations and assert RLS isolation
+        working-directory: .
         run: ./scripts/verify-migrations.sh
 
   # -------------------------------------------------------------------------
@@ -99,6 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Register accounts against the real auth server
+        working-directory: .
         run: ./scripts/verify-auth-flow.sh
 
   # -------------------------------------------------------------------------

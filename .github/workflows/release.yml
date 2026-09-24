@@ -13,6 +13,13 @@ on:
 env:
   FLUTTER_VERSION: '3.41.9'
 
+# The Flutter project lives in `app/`, and the signing material and
+# `dart_define.json` are written relative to it. Same layout rule as ci.yml:
+# everything runs in `app/` unless a step says otherwise.
+defaults:
+  run:
+    working-directory: app
+
 # ---------------------------------------------------------------------------
 # Secrets this workflow expects. None of them are in the repository.
 #
@@ -53,6 +60,7 @@ jobs:
       - run: flutter test
 
       - name: Verify the secret scanner still works
+        working-directory: .
         run: ./scripts/check-secrets.sh --self-test
 
   # -------------------------------------------------------------------------
