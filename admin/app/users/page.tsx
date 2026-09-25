@@ -94,7 +94,7 @@ export default async function UsersPage({
           </p>
         ) : (
           <div className="table-scroll">
-            <table>
+            <table className="table-users">
               <thead>
                 <tr>
                   <th>账号</th>

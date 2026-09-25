@@ -207,6 +207,28 @@ tbody tr:hover {
   background: rgba(255, 255, 255, 0.03);
 }
 
+/* Let the column that holds the long identifier absorb the slack and keep
+   every other column at its content width. With `auto` layout the browser
+   spreads extra width evenly, which reads as a loose grid rather than a
+   readout. */
+.table-users th:first-child,
+.table-users td:first-child {
+  width: 100%;
+}
+
+.table-users th:not(:first-child) {
+  width: 1%;
+}
+
+.table-audit th:last-child,
+.table-audit td:last-child {
+  width: 100%;
+}
+
+.table-audit th:not(:last-child) {
+  width: 1%;
+}
+
 td.wrap {
   white-space: normal;
   min-width: 180px;

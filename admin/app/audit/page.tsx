@@ -71,7 +71,7 @@ export default async function AuditPage() {
           <p className="empty">还没有操作记录。封禁或解封账号后会出现在这里。</p>
         ) : (
           <div className="table-scroll">
-            <table>
+            <table className="table-audit">
               <thead>
                 <tr>
                   <th>时间</th>

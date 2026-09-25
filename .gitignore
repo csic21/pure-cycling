@@ -74,3 +74,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Screenshots from the design/UI check. Regenerable, not source.
+.preview/
