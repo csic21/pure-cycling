@@ -18,6 +18,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The CLI resolves `supabase/` from the working directory.
+cd "$REPO_ROOT"
 STUB_PORT="${STUB_PORT:-8799}"
 LIMIT="${LIMIT:-3}"
 WORK="$(mktemp -d)"
@@ -91,8 +93,10 @@ ROUTE_DAILY_LIMIT=$LIMIT
 EOF
 
 echo "==> serving the relay against the stub"
-(cd "$REPO_ROOT" && supabase functions serve --env-file "$WORK/functions.env" \
-  >"$WORK/serve.log" 2>&1) &
+# Started as a direct child, not in a subshell: killing a subshell leaves the
+# CLI (and its edge runtime) alive, and the next run then refuses to start.
+supabase functions serve --env-file "$WORK/functions.env" \
+  >"$WORK/serve.log" 2>&1 &
 SERVE_PID=$!
 
 # Wait for the function to be routed. An unauthenticated POST must come back
