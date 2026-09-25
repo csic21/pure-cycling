@@ -19,7 +19,7 @@
 架构从第一天就是按「没有 key 也能开发」设计的：
 
 ```text
-298 个测试            没有一个需要 key
+306 个测试            没有一个需要 key
 SQL 迁移验证          用 Docker 起 Supabase 官方镜像，不需要云项目
 Auth 流程验证         真的注册账号，不需要云项目、不需要 key
 本地整栈开发           supabase start，完整 Kong + PostgREST + Storage
@@ -78,6 +78,7 @@ flutter run --dart-define-from-file=dart_define.json
 |---|---|
 | `SUPABASE_URL` | 项目 URL。本身不是秘密，它就在每个 App 二进制里 |
 | `SUPABASE_FUNCTIONS_URL` | `route` 函数的 URL。同样不是秘密——它就在每个用到它的二进制里；函数自己用会话校验和每账号配额守住 |
+| `SUPPORT_EMAIL` | 可选。填入后「设置 → 关于」多一行联系方式；不填就不显示那一行（不用占位地址） |
 
 生成 keystore 的 base64：
 
@@ -93,7 +94,7 @@ base64 -i upload-keystore.jks | pbcopy   # macOS
 
 ```
 secrets            key 扫描（含自检）
-analyze-and-test   生成 Drift 代码 → flutter analyze → 298 个测试
+analyze-and-test   生成 Drift 代码 → flutter analyze → 306 个测试
 functions          deno check + 22 个函数测试 + 两个函数必须要求会话（不需要 Docker）
 migrations         Docker 起 Supabase 官方 Postgres，跑迁移 + RLS 隔离 + 管理员边界 + 配额验证
 auth-flow          Docker 起真实 GoTrue，注册账号验证触发器与令牌

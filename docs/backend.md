@@ -85,6 +85,9 @@ Next.js 后台 ─┘         ──> PostgREST（数据 + RPC）
   权限，所以是显式 `revoke` 出来的，不是「没 grant」）。
 - 账号列表走 `admin_list_users()`：`security definer` 才能读 `auth.users` 的邮箱，
   函数内部先判 `is_admin()`，非管理员直接 `insufficient_privilege`。
+  列表按邮箱子串筛选并分页（`p_search` / `p_limit` / `p_offset`），
+  返回的 `total` 是**筛选后**的总数 —— 后台靠它显示「匹配 N 个」并决定有没有下一页。
+  匿名账号没有邮箱，只在不过滤时出现，界面上写明了这一点。
 - 封禁/解封走后台的 server action，用 `SUPABASE_SERVICE_ROLE_KEY`（只存在于
   服务端环境变量，永不进浏览器），成功与否都写一行 `admin_audit`。
 - 审计表没有外键：管理员账号或目标账号被删掉之后，日志必须还在。

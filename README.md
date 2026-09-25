@@ -11,7 +11,7 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-298 个测试通过          flutter test
+306 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
@@ -33,9 +33,12 @@ V1.5 的语音播报已经实现：转向、偏航、重算和到达会用系统
 V2 的 FIT 导出也已经实现：骑行详情页可以导出 Garmin / Strava 通用的 FIT 文件，
 编码器用手写实现、用独立解析器验证，见 [docs/export.md](docs/export.md)。
 
-管理后台（Next.js）也搭起来了：账号列表、封禁 / 解封、审计日志。
+管理后台（Next.js）也搭起来了：账号列表（可按邮箱搜索、分页）、封禁 / 解封、审计日志。
 它**看不到任何骑行内容**——这是产品承诺，有测试锁着。要不要独立后端、
 管理员边界在哪，见 [docs/backend.md](docs/backend.md)。
+
+隐私政策的文本在应用里（设置 → 关于），与代码逐条对应；上架需要填的表单、
+商店页面文案和对应关系见 [docs/privacy.md](docs/privacy.md)。
 
 尚未在真机 GPS 上验证的部分见 [§ 需要在真机上验证的部分](#需要在真机上验证的部分)。
 
@@ -158,7 +161,7 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 298 个测试（单元 + 界面）
+│   └── test/                 306 个测试（单元 + 界面）
 ├── admin/                    管理后台（Next.js，直连 Supabase）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
@@ -355,7 +358,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 298 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 306 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 
