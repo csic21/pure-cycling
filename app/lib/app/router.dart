@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../features/auth/presentation/login_screen.dart';
+import '../features/auth/presentation/set_password_screen.dart';
 import '../features/history/presentation/history_screen.dart';
 import '../features/history/presentation/ride_detail_screen.dart';
 import '../features/ride/presentation/home_screen.dart';
@@ -52,6 +53,7 @@ abstract final class AppRoutes {
   static const String settingsSensors = '/settings/sensors';
   static const String settingsSync = '/settings/sync';
   static const String login = '/login';
+  static const String setPassword = '/password';
 
   static String routeDetailFor(String id) => '/routes/$id';
   static String rideDetailFor(String id) => '/history/$id';
@@ -186,6 +188,15 @@ GoRouter buildRouter() {
         path: AppRoutes.login,
         name: 'login',
         builder: (context, state) => const LoginScreen(),
+      ),
+
+      // Opened by a password-reset link, not by the rider navigating. Outside
+      // the shell so the exit is always the explicit one on the screen.
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: AppRoutes.setPassword,
+        name: 'setPassword',
+        builder: (context, state) => const SetPasswordScreen(),
       ),
     ],
     errorBuilder: (context, state) => Scaffold(

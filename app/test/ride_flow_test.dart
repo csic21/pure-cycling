@@ -1,8 +1,11 @@
 import 'package:cycling_app/app/app.dart';
+import 'package:cycling_app/app/router.dart';
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/location/location_service.dart';
+import 'package:cycling_app/features/ride/presentation/ride_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 import 'support/test_harness.dart';
 
@@ -166,6 +169,75 @@ void main() {
       await settle(tester);
 
       expect(find.text('系统定位服务未开启'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+  });
+
+  group('leaving a ride in progress', () {
+    testWidgets('the system back gesture asks instead of leaving silently',
+        (tester) async {
+      final location = await pumpApp(tester);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+      await tester.pump(const Duration(seconds: 4));
+      location.emitRide(count: 30, speedMps: 5);
+      await settle(tester);
+      expect(find.text('暂停'), findsOneWidget);
+
+      // Android's back gesture. It used to pop the ride screen without a word:
+      // the ride kept recording, the home screen said 开始骑行, and the only
+      // hint was a button that was lying.
+      await tester.binding.handlePopRoute();
+      await settle(tester);
+
+      expect(find.text('结束并保存'), findsOneWidget);
+      expect(find.text('放弃这次骑行'), findsOneWidget);
+
+      // 继续骑行 really continues: the sheet is not a disguised stop.
+      await tester.tap(find.text('继续骑行'));
+      await settle(tester);
+      expect(find.text('暂停'), findsOneWidget);
+      expect(find.text('结束'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('the home screen shows the recording and offers the way back',
+        (tester) async {
+      final location = await pumpApp(tester);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+      await tester.pump(const Duration(seconds: 4));
+      location.emitRide(count: 30, speedMps: 5);
+      await settle(tester);
+
+      // Programmatic navigation is the remaining way out of the ride screen —
+      // a deep link, or a future screen calling `go`. The home screen has to
+      // tell the truth about the ride that is still running.
+      final context = tester.element(find.byType(RideScreen));
+      GoRouter.of(context).go(AppRoutes.home);
+      await settle(tester);
+
+      expect(find.text('正在记录'), findsOneWidget);
+      expect(find.text('返回骑行'), findsOneWidget);
+      expect(
+        find.text('开始骑行'),
+        findsNothing,
+        reason: 'offering a second start would tear down the running engine',
+      );
+
+      await tester.tap(find.text('返回骑行'));
+      await settle(tester);
+
+      expect(find.text('暂停'), findsOneWidget);
+
+      // Exactly one ride row exists: the one still recording. A second tap on
+      // 开始骑行 would have produced a second one.
+      final rides = await tester.runAsync(() => database.rideDao.getRides());
+      expect(rides, hasLength(1));
 
       await shutdownApp(tester, database);
     });

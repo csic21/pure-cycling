@@ -187,6 +187,36 @@ class AuthRepository {
     }
   }
 
+  /// Sets a new password for the signed-in account.
+  ///
+  /// Only meaningful inside the session a recovery link creates. The link does
+  /// not change the password by itself — it proves the rider owns the address
+  /// and hands the app a session; this call is what actually replaces it.
+  Future<void> updatePassword(String password) async {
+    final client = _requireClient();
+    try {
+      await client.auth.updateUser(UserAttributes(password: password));
+    } on AuthException catch (e) {
+      throw AuthFailure(describeAuthError(e));
+    }
+  }
+
+  /// Auth events that are not "signed in" or "signed out".
+  ///
+  /// Today there is exactly one: [AuthChangeEvent.passwordRecovery], fired
+  /// after a reset link has been exchanged for a session. It is the only
+  /// signal that distinguishes "the rider just proved they own the address"
+  /// from a normal sign-in, and without it the app would show a signed-in
+  /// account whose password had never been changed.
+  ///
+  /// Empty when the build has no cloud configured, so nothing downstream has
+  /// to branch on configuration.
+  Stream<AuthChangeEvent> authEvents() {
+    final client = _c;
+    if (client == null) return const Stream<AuthChangeEvent>.empty();
+    return client.auth.onAuthStateChange.map((state) => state.event);
+  }
+
   /// Attaches an email and password to an anonymous account.
   ///
   /// Supabase sends a confirmation link; until it is followed the account has

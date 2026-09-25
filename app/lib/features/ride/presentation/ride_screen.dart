@@ -99,76 +99,87 @@ class _RideScreenState extends ConsumerState<RideScreen> {
     final pages = dashboard.pages;
     final pageCount = pages.length + (isNavigating ? 1 : 0);
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            RideStatusBar(
-              ride: ride,
-              navigating: isNavigating,
-              routeName: session.route?.name,
-              batteryPercent: battery,
-              onClose: () => _confirmLeave(ref, ride),
-              onToggleMinimal: navigation == null
-                  ? null
-                  : () {
-                      if (navigation.mode == NavigationMode.map) {
-                        ref.read(rideSessionProvider.notifier).requestMinimal();
-                      } else {
-                        ref.read(rideSessionProvider.notifier).requestMap();
-                      }
-                    },
-              isMapMode: navigation?.mode == NavigationMode.map,
-            ),
+    return PopScope(
+      // The system back gesture was the one exit from this screen that nobody
+      // guarded, and it is the easiest one to trigger by accident with a phone
+      // on handlebars. `canPop: false` routes it through the same sheet the
+      // close button uses, so no gesture can leave a ride running invisibly.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        unawaited(_confirmLeave(ref, ride));
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: SafeArea(
+          child: Column(
+            children: [
+              RideStatusBar(
+                ride: ride,
+                navigating: isNavigating,
+                routeName: session.route?.name,
+                batteryPercent: battery,
+                onClose: () => _confirmLeave(ref, ride),
+                onToggleMinimal: navigation == null
+                    ? null
+                    : () {
+                        if (navigation.mode == NavigationMode.map) {
+                          ref.read(rideSessionProvider.notifier).requestMinimal();
+                        } else {
+                          ref.read(rideSessionProvider.notifier).requestMap();
+                        }
+                      },
+                isMapMode: navigation?.mode == NavigationMode.map,
+              ),
 
-            // Pixel shift wraps the whole data surface, not individual tiles,
-            // so nothing clips or overlaps at the extremes of the offset.
-            Expanded(
-              child: PixelShiftScope(
-                enabled: settings.oledMode && settings.pixelShift,
-                child: StandstillDimmer(
-                  enabled: settings.oledMode && settings.dimOnStandstill,
-                  speedMps: ride.stats.currentSpeedMps,
-                  child: _RidePager(
-                    controller: _pageController,
-                    page: _page,
-                    pageCount: pageCount,
-                    onPageChanged: (index) => setState(() => _page = index),
-                    pages: pages,
-                    ride: ride,
-                    navigation: navigation,
-                    session: session,
-                    services: services,
-                    formatter: formatter,
-                    settings: settings,
+              // Pixel shift wraps the whole data surface, not individual tiles,
+              // so nothing clips or overlaps at the extremes of the offset.
+              Expanded(
+                child: PixelShiftScope(
+                  enabled: settings.oledMode && settings.pixelShift,
+                  child: StandstillDimmer(
+                    enabled: settings.oledMode && settings.dimOnStandstill,
+                    speedMps: ride.stats.currentSpeedMps,
+                    child: _RidePager(
+                      controller: _pageController,
+                      page: _page,
+                      pageCount: pageCount,
+                      onPageChanged: (index) => setState(() => _page = index),
+                      pages: pages,
+                      ride: ride,
+                      navigation: navigation,
+                      session: session,
+                      services: services,
+                      formatter: formatter,
+                      settings: settings,
+                    ),
                   ),
                 ),
               ),
-            ),
 
-            if (pageCount > 1)
-              _PageDots(count: pageCount, current: _page)
-            else
-              const SizedBox(height: 8),
+              if (pageCount > 1)
+                _PageDots(count: pageCount, current: _page)
+              else
+                const SizedBox(height: 8),
 
-            RideControls(
-              ride: ride,
-              onPause: () => ref.read(rideSessionProvider.notifier).pause(),
-              onResume: () => ref.read(rideSessionProvider.notifier).resume(),
-              onStop: () => _confirmStop(ref),
-              onReroute: isNavigating
-                  ? () => ref.read(rideSessionProvider.notifier).reroute()
-                  : null,
-            ),
-          ],
+              RideControls(
+                ride: ride,
+                onPause: () => ref.read(rideSessionProvider.notifier).pause(),
+                onResume: () => ref.read(rideSessionProvider.notifier).resume(),
+                onStop: () => _confirmStop(ref),
+                onReroute: isNavigating
+                    ? () => ref.read(rideSessionProvider.notifier).reroute()
+                    : null,
+              ),
+            ],
+          ),
         ),
+        // The countdown covers the whole screen while the first fix is being
+        // acquired, so the rider gets a deliberate "3, 2, 1" rather than an app
+        // that starts counting the instant the button is pressed.
+        bottomSheet: null,
+        floatingActionButton: null,
       ),
-      // The countdown covers the whole screen while the first fix is being
-      // acquired, so the rider gets a deliberate "3, 2, 1" rather than an app
-      // that starts counting the instant the button is pressed.
-      bottomSheet: null,
-      floatingActionButton: null,
     );
   }
 

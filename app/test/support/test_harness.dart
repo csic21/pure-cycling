@@ -6,6 +6,7 @@ import 'package:cycling_app/core/location/location_fix.dart';
 import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/core/sync/sync_service.dart';
 import 'package:cycling_app/core/utils/geo.dart';
+import 'package:cycling_app/features/auth/data/auth_repository.dart';
 import 'package:cycling_app/features/ride/domain/ride.dart';
 import 'package:cycling_app/features/ride/domain/ride_engine.dart';
 import 'package:cycling_app/features/ride/domain/track_point.dart';
@@ -126,10 +127,12 @@ class FakeLocationService extends LocationService {
 List<Override> testOverrides({
   required AppDatabase database,
   FakeLocationService? location,
+  AuthRepository? auth,
 }) {
   return [
     databaseProvider.overrideWithValue(database),
     if (location != null) locationServiceProvider.overrideWithValue(location),
+    if (auth != null) authRepositoryProvider.overrideWithValue(auth),
     syncReportProvider.overrideWith(
       (ref) => const Stream<SyncReport>.empty(),
     ),

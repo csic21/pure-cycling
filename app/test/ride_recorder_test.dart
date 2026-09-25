@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/core/sync/sync_status.dart';
 import 'package:cycling_app/features/ride/data/ride_recorder.dart';
 import 'package:cycling_app/features/ride/data/ride_repository.dart';
+import 'package:cycling_app/features/sensors/domain/sensor.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -24,10 +27,15 @@ void main() {
   setUp(() => database = openTestDatabase());
   tearDown(() => database.close());
 
-  RideRecorder buildRecorder(FakeLocationService location) => RideRecorder(
+  RideRecorder buildRecorder(
+    FakeLocationService location, {
+    Stream<SensorReading>? readings,
+  }) =>
+      RideRecorder(
         db: database,
         repository: RideRepository(database),
         locationService: location,
+        sensorReadings: readings,
       );
 
   test('a finished ride is persisted with its trace, geometry and queue entry',
@@ -118,6 +126,68 @@ void main() {
     );
 
     await recorder.dispose();
+    await location.dispose();
+  });
+
+  test('a sensor reading reaches the engine and the stored trace', () async {
+    // The wiring under test is one line in the provider graph, and it was
+    // missing for a while: the manager paired devices and showed live values
+    // on its own screen while the engine never saw a single reading. The
+    // engine's own tests cannot catch that, so this one feeds a reading
+    // through the recorder the way the app does.
+    final location = FakeLocationService();
+    final readings = StreamController<SensorReading>.broadcast();
+    final recorder = buildRecorder(location, readings: readings.stream);
+
+    await recorder.startRide(const AppSettings());
+    await recorder.beginRecording();
+
+    final t0 = DateTime.now().toUtc();
+    location.emitRide(count: 30, speedMps: 5, start: t0);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    readings.add(
+      SensorReading(
+        type: SensorType.heartRate,
+        value: 142,
+        timestamp: DateTime.now().toUtc(),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    // Live: the dashboard reads it from here.
+    expect(recorder.state.stats.heartRate, 142);
+
+    // And the next accepted fix carries it into the trace, which is what the
+    // detail screen and the GPX/FIT export read.
+    location.emitRide(
+      count: 5,
+      speedMps: 5,
+      start: t0.add(const Duration(seconds: 30)),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final ride = await recorder.stopRide();
+    final points = await database.rideDao.getTrackPoints(ride!.id);
+    expect(
+      points.where((p) => p.heartRate == 142),
+      isNotEmpty,
+      reason: 'the heart rate must reach the trace, not just the live state',
+    );
+
+    // A reading after the ride is over goes nowhere rather than into a
+    // disposed engine.
+    readings.add(
+      SensorReading(
+        type: SensorType.heartRate,
+        value: 90,
+        timestamp: DateTime.now().toUtc(),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    await recorder.dispose();
+    await readings.close();
     await location.dispose();
   });
 

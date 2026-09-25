@@ -36,18 +36,29 @@ class RideRecorder {
     required RideRepository repository,
     required LocationService locationService,
     ActiveRideDao? activeRideDao,
+    Stream<SensorReading>? sensorReadings,
   })  : _db = db,
         _repository = repository,
         _location = locationService,
-        _activeRideDao = activeRideDao ?? db.activeRideDao;
+        _activeRideDao = activeRideDao ?? db.activeRideDao,
+        _sensorReadings = sensorReadings;
 
   final AppDatabase _db;
   final RideRepository _repository;
   final LocationService _location;
   final ActiveRideDao _activeRideDao;
 
+  /// Normalized heart rate / cadence / power / wheel-speed readings, when the
+  /// app has a sensor manager to ask.
+  ///
+  /// Injected as a stream rather than as the manager itself so this class —
+  /// the one that owns the engine — stays testable without a Bluetooth stack,
+  /// and so a test can feed a reading directly.
+  final Stream<SensorReading>? _sensorReadings;
+
   RideEngine? _engine;
   StreamSubscription<LocationFix>? _locationSub;
+  StreamSubscription<SensorReading>? _sensorSub;
   final _pending = <TrackPoint>[];
   AppSettings _settings = const AppSettings();
   bool _disposed = false;
@@ -125,6 +136,7 @@ class RideRecorder {
     );
 
     _subscribeLocation();
+    _subscribeSensors();
 
     return true;
   }
@@ -172,6 +184,7 @@ class RideRecorder {
     );
 
     _subscribeLocation();
+    _subscribeSensors();
 
     return true;
   }
@@ -291,6 +304,34 @@ class RideRecorder {
     _locationSub = null;
   }
 
+  /// Attaches the sensor stream for the duration of a ride.
+  ///
+  /// Subscribed per ride rather than for the process: readings outside a ride
+  /// have nowhere to go — the engine refuses them when it is not active — and
+  /// a subscription held open across the whole session is one more thing
+  /// keeping a disposed engine reachable.
+  ///
+  /// A sensor error is dropped rather than surfaced. A heart-rate strap that
+  /// drops out mid-ride must not disturb a recording that is otherwise fine;
+  /// the sensor screen already shows the connection state to the rider who
+  /// cares about it.
+  void _subscribeSensors() {
+    final readings = _sensorReadings;
+    if (readings == null) return;
+
+    _sensorSub?.cancel();
+    _sensorSub = readings.listen(
+      onSensorReading,
+      onError: (_) {},
+      cancelOnError: false,
+    );
+  }
+
+  Future<void> _cancelSensors() async {
+    await _sensorSub?.cancel();
+    _sensorSub = null;
+  }
+
   /// Stops the engine, then the location subscription.
   ///
   /// The order matters and is not obvious. `RideEngine.dispose` cancels its
@@ -307,6 +348,7 @@ class RideRecorder {
 
     final stopping = engine?.dispose();
     await _cancelLocation();
+    await _cancelSensors();
     await stopping;
   }
 

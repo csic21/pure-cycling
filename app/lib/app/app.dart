@@ -92,6 +92,14 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
     // service even when no settings screen is mounted.
     ref.watch(settingsProvider);
     ref.watch(syncReportProvider);
+    ref.watch(passwordRecoveryProvider);
+
+    // A reset link signs the rider in; it does not change the password. Route
+    // to the step that does, so the app can never be in the state where the
+    // old password still works and nothing says so.
+    ref.listen(passwordRecoveryProvider, (_, pending) {
+      if (pending) _router.go(AppRoutes.setPassword);
+    });
 
     return MaterialApp.router(
       title: '纯粹骑行',

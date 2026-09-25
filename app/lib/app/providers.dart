@@ -4,7 +4,8 @@ import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 // `show` rather than a bare import: the Supabase SDK also exports a type
 // called `AuthUser`, and this file's own `AuthUser` is the one in play.
-import 'package:supabase_flutter/supabase_flutter.dart' show Supabase;
+import 'package:supabase_flutter/supabase_flutter.dart'
+    show AuthChangeEvent, Supabase;
 
 import '../core/database/database.dart';
 import '../core/location/elevation_tuning.dart';
@@ -263,6 +264,10 @@ final rideRecorderProvider = Provider<RideRecorder>((ref) {
     db: ref.watch(databaseProvider),
     repository: ref.watch(rideRepositoryProvider),
     locationService: ref.watch(locationServiceProvider),
+    // The reading half of the sensor feature. Without this the manager pairs
+    // devices, shows live values on its own screen, and sends nothing to the
+    // ride — which is exactly what the code did before anyone checked.
+    sensorReadings: ref.watch(sensorManagerProvider).readings,
   );
   ref.onDispose(recorder.dispose);
   return recorder;
@@ -289,6 +294,37 @@ final accountDeletionClientProvider = Provider<AccountDeletionClient>((ref) {
     accessToken: _sessionAccessToken,
   );
 });
+
+/// True while a password-reset link has been opened and the rider has not yet
+/// chosen a new password.
+///
+/// Without this the reset flow is a lie: the link signs the rider in, the app
+/// looks at the new session and concludes everything worked, and the old
+/// password is still the one on the account.
+final passwordRecoveryProvider =
+    NotifierProvider<PasswordRecoveryNotifier, bool>(
+  PasswordRecoveryNotifier.new,
+);
+
+class PasswordRecoveryNotifier extends Notifier<bool> {
+  StreamSubscription<AuthChangeEvent>? _sub;
+
+  @override
+  bool build() {
+    // Subscribed from the first frame. The SDK fires this event only after it
+    // has exchanged the link for a session, which costs a round trip to the
+    // auth server — long enough that a listener attached in this build always
+    // wins the race, including on a cold start straight from the email.
+    _sub = ref.watch(authRepositoryProvider).authEvents().listen((event) {
+      if (event == AuthChangeEvent.passwordRecovery) state = true;
+    });
+    ref.onDispose(() => _sub?.cancel());
+    return false;
+  }
+
+  /// The password was changed, or the rider chose to do it later.
+  void clear() => state = false;
+}
 
 /// The ride session object, created once for the life of the app.
 ///

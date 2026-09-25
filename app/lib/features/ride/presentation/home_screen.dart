@@ -27,6 +27,12 @@ class HomeScreen extends ConsumerWidget {
     final recent = ref.watch(mostRecentRideProvider);
     final formatter = ref.watch(unitFormatterProvider);
 
+    // Selected, not watched wholesale: this provider emits about once a second
+    // while riding, and the home screen has no number that needs to tick.
+    final recording = ref.watch(
+      rideSessionProvider.select((s) => s.ride.isRecording),
+    );
+
     // Offered once, on first build of this screen. The dialog does not
     // re-open when the row changes, which is why this is a one-shot provider
     // rather than a stream.
@@ -59,8 +65,17 @@ class HomeScreen extends ConsumerWidget {
                 loading: summary.isLoading,
               ),
               const Spacer(flex: 3),
+              if (recording) ...[
+                _RecordingBanner(
+                  onTap: () => context.push(AppRoutes.ride),
+                ),
+                const SizedBox(height: 14),
+              ],
               _StartRideButton(
-                onStart: () => _startRide(context, ref),
+                recording: recording,
+                onStart: () => recording
+                    ? context.push(AppRoutes.ride)
+                    : _startRide(context, ref),
               ),
               const SizedBox(height: 14),
               Row(
@@ -219,14 +234,56 @@ class _MonthDistance extends StatelessWidget {
   }
 }
 
+/// Says a ride is still being recorded.
+///
+/// The ride screen guards its own exits, so this should be rare — but "rare"
+/// is not "impossible", and the alternative is a home screen offering 开始骑行
+/// while a ride is live. That is not just misleading: starting a second ride
+/// tears down the running engine, and the ride in progress becomes a partial
+/// record nobody asked for.
+class _RecordingBanner extends StatelessWidget {
+  const _RecordingBanner({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            border: Border.all(color: AppColors.accent),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.fiber_manual_record, size: 14, color: AppColors.accent),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text('正在记录', style: AppText.body),
+              ),
+              Text('回到码表', style: AppText.caption),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The primary action.
 ///
 /// Sized and coloured so it is unmissable on a black screen — the one place
 /// the accent colour is used at full strength on this page.
 class _StartRideButton extends StatelessWidget {
-  const _StartRideButton({required this.onStart});
+  const _StartRideButton({required this.onStart, required this.recording});
 
   final VoidCallback onStart;
+  final bool recording;
 
   @override
   Widget build(BuildContext context) {
@@ -239,14 +296,18 @@ class _StartRideButton extends StatelessWidget {
             borderRadius: BorderRadius.circular(18),
           ),
         ),
-        child: const Row(
+        child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.play_arrow_rounded, size: 30, color: Colors.black),
-            SizedBox(width: 8),
+            Icon(
+              recording ? Icons.arrow_forward_rounded : Icons.play_arrow_rounded,
+              size: 30,
+              color: Colors.black,
+            ),
+            const SizedBox(width: 8),
             // No colour here: the label inherits the button's foreground, so
             // it follows the theme instead of repeating it.
-            Text('开始骑行', style: AppText.cta),
+            Text(recording ? '返回骑行' : '开始骑行', style: AppText.cta),
           ],
         ),
       ),
