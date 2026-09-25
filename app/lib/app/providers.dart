@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 // `show` rather than a bare import: the Supabase SDK also exports a type
 // called `AuthUser`, and this file's own `AuthUser` is the one in play.
 import 'package:supabase_flutter/supabase_flutter.dart'
@@ -19,6 +20,7 @@ import '../core/map/amap/amap_route_provider.dart';
 import '../core/map/amap/amap_traffic_light_provider.dart';
 import '../core/map/local/offline_providers.dart';
 import '../core/map/map_providers.dart';
+import '../core/permissions/notification_permission.dart';
 import '../core/sync/functions_config.dart';
 import '../core/sync/supabase_config.dart';
 import '../core/sync/account_deletion_client.dart';
@@ -58,6 +60,29 @@ final databaseProvider = Provider<AppDatabase>((ref) {
 final locationServiceProvider = Provider<LocationService>(
   (ref) => LocationService(),
 );
+
+/// The Android 13+ grant behind the recording notification.
+final notificationPermissionProvider = Provider<NotificationPermission>(
+  (ref) => const NotificationPermission(),
+);
+
+/// The version the rider sees in the About screen.
+///
+/// Read from the platform bundle rather than kept as a constant: the number in
+/// the app and the number in the store listing are then the same one, without
+/// anybody having to remember to update two places.
+///
+/// Null when there is nothing to read — a widget test has no plugin registry,
+/// and an unbuilt tree has no bundle — and the screen says 「开发版本」 rather
+/// than showing a made-up number.
+final appVersionProvider = FutureProvider<String?>((ref) async {
+  try {
+    final info = await PackageInfo.fromPlatform();
+    return info.version.isEmpty ? null : info.version;
+  } catch (_) {
+    return null;
+  }
+});
 
 /// Whether the OS will keep delivering fixes with the screen off.
 ///

@@ -11,6 +11,12 @@ import '../../../../app/theme.dart';
 abstract final class LocationNoticeKeys {
   static const String disclosureSeen = 'location_disclosure_seen';
   static const String backgroundHintSeen = 'background_location_hint_seen';
+
+  /// Set when the recording-notification request has been made once. Asking
+  /// again every ride is how a permission prompt becomes something riders
+  /// tap through without reading.
+  static const String notificationAsked = 'notification_asked';
+
   static const String seen = 'true';
 }
 
@@ -116,6 +122,58 @@ Future<void> showBackgroundLocationHint(BuildContext context) async {
       ),
     ),
   );
+}
+
+/// Asks for the recording notification, in the app, before the system dialog.
+///
+/// Same two reasons as the location disclosure: Play expects the app to say
+/// why before it asks, and the rider deserves to know what they are agreeing
+/// to. What is worth saying here is that the notification is not chatter —
+/// once the screen locks, it is the only evidence that the ride is still being
+/// recorded.
+///
+/// Returns true when the rider agreed to the system dialog.
+Future<bool> showNotificationNotice(BuildContext context) async {
+  final agreed = await showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    builder: (sheetContext) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('记录时显示一条通知', style: AppText.title),
+            const SizedBox(height: 14),
+            const _Point(
+              icon: Icons.notifications_none,
+              text: '骑行过程中通知栏会常驻一条「正在记录骑行」。'
+                  '锁屏之后，它是你确认记录还在继续的唯一方式。',
+            ),
+            const SizedBox(height: 12),
+            const _Point(
+              icon: Icons.battery_charging_full,
+              text: '不影响记录本身。即使不允许，骑行照常保存，'
+                  '只是锁屏后看不到这条状态。',
+            ),
+            const SizedBox(height: 22),
+            FilledButton(
+              onPressed: () => Navigator.pop(sheetContext, true),
+              child: const Text('允许通知'),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: () => Navigator.pop(sheetContext, false),
+              child: const Text('不用通知'),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  return agreed ?? false;
 }
 
 class _Point extends StatelessWidget {

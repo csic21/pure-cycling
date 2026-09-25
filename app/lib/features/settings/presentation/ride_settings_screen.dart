@@ -132,6 +132,7 @@ class RideSettingsScreen extends ConsumerWidget {
                     notifier.mutate((s) => s.copyWith(gpsSignalLostSeconds: v)),
               ),
               const _BackgroundLocationRow(),
+              const _NotificationRow(),
             ],
             footnote: '高精度档位每秒采样一次。停车时应用会自动降低采样频率以节省电量。',
           ),
@@ -178,6 +179,62 @@ class _BackgroundLocationRow extends ConsumerWidget {
       ),
       onTap: granted == false
           ? () => ref.read(locationServiceProvider).openAppSettings()
+          : null,
+    );
+  }
+}
+
+/// Whether the recording notification is allowed.
+///
+/// Worth a row of its own: on Android 13+ the foreground service notification
+/// is invisible without this grant, and that notification is how a rider
+/// confirms — from a locked screen — that the ride is still being recorded.
+/// The permission dialog cannot be shown a second time, so a rider who
+/// declined needs a path back, and this is it.
+class _NotificationRow extends ConsumerStatefulWidget {
+  const _NotificationRow();
+
+  @override
+  ConsumerState<_NotificationRow> createState() => _NotificationRowState();
+}
+
+class _NotificationRowState extends ConsumerState<_NotificationRow> {
+  bool? _granted;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final granted = await ref.read(notificationPermissionProvider).isGranted();
+    if (mounted) setState(() => _granted = granted);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final granted = _granted;
+
+    return SettingsTile(
+      title: '记录通知',
+      subtitle: granted == null
+          ? '正在检查系统权限…'
+          : granted
+              ? '已允许。锁屏后通知栏会常驻「正在记录骑行」'
+              : '未允许。记录照常进行，但锁屏后看不到这条状态；'
+                  '在系统设置里打开通知即可',
+      leading: Icon(
+        granted == false
+            ? Icons.notifications_off_outlined
+            : Icons.notifications_none,
+        color: granted == false ? AppColors.warning : null,
+      ),
+      onTap: granted == false
+          ? () async {
+              await ref.read(notificationPermissionProvider).openSettings();
+              await _refresh();
+            }
           : null,
     );
   }

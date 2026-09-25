@@ -12,6 +12,7 @@ import '../features/routes/presentation/route_detail_screen.dart';
 import '../features/routes/presentation/route_plan_screen.dart';
 import '../features/routes/presentation/routes_screen.dart';
 import '../features/sensors/presentation/sensors_screen.dart';
+import '../features/settings/presentation/about_screen.dart';
 import '../features/settings/presentation/dashboard_editor_screen.dart';
 import '../features/settings/presentation/diagnostics_screen.dart';
 import '../features/settings/presentation/map_settings_screen.dart';
@@ -54,6 +55,7 @@ abstract final class AppRoutes {
   static const String settingsSensors = '/settings/sensors';
   static const String settingsSync = '/settings/sync';
   static const String settingsDiagnostics = '/settings/diagnostics';
+  static const String settingsAbout = '/settings/about';
   static const String login = '/login';
   static const String setPassword = '/password';
 
@@ -173,6 +175,10 @@ GoRouter buildRouter() {
                   GoRoute(
                     path: 'diagnostics',
                     builder: (context, state) => const DiagnosticsScreen(),
+                  ),
+                  GoRoute(
+                    path: 'about',
+                    builder: (context, state) => const AboutScreen(),
                   ),
                 ],
               ),

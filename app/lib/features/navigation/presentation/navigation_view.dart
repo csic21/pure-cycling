@@ -43,83 +43,108 @@ class MinimalNavigationView extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-        child: Column(
-          children: [
-            // ---- Speed ----
-            Expanded(
-              flex: 4,
-              child: Center(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: [
-                    Flexible(
-                      child: FittedBox(
-                        fit: BoxFit.contain,
-                        child: Text(
-                          formatter.speed(stats.currentSpeedMps),
-                          style: AppText.hero(10),
-                        ),
-                      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // Mounted sideways, a phone is short and wide: three stacked bands
+          // (speed, turn, remaining) leave each one too little height, so the
+          // same information is laid out in three columns instead.
+          final landscape =
+              constraints.maxWidth > constraints.maxHeight * 1.4;
+
+          final speedBlock = Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.contain,
+                    child: Text(
+                      formatter.speed(stats.currentSpeedMps),
+                      style: AppText.hero(10),
                     ),
-                    const SizedBox(width: 8),
-                    Text(
-                      formatter.system.speedSuffix,
-                      style: AppText.unit.copyWith(fontSize: 15),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                Text(
+                  formatter.system.speedSuffix,
+                  style: AppText.unit.copyWith(fontSize: 15),
+                ),
+              ],
             ),
+          );
 
-            const Divider(height: 1),
+          final turnBlock = navigation.offRoute
+              ? _OffRouteNotice(navigation: navigation)
+              : _TurnBanner(
+                  instruction: instruction,
+                  distanceMeters: distance,
+                  following: navigation.nextInstruction,
+                );
 
-            // ---- Next turn ----
-            Expanded(
-              flex: 5,
-              child: navigation.offRoute
-                  ? _OffRouteNotice(navigation: navigation)
-                  : _TurnBanner(
-                      instruction: instruction,
-                      distanceMeters: distance,
-                      following: navigation.nextInstruction,
-                    ),
+          final remainingCells = <Widget>[
+            _RemainingCell(
+              label: '剩余',
+              value: formatter.distanceKm(navigation.distanceToDestinationMeters),
+              unit: formatter.system.distanceSuffix,
             ),
+            _RemainingCell(
+              label: '预计到达',
+              value: navigation.eta == null
+                  ? '--'
+                  : UnitFormatter.clock(navigation.eta!),
+            ),
+            _RemainingCell(
+              label: '剩余时间',
+              value: UnitFormatter.durationMinutes(navigation.remainingDuration),
+            ),
+          ];
 
-            const Divider(height: 1),
-
-            // ---- Remaining ----
-            Expanded(
-              flex: 3,
+          if (landscape) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               child: Row(
                 children: [
-                  _RemainingCell(
-                    label: '剩余',
-                    value: formatter.distanceKm(
-                      navigation.distanceToDestinationMeters,
-                    ),
-                    unit: formatter.system.distanceSuffix,
-                  ),
-                  _RemainingCell(
-                    label: '预计到达',
-                    value: navigation.eta == null
-                        ? '--'
-                        : UnitFormatter.clock(navigation.eta!),
-                  ),
-                  _RemainingCell(
-                    label: '剩余时间',
-                    value: UnitFormatter.durationMinutes(
-                      navigation.remainingDuration,
+                  Expanded(flex: 3, child: speedBlock),
+                  const VerticalDivider(width: 1, thickness: 1),
+                  Expanded(flex: 4, child: turnBlock),
+                  const VerticalDivider(width: 1, thickness: 1),
+                  Expanded(
+                    flex: 3,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: remainingCells,
                     ),
                   ),
                 ],
               ),
+            );
+          }
+
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+            child: Column(
+              children: [
+                // ---- Speed ----
+                Expanded(flex: 4, child: speedBlock),
+
+                const Divider(height: 1),
+
+                // ---- Next turn ----
+                Expanded(flex: 5, child: turnBlock),
+
+                const Divider(height: 1),
+
+                // ---- Remaining ----
+                Expanded(
+                  flex: 3,
+                  child: Row(children: remainingCells),
+                ),
+              ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }

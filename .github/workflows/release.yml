@@ -33,6 +33,10 @@ defaults:
 #
 #   SUPABASE_URL
 #   SUPABASE_FUNCTIONS_URL  the edge functions' base URL
+#   SUPPORT_EMAIL          optional; shown in 关于 when set, and omitted
+#                          entirely when it is not (no placeholder address,
+#                          because a support address that does not exist is
+#                          worse than none)
 #                       (…/functions/v1). Public by nature — it is in every
 #                       binary that uses it; each function guards itself with a
 #                       session check, and the relay also with a quota.
@@ -118,7 +122,8 @@ jobs:
           {
             "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
             "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}",
-            "SUPABASE_FUNCTIONS_URL": "${{ vars.SUPABASE_FUNCTIONS_URL }}"
+            "SUPABASE_FUNCTIONS_URL": "${{ vars.SUPABASE_FUNCTIONS_URL }}",
+            "SUPPORT_EMAIL": "${{ vars.SUPPORT_EMAIL }}"
           }
           EOF
 
@@ -165,7 +170,8 @@ jobs:
           {
             "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
             "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}",
-            "SUPABASE_FUNCTIONS_URL": "${{ vars.SUPABASE_FUNCTIONS_URL }}"
+            "SUPABASE_FUNCTIONS_URL": "${{ vars.SUPABASE_FUNCTIONS_URL }}",
+            "SUPPORT_EMAIL": "${{ vars.SUPPORT_EMAIL }}"
           }
           EOF
 

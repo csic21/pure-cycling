@@ -37,17 +37,81 @@ class DashboardView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (minimal) return _MinimalDashboard(data: data, formatter: formatter);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // A phone on handlebars is often mounted sideways, and a phone in
+        // landscape is short and wide: a hero stacked over its supporting grid
+        // leaves the number about a third of the height it needs. Side by side
+        // is the shape every dedicated bike computer uses in this orientation.
+        final landscape =
+            constraints.maxWidth > constraints.maxHeight * 1.4;
 
-    return switch (page.layout) {
-      DashboardLayout.grid6 => _buildGrid(),
-      DashboardLayout.hero2 || DashboardLayout.hero4 => _buildHero(),
-    };
+        if (minimal) {
+          return _MinimalDashboard(
+            data: data,
+            formatter: formatter,
+            landscape: landscape,
+          );
+        }
+
+        return switch (page.layout) {
+          DashboardLayout.grid6 => _buildGrid(landscape),
+          DashboardLayout.hero2 || DashboardLayout.hero4 =>
+            _buildHero(landscape),
+        };
+      },
+    );
   }
 
-  Widget _buildHero() {
+  Widget _buildHero(bool landscape) {
     final hero = page.heroField ?? DashboardField.speed;
     final supporting = page.supportingFields();
+    final showSupporting = !dimmed && supporting.isNotEmpty;
+
+    final heroBlock = Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: MetricTile(
+              field: hero,
+              data: data,
+              formatter: formatter,
+              size: MetricSize.hero,
+              showLabel: false,
+            ),
+          ),
+          const SizedBox(height: 8),
+          HeroUnit(
+            text: hero.unitLabel(data, formatter),
+          ),
+        ],
+      ),
+    );
+
+    if (landscape) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        child: Row(
+          children: [
+            Expanded(flex: showSupporting ? 5 : 1, child: heroBlock),
+            if (showSupporting) ...[
+              const VerticalDivider(width: 1, thickness: 1),
+              Expanded(
+                flex: 4,
+                child: _SupportingGrid(
+                  fields: supporting,
+                  data: data,
+                  formatter: formatter,
+                  columns: 2,
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -56,30 +120,7 @@ class DashboardView extends StatelessWidget {
           // 5 : 4 gives the hero number roughly 45% of the page, comfortably
           // above the "at least 20% of screen height" floor in spec §5.1 once
           // the app bar and page dots are accounted for.
-          Expanded(
-            flex: 5,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Flexible(
-                    child: MetricTile(
-                      field: hero,
-                      data: data,
-                      formatter: formatter,
-                      size: MetricSize.hero,
-                      showLabel: false,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  HeroUnit(
-                    text: hero.unitLabel(data, formatter),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          Expanded(flex: 5, child: heroBlock),
           if (!dimmed) ...[
             const Divider(height: 1),
             Expanded(
@@ -98,14 +139,16 @@ class DashboardView extends StatelessWidget {
     );
   }
 
-  Widget _buildGrid() {
+  Widget _buildGrid(bool landscape) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       child: _SupportingGrid(
         fields: page.supportingFields(),
         data: data,
         formatter: formatter,
-        columns: 2,
+        // Six fields read better as three columns of two in a short, wide
+        // frame; two columns of three would leave each row cramped.
+        columns: landscape ? 3 : 2,
         size: MetricSize.large,
         rules: dimmed,
       ),
@@ -181,54 +224,80 @@ class _SupportingGrid extends StatelessWidget {
 /// readable at a glance in bright sun and costs almost nothing to keep on a
 /// screen for four hours.
 class _MinimalDashboard extends StatelessWidget {
-  const _MinimalDashboard({required this.data, required this.formatter});
+  const _MinimalDashboard({
+    required this.data,
+    required this.formatter,
+    required this.landscape,
+  });
 
   final DashboardData data;
   final UnitFormatter formatter;
+  final bool landscape;
 
   @override
   Widget build(BuildContext context) {
     final navigation = data.navigation;
     final stats = data.stats;
 
+    final speed = MetricTile(
+      field: DashboardField.speed,
+      data: data,
+      formatter: formatter,
+      size: MetricSize.hero,
+      showLabel: false,
+    );
+
+    final supporting = <Widget>[
+      _CompactStat(
+        value: '${formatter.distanceKm(stats.distanceMeters, decimals: 1)}'
+            ' ${formatter.system.distanceSuffix}',
+      ),
+      _CompactStat(
+        value: formatter.elevationWithUnit(
+          stats.elevationGainMeters,
+          withSign: true,
+        ),
+      ),
+      _CompactStat(value: UnitFormatter.duration(stats.moving)),
+    ];
+
+    if (landscape) {
+      // Same information, rotated with the phone: speed beside the numbers
+      // instead of above them, because a short frame has no room for a stack.
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        child: Row(
+          children: [
+            Expanded(flex: 3, child: Center(child: speed)),
+            const VerticalDivider(width: 1, thickness: 1),
+            Expanded(
+              flex: 2,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  if (navigation?.distanceToNextTurnMeters != null)
+                    _TurnHint(navigation: navigation!, formatter: formatter),
+                  ...supporting,
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       child: Column(
         children: [
-          Expanded(
-            flex: 6,
-            child: Center(
-              child: MetricTile(
-                field: DashboardField.speed,
-                data: data,
-                formatter: formatter,
-                size: MetricSize.hero,
-                showLabel: false,
-              ),
-            ),
-          ),
+          Expanded(flex: 6, child: Center(child: speed)),
           if (navigation?.distanceToNextTurnMeters != null)
             _TurnHint(navigation: navigation!, formatter: formatter),
           Expanded(
             flex: 4,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _CompactStat(
-                  value:
-                      '${formatter.distanceKm(stats.distanceMeters, decimals: 1)}'
-                      ' ${formatter.system.distanceSuffix}',
-                ),
-                _CompactStat(
-                  value: formatter.elevationWithUnit(
-                    stats.elevationGainMeters,
-                    withSign: true,
-                  ),
-                ),
-                _CompactStat(
-                  value: UnitFormatter.duration(stats.moving),
-                ),
-              ],
+              children: supporting,
             ),
           ),
         ],

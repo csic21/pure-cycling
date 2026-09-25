@@ -159,6 +159,19 @@ class SettingsScreen extends ConsumerWidget {
           ),
 
           const SizedBox(height: 24),
+          SettingsSection(
+            title: '关于',
+            rows: [
+              SettingsTile(
+                title: '关于纯粹骑行',
+                subtitle: '版本、隐私政策、开源许可',
+                leading: const Icon(Icons.info_outline),
+                onTap: () => context.push(AppRoutes.settingsAbout),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 24),
           Center(
             child: Text(
               '纯粹骑行 · 记录、码表、导航\n没有社区，没有信息流',

@@ -4,6 +4,7 @@ import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/location/location_fix.dart';
 import 'package:cycling_app/core/location/location_service.dart';
+import 'package:cycling_app/core/permissions/notification_permission.dart';
 import 'package:cycling_app/core/sync/sync_service.dart';
 import 'package:cycling_app/core/utils/geo.dart';
 import 'package:cycling_app/features/auth/data/auth_repository.dart';
@@ -131,6 +132,38 @@ class FakeLocationService extends LocationService {
   }
 }
 
+/// A notification permission the test controls.
+///
+/// Defaults to *not* granted, which is the state that produces the prompt —
+/// tests that are about rides mark the first-run notices as seen and never see
+/// it.
+class FakeNotificationPermission extends NotificationPermission {
+  FakeNotificationPermission({this.granted = false});
+
+  bool granted;
+
+  /// How many times the system dialog was asked for. The point of the
+  /// once-per-install rule is that this stays at one.
+  int requests = 0;
+  bool settingsOpened = false;
+
+  @override
+  Future<bool> isGranted() async => granted;
+
+  @override
+  Future<bool> request() async {
+    requests++;
+    granted = true;
+    return true;
+  }
+
+  @override
+  Future<bool> openSettings() async {
+    settingsOpened = true;
+    return true;
+  }
+}
+
 /// Provider overrides that make the app testable without a device.
 ///
 /// `syncReportProvider` is overridden rather than `syncServiceProvider`: the
@@ -141,11 +174,14 @@ List<Override> testOverrides({
   required AppDatabase database,
   FakeLocationService? location,
   AuthRepository? auth,
+  NotificationPermission? notifications,
 }) {
   return [
     databaseProvider.overrideWithValue(database),
     if (location != null) locationServiceProvider.overrideWithValue(location),
     if (auth != null) authRepositoryProvider.overrideWithValue(auth),
+    if (notifications != null)
+      notificationPermissionProvider.overrideWithValue(notifications),
     syncReportProvider.overrideWith(
       (ref) => const Stream<SyncReport>.empty(),
     ),
@@ -201,12 +237,22 @@ void useTallSurface(WidgetTester tester) {
 /// A fresh in-memory database. The caller owns closing it.
 AppDatabase openTestDatabase() => AppDatabase.forTesting(NativeDatabase.memory());
 
-/// Marks the location disclosure as already shown on this device.
+/// Marks the one-time notices as already shown on this device.
 ///
-/// The disclosure is a one-time modal before the first ride — the in-app
-/// notice Play requires before the system background-location dialog. Tests
-/// that are about *rides* rather than about that notice say so here, instead
-/// of tapping through it in every case.
+/// Before the first ride the app explains the background-location grant (the
+/// in-app notice Play requires before the system dialog) and asks about the
+/// recording notification. Tests that are about *rides* rather than about
+/// those notices say so here, instead of tapping through them in every case.
+Future<void> markFirstRunNoticesSeen(AppDatabase database) async {
+  await markLocationDisclosureSeen(database);
+  await SettingsRepository(database).setString(
+    LocationNoticeKeys.notificationAsked,
+    LocationNoticeKeys.seen,
+  );
+}
+
+/// Marks only the location disclosure — for tests that are about one of the
+/// other first-run notices and need the disclosure out of the way.
 Future<void> markLocationDisclosureSeen(AppDatabase database) =>
     SettingsRepository(database).setString(
       LocationNoticeKeys.disclosureSeen,

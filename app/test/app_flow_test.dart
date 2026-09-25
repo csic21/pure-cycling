@@ -1,4 +1,5 @@
 import 'package:cycling_app/app/app.dart';
+import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/core/database/database.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -32,16 +33,26 @@ void main() {
   /// timeout — which, in a binding with no location plugin behind it, is still
   /// pending when the test ends and trips the "a timer is still pending"
   /// assertion. The failure surfaces in a test that never asked for a location.
-  Future<FakeLocationService> pumpApp(WidgetTester tester) async {
+  Future<FakeLocationService> pumpApp(
+    WidgetTester tester, {
+    FakeNotificationPermission? notifications,
+    List<Override> extraOverrides = const [],
+  }) async {
     final location = FakeLocationService();
-    // These tests are about rides, not about the one-time location notice that
-    // precedes the first one. That notice has its own tests in
-    // `ride_flow_test.dart`.
-    await markLocationDisclosureSeen(database);
+    // These tests are about rides, not about the one-time notices that precede
+    // the first one. Those have their own tests in `ride_flow_test.dart`.
+    await markFirstRunNoticesSeen(database);
     useTallSurface(tester);
     await tester.pumpWidget(
       ProviderScope(
-        overrides: testOverrides(database: database, location: location),
+        overrides: [
+          ...testOverrides(
+            database: database,
+            location: location,
+            notifications: notifications,
+          ),
+          ...extraOverrides,
+        ],
         child: const CyclingApp(),
       ),
     );
@@ -319,6 +330,64 @@ void main() {
       await settle(tester);
 
       expect(find.textContaining('已授权「始终允许」定位'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('the about screen carries the version, policy and licences',
+        (tester) async {
+      await pumpApp(
+        tester,
+        extraOverrides: [
+          appVersionProvider.overrideWith((ref) async => '1.2.3'),
+        ],
+      );
+
+      await openTab(tester, '设置');
+      await tester.tap(find.text('关于纯粹骑行'));
+      await settle(tester);
+
+      expect(find.text('版本 1.2.3'), findsOneWidget);
+      expect(find.text('隐私政策'), findsOneWidget);
+      expect(find.textContaining('最近更新'), findsOneWidget);
+      expect(find.textContaining('只在你按下「开始骑行」之后'), findsOneWidget);
+      expect(find.text('查看使用的开源组件'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('a build with no version says so instead of inventing one',
+        (tester) async {
+      await pumpApp(
+        tester,
+        extraOverrides: [appVersionProvider.overrideWith((ref) async => null)],
+      );
+
+      await openTab(tester, '设置');
+      await tester.tap(find.text('关于纯粹骑行'));
+      await settle(tester);
+
+      expect(find.text('开发版本'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('a declined notification is visible and leads to the settings',
+        (tester) async {
+      final notifications = FakeNotificationPermission();
+      await pumpApp(tester, notifications: notifications);
+
+      await openTab(tester, '设置');
+      await tester.tap(find.text('自动暂停'));
+      await settle(tester);
+
+      // Android 13+ hides the foreground-service notification without this
+      // grant, and the system dialog can only be shown once — so the row is
+      // the way back.
+      expect(find.textContaining('未允许'), findsOneWidget);
+      await tester.tap(find.text('记录通知'));
+      await settle(tester);
+      expect(notifications.settingsOpened, isTrue);
 
       await shutdownApp(tester, database);
     });

@@ -10,6 +10,7 @@ import '../../../app/theme.dart';
 import '../../../core/location/location_service.dart';
 import '../../../core/utils/units.dart';
 import '../../history/presentation/widgets/ride_summary_row.dart';
+import '../../settings/data/settings_repository.dart';
 import '../domain/ride.dart';
 import 'widgets/location_notice.dart';
 import 'widgets/resume_ride_sheet.dart';
@@ -182,9 +183,40 @@ class HomeScreen extends ConsumerWidget {
     }
 
     if (!context.mounted) return;
+    await _askAboutNotifications(context, ref, store);
+
+    if (!context.mounted) return;
     // Not awaited: the router owns the navigation, and there is nothing to do
     // with its result here. Saying so explicitly beats a lint suppression.
     unawaited(context.push(AppRoutes.ride));
+  }
+
+  /// Asks once, about the notification that will be the only sign the ride is
+  /// still being recorded.
+  ///
+  /// Once per install, not per ride: a permission the rider declined is a
+  /// decision, and re-asking turns the sheet into something they learn to
+  /// dismiss. Nothing about recording depends on the answer.
+  Future<void> _askAboutNotifications(
+    BuildContext context,
+    WidgetRef ref,
+    SettingsRepository store,
+  ) async {
+    if (await store.getString(LocationNoticeKeys.notificationAsked) ==
+        LocationNoticeKeys.seen) {
+      return;
+    }
+
+    final notifications = ref.read(notificationPermissionProvider);
+    if (await notifications.isGranted()) return;
+
+    if (!context.mounted) return;
+    final agreed = await showNotificationNotice(context);
+    await store.setString(
+      LocationNoticeKeys.notificationAsked,
+      LocationNoticeKeys.seen,
+    );
+    if (agreed) await notifications.request();
   }
 
   static Future<void> _showLocationProblem(

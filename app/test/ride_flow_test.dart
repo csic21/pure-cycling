@@ -2,9 +2,13 @@ import 'package:cycling_app/app/app.dart';
 import 'package:cycling_app/app/router.dart';
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/location/location_service.dart';
+import 'package:cycling_app/core/permissions/notification_permission.dart';
+import 'package:cycling_app/core/utils/geo.dart';
 import 'package:cycling_app/features/ride/presentation/ride_screen.dart';
 import 'package:cycling_app/features/ride/presentation/widgets/location_notice.dart';
+import 'package:cycling_app/features/routes/domain/route.dart';
 import 'package:cycling_app/features/settings/data/settings_repository.dart';
+import 'package:flutter/material.dart' show Size;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -28,7 +32,7 @@ void main() {
     // These cases are about rides, not about the one-time location notice that
     // precedes the first one — the notice has its own group below, which pumps
     // the tree without this flag.
-    await markLocationDisclosureSeen(database);
+    await markFirstRunNoticesSeen(database);
     useTallSurface(tester);
     await tester.pumpWidget(
       ProviderScope(
@@ -130,12 +134,17 @@ void main() {
     Future<FakeLocationService> pumpFreshApp(
       WidgetTester tester, {
       bool backgroundAccess = true,
+      NotificationPermission? notifications,
     }) async {
       final location = FakeLocationService(backgroundAccess: backgroundAccess);
       useTallSurface(tester);
       await tester.pumpWidget(
         ProviderScope(
-          overrides: testOverrides(database: database, location: location),
+          overrides: testOverrides(
+            database: database,
+            location: location,
+            notifications: notifications,
+          ),
           child: const CyclingApp(),
         ),
       );
@@ -148,7 +157,10 @@ void main() {
 
     testWidgets('the disclosure comes before the system dialog, and is kept',
         (tester) async {
-      await pumpFreshApp(tester);
+      await pumpFreshApp(
+        tester,
+        notifications: FakeNotificationPermission(granted: true),
+      );
 
       await tester.tap(find.text('开始骑行'));
       await settle(tester);
@@ -194,7 +206,11 @@ void main() {
 
     testWidgets('a foreground-only grant is called out once', (tester) async {
       await markLocationDisclosureSeen(database);
-      await pumpFreshApp(tester, backgroundAccess: false);
+      await pumpFreshApp(
+        tester,
+        backgroundAccess: false,
+        notifications: FakeNotificationPermission(granted: true),
+      );
 
       await tester.tap(find.text('开始骑行'));
       await settle(tester);
@@ -218,13 +234,147 @@ void main() {
 
     testWidgets('a full grant is not nagged about', (tester) async {
       await markLocationDisclosureSeen(database);
-      await pumpFreshApp(tester);
+      await pumpFreshApp(
+        tester,
+        notifications: FakeNotificationPermission(granted: true),
+      );
 
       await tester.tap(find.text('开始骑行'));
       await settle(tester);
 
       expect(find.text('锁屏后记录可能中断'), findsNothing);
       expect(find.text('准备开始'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+    testWidgets('the recording notification is asked for once', (tester) async {
+      await markLocationDisclosureSeen(database);
+      final notifications = FakeNotificationPermission();
+      await pumpFreshApp(tester, notifications: notifications);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+
+      expect(find.text('记录时显示一条通知'), findsOneWidget);
+      expect(find.textContaining('唯一方式'), findsOneWidget);
+
+      await tester.tap(find.text('允许通知'));
+      await settle(tester);
+
+      expect(notifications.requests, 1);
+      expect(find.text('准备开始'), findsOneWidget);
+      expect(
+        await storedFlag(LocationNoticeKeys.notificationAsked),
+        LocationNoticeKeys.seen,
+      );
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('declining the notification does not block the ride',
+        (tester) async {
+      await markLocationDisclosureSeen(database);
+      final notifications = FakeNotificationPermission();
+      await pumpFreshApp(tester, notifications: notifications);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+      await tester.tap(find.text('不用通知'));
+      await settle(tester);
+
+      expect(
+        notifications.requests,
+        0,
+        reason: '说不就不，不该再弹系统对话框',
+      );
+      expect(find.text('准备开始'), findsOneWidget);
+      expect(
+        await storedFlag(LocationNoticeKeys.notificationAsked),
+        LocationNoticeKeys.seen,
+        reason: '问过就算问过，不该每趟骑行都问',
+      );
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('an already-granted notification is not mentioned',
+        (tester) async {
+      await markLocationDisclosureSeen(database);
+      await pumpFreshApp(
+        tester,
+        notifications: FakeNotificationPermission(granted: true),
+      );
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+
+      expect(find.text('记录时显示一条通知'), findsNothing);
+      expect(find.text('准备开始'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+  });
+
+  group('landscape', () {
+    testWidgets('the dashboard relayouts sideways instead of overflowing',
+        (tester) async {
+      final location = await pumpApp(tester);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+      await tester.pump(const Duration(seconds: 4));
+      location.emitRide(count: 30, speedMps: 5);
+      await settle(tester);
+
+      // Rotate. A phone on handlebars is often mounted this way, and the
+      // portrait stack — hero over its supporting grid — has no room in a
+      // frame 360 logical pixels tall.
+      tester.view.physicalSize = const Size(2400, 1080);
+      await settle(tester);
+
+      // A RenderFlex overflow would have failed this test by now; what is
+      // asserted here is that both halves of the readout survived the change.
+      expect(find.text('18.0'), findsOneWidget);
+      expect(find.text('距离'), findsOneWidget);
+      expect(find.text('暂停'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('minimal navigation relayouts sideways too', (tester) async {
+      await database.routeDao.upsertRoute(
+        Route(
+          id: 'route-landscape',
+          name: '测试路线',
+          points: const [
+            GeoPoint(39.9042, 116.4074),
+            GeoPoint(39.9142, 116.4274),
+          ],
+          distanceMeters: 1400,
+          estimatedDuration: const Duration(minutes: 5),
+        ),
+      );
+      final location = await pumpApp(tester);
+
+      await tester.tap(find.text('路线').last);
+      await settle(tester);
+      await tester.tap(find.text('测试路线'));
+      await settle(tester);
+      await tester.tap(find.text('开始导航'));
+      await settle(tester);
+      await tester.pump(const Duration(seconds: 4));
+      location.emitRide(count: 20, speedMps: 5);
+      await settle(tester);
+
+      expect(find.text('剩余'), findsOneWidget);
+
+      tester.view.physicalSize = const Size(2400, 1080);
+      await settle(tester);
+
+      // The three bands become three columns: speed, next turn, remaining.
+      expect(find.text('剩余'), findsOneWidget);
+      expect(find.text('预计到达'), findsOneWidget);
+      expect(find.text('暂停'), findsOneWidget);
 
       await shutdownApp(tester, database);
     });
@@ -237,7 +387,7 @@ void main() {
         permission: LocationPermissionStatus.deniedForever,
       );
       // This case is about the refusal dialog, which comes after the notice.
-      await markLocationDisclosureSeen(database);
+      await markFirstRunNoticesSeen(database);
       useTallSurface(tester);
       await tester.pumpWidget(
         ProviderScope(
@@ -270,7 +420,7 @@ void main() {
       final location = FakeLocationService(
         permission: LocationPermissionStatus.serviceDisabled,
       );
-      await markLocationDisclosureSeen(database);
+      await markFirstRunNoticesSeen(database);
       useTallSurface(tester);
       await tester.pumpWidget(
         ProviderScope(
