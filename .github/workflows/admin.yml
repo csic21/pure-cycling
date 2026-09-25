@@ -40,12 +40,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm, not npm: the admin is the only Node project in the repository
+      # and there is no reason to pay for a second copy of every dependency
+      # on a developer's disk. The version comes from packageManager in
+      # package.json.
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: admin/package-lock.json
+          cache: pnpm
+          cache-dependency-path: admin/pnpm-lock.yaml
 
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run build

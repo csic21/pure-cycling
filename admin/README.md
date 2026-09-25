@@ -28,9 +28,14 @@ docker exec -i supabase_db_cycling psql -U postgres -d postgres -c \
 
 # 3. 配置并启动
 cp .env.example .env.local     # 值从 supabase status 取
-npm install
-npm run dev                    # http://localhost:3001
+pnpm install
+pnpm run dev                   # http://localhost:3001
 ```
+
+**用 pnpm，不用 npm**：node_modules 相对 npm 省一半以上，而且全局 store 是内容
+寻址的，同一个包在不同项目之间只存一份。版本钉在 `package.json` 的
+`packageManager` 字段里，`preinstall` 钩子会在 npm/yarn 下直接报错退出。
+store 本身想回收空间时：`pnpm store prune`。
 
 ## 环境变量
 

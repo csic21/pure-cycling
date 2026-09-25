@@ -2,7 +2,9 @@
   "name": "cycling-admin",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
+    "preinstall": "node -e \"if (!(process.env.npm_config_user_agent || '').includes('pnpm')) { console.error('这个仓库规定用 pnpm（见 admin/README.md），不要用 npm/yarn。'); process.exit(1); }\"",
     "dev": "next dev --port 3001",
     "build": "next build",
     "start": "next start --port 3001",

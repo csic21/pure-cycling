@@ -102,12 +102,16 @@ build-ios          iOS 编译（不签名）
 ### `admin.yml` — admin/ 或它的 workflow 有改动时
 
 ```
-typecheck + build  npm ci → tsc --noEmit → next build
+typecheck + build  pnpm install --frozen-lockfile → tsc --noEmit → next build
 ```
 
 只挂在 `admin/**` 的路径上：Flutter 的流水线和发布流水线都不该等一个
 Next.js 构建。这里**故意不提供任何 Supabase URL 或 key** —— 后台在请求时才读配置，
 一个必须有 `.env.local` 才能构建的后台会让每个新克隆的人先卡一次。
+
+依赖用 **pnpm**（`packageManager` 字段钉版本，CI 里由 `pnpm/action-setup` 读取）：
+node_modules 相对于 npm 省一半以上，而且全局 store 是内容寻址的，同一个包在
+不同项目之间只存一份。
 
 管理员边界的完整验证需要 GoTrue + PostgREST，所以放在本地：
 `scripts/verify-admin-flow.sh`（不进程 CI，理由和本地整栈一样：要拉整栈的镜像）。

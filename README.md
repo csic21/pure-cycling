@@ -15,7 +15,7 @@ V1 功能已经完整实现并通过测试，可以构建运行。
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
-管理后台构建通过        cd admin && npm run build
+管理后台构建通过        cd admin && pnpm run build
 SQL 迁移在 Supabase 官方镜像上验证通过   scripts/verify-migrations.sh
 Auth 流程在真实 GoTrue 上验证通过        scripts/verify-auth-flow.sh
 管理员边界在本地整栈上验证通过          scripts/verify-admin-flow.sh
@@ -162,6 +162,16 @@ GPS → RideEngine → SQLite → SyncQueue → Supabase
 它用 `fake_async` 同时控制时钟和定时器队列，模拟出完整的骑行过程。
 
 UI 只订阅 `RideState`，没有任何 Widget 自己计算距离或速度。
+
+### 两端一套设计语言
+
+App 和管理后台共用同一套 token：纯黑 `#000000`、发丝线分隔、青柠 `#C8FF3D`
+只表示「进行中／主操作」、数字全部等宽。层级靠线和明度，不靠卡片、阴影、
+渐变——两个界面因此看上去是同一台仪器的两张脸，而不是两个模板。
+
+token 只有两处定义（`app/lib/app/theme.dart` 和 `admin/app/globals.css`），
+改动必须一起做。完整规则、反模式（全大写小标题、`·` 元信息串、卡片网格）
+和两端的落地方式见 [docs/design.md](docs/design.md)。
 
 ### 界面测试揪出的问题
 
