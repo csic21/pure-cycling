@@ -11,7 +11,7 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-327 个测试通过          flutter test
+343 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
@@ -161,7 +161,7 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 327 个测试（单元 + 界面）
+│   └── test/                 343 个测试（单元 + 界面）
 ├── admin/                    管理后台（Next.js，直连 Supabase）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
@@ -317,6 +317,8 @@ flutter test
 | `ride_metadata_test.dart` | 名称与备注的编辑、清空，以及和云端副本的合并 |
 | `sync_queue_test.dart` | 出件箱：重复入队只留一行，新的编辑重置退避 |
 | `barometer_test.dart` | 气压→高度换算、接管与回退、合成爬坡与平地虚报的实测 |
+| `elevation_provider_test.dart` | 路线采样（≤100 点、端点保留）、响应解析、拒绝与超限 |
+| `tile_cache_test.dart` | 离线瓦片的统计口径（缓存目录、体积、张数） |
 | `sampling_policy_test.dart` | 停车降档、快速恢复、红绿灯不抖动、不优于骑手选择 |
 | `diagnostic_log_test.dart` | 诊断日志的写入 / 上限 / 不抛异常，以及出错页与导出入口 |
 | `error_reporting_test.dart` | 失败在屏幕上是人话、在日志里是原文，重试真的重试 |
@@ -366,7 +368,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 327 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 343 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 
@@ -433,7 +435,12 @@ Android 那步特意用 **release** 而不是 debug：debug 不跑 R8，而 R8 �
 ### 高德骑行路线不含海拔
 
 `/v5/direction/bicycling` 不返回海拔数据。因此路线详情里的「爬升」显示 `—` 而不是 `0`，
-因为 0 是一个断言，不是一个占位符。V2 的「路线海拔剖面」需要第三方高程数据（例如 SRTM）补齐。
+因为 0 是一个断言，不是一个占位符。
+
+海拔剖面来自可选的第三方高程查询（OpenTopoData 的公开 SRTM 30m），
+**默认关闭**：开启意味着路线坐标会发给非地图供应商，所以由骑手自己决定。
+开启后路线详情会显示剖面与爬升，并标出数据来源；30 米分辨率看得清坡和垭口，
+看不清桥和隧道口。见 [docs/map.md](docs/map.md) 的「路线高程」。
 
 ---
 
