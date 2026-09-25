@@ -145,6 +145,12 @@ class SettingsScreen extends ConsumerWidget {
                     : null,
                 onTap: () => context.push(AppRoutes.settingsSync),
               ),
+              SettingsTile(
+                title: '诊断日志',
+                subtitle: '应用出错时的记录。没有位置轨迹，也不会自动上传',
+                leading: const Icon(Icons.description_outlined),
+                onTap: () => context.push(AppRoutes.settingsDiagnostics),
+              ),
             ],
             footnote: SupabaseConfig.isConfigured
                 ? null

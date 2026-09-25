@@ -127,6 +127,29 @@ class RideRepository {
     await _rides.setSyncStatus(ride.id, SyncStatus.pendingUpload);
   }
 
+  /// Saves the rider's description of a finished ride: the two fields the
+  /// edit sheet always sends in full.
+  ///
+  /// `null` clears. That is the difference from [updateMetadata], and the
+  /// reason this exists: an empty name and an absent name are the same letter
+  /// to the rider, and a field they cannot empty is a field that is write-once.
+  Future<void> updateDescription(
+    String id, {
+    required String? name,
+    required String? notes,
+  }) async {
+    await _rides.setRideDescription(id, name: name, notes: notes);
+    // These are the only fields editable after a ride (spec §28), which is
+    // what keeps the merge with the cloud trivial — there is never a statistic
+    // to reconcile.
+    await _db.syncQueueDao.enqueue(
+      SyncEntityType.ride,
+      id,
+      SyncOperation.upsert,
+    );
+    await _rides.setSyncStatus(id, SyncStatus.pendingUpload);
+  }
+
   Future<void> updateMetadata(
     String id, {
     String? name,
@@ -180,12 +203,17 @@ class RideRepository {
   /// Distance, time and climb on this device came off a GPS receiver. They are
   /// not something to overwrite from a summary row, even when the cloud copy
   /// is newer.
+  ///
+  /// Writes through [RideDao.setRideDescription] rather than
+  /// [updateDescription]: the latter enqueues an upload, and a pull that
+  /// immediately pushes back is a sync loop with extra steps.
   Future<void> applyRemoteMetadata(
     String id, {
-    String? name,
+    required String? name,
+    required String? notes,
     String? gpxPath,
   }) async {
-    await _rides.updateRideMetadata(id, name: name);
+    await _rides.setRideDescription(id, name: name, notes: notes);
     if (gpxPath != null) {
       await _rides.setGpxPath(id, gpxPath);
     }

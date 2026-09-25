@@ -252,6 +252,7 @@ Future<Ride> seedRide(
   AppDatabase database, {
   String id = '0192f3a0-0000-7000-8000-000000000001',
   String? name,
+  String? notes,
   DateTime? startedAt,
   double distanceMeters = 23820,
   Duration moving = const Duration(minutes: 62, seconds: 36),
@@ -264,6 +265,7 @@ Future<Ride> seedRide(
   final ride = Ride(
     id: id,
     name: name,
+    notes: notes,
     startedAt: start,
     endedAt: start.add(moving),
     stats: RideStats(

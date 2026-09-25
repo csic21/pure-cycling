@@ -91,6 +91,20 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
                     style: AppText.caption,
                   ),
                 ),
+              if (ride.notes != null && ride.notes!.trim().isNotEmpty) ...[
+                const SizedBox(height: 24),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('备注', style: AppText.sectionTitle),
+                      const SizedBox(height: 8),
+                      Text(ride.notes!, style: AppText.body),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
               if (track.isNotEmpty) ...[
                 const Divider(height: 1),
@@ -164,10 +178,11 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
           children: [
             ListTile(
               leading: const Icon(Icons.edit_outlined),
-              title: const Text('重命名'),
+              title: const Text('编辑信息'),
+              subtitle: const Text('名称、备注'),
               onTap: () {
                 Navigator.pop(sheetContext);
-                _rename(ride);
+                _editDescription(ride);
               },
             ),
             ListTile(
@@ -204,34 +219,24 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
     );
   }
 
-  Future<void> _rename(Ride ride) async {
-    final controller = TextEditingController(text: ride.name);
-    final name = await showDialog<String>(
+  /// Edits everything the rider is allowed to change after a ride: the name and
+  /// the note (spec §28).
+  ///
+  /// Both fields are always submitted in full, so emptying one really empties
+  /// it. That is the difference between a note and a write-once field.
+  Future<void> _editDescription(Ride ride) async {
+    final saved = await showModalBottomSheet<({String name, String notes})>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('重命名'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '例如：周末环湖'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      isScrollControlled: true,
+      builder: (_) => _EditRideSheet(name: ride.name, notes: ride.notes),
     );
 
-    if (name == null || !mounted) return;
-    await ref
-        .read(rideRepositoryProvider)
-        .updateMetadata(ride.id, name: name.isEmpty ? null : name);
+    if (saved == null || !mounted) return;
+    await ref.read(rideRepositoryProvider).updateDescription(
+          ride.id,
+          name: saved.name.isEmpty ? null : saved.name,
+          notes: saved.notes.isEmpty ? null : saved.notes,
+        );
   }
 
   Future<void> _exportGpx(Ride ride) async {
@@ -296,6 +301,97 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
     if (mounted) Navigator.of(context).pop();
   }
 
+}
+
+/// The name-and-note editor, as a bottom sheet.
+///
+/// It owns its controllers rather than the caller holding them across the
+/// `showModalBottomSheet` future, and that is not a style choice: the sheet's
+/// exit animation keeps rebuilding these fields after the future resolves, so
+/// a controller disposed at that point is *used after dispose* — which throws
+/// during a rebuild and takes the layout down with it.
+///
+/// Returns the two values as typed, untrimmed, or null when dismissed. The
+/// caller decides what an empty field means.
+class _EditRideSheet extends StatefulWidget {
+  const _EditRideSheet({required this.name, required this.notes});
+
+  final String? name;
+  final String? notes;
+
+  @override
+  State<_EditRideSheet> createState() => _EditRideSheetState();
+}
+
+class _EditRideSheetState extends State<_EditRideSheet> {
+  late final TextEditingController _name =
+      TextEditingController(text: widget.name ?? '');
+  late final TextEditingController _notes =
+      TextEditingController(text: widget.notes ?? '');
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _notes.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      // The keyboard would otherwise cover the note field, which is the one
+      // the rider is most likely to be typing into.
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('编辑信息', style: AppText.title),
+              const SizedBox(height: 6),
+              const Text(
+                '距离、时间和爬升是记录下来的，不会因为这里改动而变化。',
+                style: AppText.caption,
+              ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: _name,
+                autofocus: true,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: '名称',
+                  hintText: '例如：周末环湖',
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _notes,
+                minLines: 3,
+                maxLines: 6,
+                keyboardType: TextInputType.multiline,
+                decoration: const InputDecoration(
+                  labelText: '备注',
+                  hintText: '天气、路况、车况……',
+                ),
+              ),
+              const SizedBox(height: 20),
+              FilledButton(
+                onPressed: () => Navigator.pop(
+                  context,
+                  (name: _name.text.trim(), notes: _notes.text.trim()),
+                ),
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _Header extends StatelessWidget {

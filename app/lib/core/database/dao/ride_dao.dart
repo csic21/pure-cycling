@@ -89,6 +89,26 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
     );
   }
 
+  /// Writes the rider-editable description of a ride, exactly as given.
+  ///
+  /// Deliberately not [updateRideMetadata], which reads `null` as "leave this
+  /// field alone". That contract makes 「把备注删掉」impossible to express —
+  /// and the edit sheet, which always submits both fields, means `null` here
+  /// really is the value.
+  Future<void> setRideDescription(
+    String id, {
+    String? name,
+    String? notes,
+  }) async {
+    await (update(localRides)..where((t) => t.id.equals(id))).write(
+      LocalRidesCompanion(
+        name: Value(name),
+        notes: Value(notes),
+        updatedAt: Value(DateTime.now().toUtc()),
+      ),
+    );
+  }
+
   Future<void> setSyncStatus(String id, SyncStatus status) async {
     await (update(localRides)..where((t) => t.id.equals(id))).write(
       LocalRidesCompanion(

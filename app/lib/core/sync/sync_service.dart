@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../features/ride/data/ride_repository.dart';
@@ -422,6 +423,15 @@ class SyncService {
     return applied;
   }
 
+  /// Entry point for the tests, which have no HTTP client to pull with.
+  ///
+  /// The merge is the only place where "who wins" is decided, and it is pure
+  /// local work — it deserves a test more than the uploads do, precisely
+  /// because a mistake here is silent: the rider sees a ride whose name went
+  /// back to what it was on another device, or a note that will not go away.
+  @visibleForTesting
+  Future<bool> mergeRemoteRide(RemoteRide remote) => _mergeRemoteRide(remote);
+
   /// Returns true when the local store changed.
   Future<bool> _mergeRemoteRide(RemoteRide remote) async {
     final local = await _rides.getRide(remote.id);
@@ -432,6 +442,7 @@ class SyncService {
         Ride(
           id: remote.id,
           name: remote.name,
+          notes: remote.notes,
           startedAt: remote.startedAt,
           endedAt: remote.endedAt,
           stats: RideStats(
@@ -462,10 +473,15 @@ class SyncService {
     // Cloud is newer. Only the fields a rider can edit are taken: the recorded
     // statistics on this device came off a GPS receiver and are not something
     // to overwrite from a summary row.
-    if (local.name != remote.name && remote.name != null) {
+    //
+    // Name and notes are taken *verbatim* — including `null`. A field that can
+    // only ever be set is a field that can never be cleared, and the rider who
+    // emptied their note on the other phone meant it.
+    if (local.name != remote.name || local.notes != remote.notes) {
       await _rides.applyRemoteMetadata(
         local.id,
         name: remote.name,
+        notes: remote.notes,
         gpxPath: remote.gpxPath,
       );
       return true;

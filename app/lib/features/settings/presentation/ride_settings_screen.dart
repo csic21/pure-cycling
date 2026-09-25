@@ -138,7 +138,7 @@ class RideSettingsScreen extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
             child: Text(
-              '骑行结束后只有名称、备注和车辆可以修改，'
+              '骑行结束后只有名称和备注可以修改，'
               '距离、时间和爬升不会被自动改写。',
               style: AppText.caption,
             ),

@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart'
     show AuthChangeEvent, Supabase;
 
 import '../core/database/database.dart';
+import '../core/diagnostics/diagnostic_log.dart';
 import '../core/location/elevation_tuning.dart';
 import '../core/location/location_service.dart';
 import '../core/map/amap/amap_client.dart';
@@ -56,6 +57,14 @@ final databaseProvider = Provider<AppDatabase>((ref) {
 final locationServiceProvider = Provider<LocationService>(
   (ref) => LocationService(),
 );
+
+/// The process's diagnostic log.
+///
+/// `main` overrides this with the instance its global error handlers write to.
+/// The default resolves its own file lazily and is what a widget test gets
+/// when it does not care — under `flutter test` there is no `path_provider`
+/// plugin, so it quietly does nothing rather than failing the test.
+final diagnosticLogProvider = Provider<DiagnosticLog>((ref) => DiagnosticLog());
 
 final authRepositoryProvider = Provider<AuthRepository>(
   (ref) => AuthRepository(),

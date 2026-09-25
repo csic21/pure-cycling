@@ -19,6 +19,7 @@ class RemoteRide {
     required this.updatedAt,
     this.endedAt,
     this.name,
+    this.notes,
     this.distanceMeters = 0,
     this.elapsedSeconds = 0,
     this.movingSeconds = 0,
@@ -32,6 +33,11 @@ class RemoteRide {
   final DateTime updatedAt;
   final DateTime? endedAt;
   final String? name;
+
+  /// The rider's own note. Carried so a ride recovered on a new phone arrives
+  /// with everything they wrote, not just its statistics.
+  final String? notes;
+
   final double distanceMeters;
   final int elapsedSeconds;
   final int movingSeconds;
@@ -49,6 +55,7 @@ class RemoteRide {
             ? null
             : DateTime.parse(row['ended_at'] as String).toUtc(),
         name: row['name'] as String?,
+        notes: row['notes'] as String?,
         distanceMeters: (row['distance_meters'] as num?)?.toDouble() ?? 0,
         elapsedSeconds: (row['elapsed_seconds'] as num?)?.toInt() ?? 0,
         movingSeconds: (row['moving_seconds'] as num?)?.toInt() ?? 0,

@@ -1,16 +1,41 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'app/app.dart';
+import 'app/providers.dart';
+import 'core/diagnostics/diagnostic_log.dart';
+import 'core/diagnostics/error_reporting.dart';
 import 'core/sync/supabase_config.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  // One log for the process, handed to the provider graph so the settings
+  // screen exports exactly what these handlers wrote.
+  final log = DiagnosticLog();
 
-  await _initSupabase();
+  installErrorHandlers(log);
 
-  runApp(const ProviderScope(child: CyclingApp()));
+  // The zone is the last net: an error raised in a callback that no framework
+  // hook owns — a timer, a stream listener — arrives here and nowhere else.
+  // Without it, that error is invisible *and* unrecorded.
+  await runZonedGuarded(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      await log.init();
+
+      await _initSupabase();
+
+      runApp(
+        ProviderScope(
+          overrides: [diagnosticLogProvider.overrideWithValue(log)],
+          child: const CyclingApp(),
+        ),
+      );
+    },
+    (error, stack) => log.error('zone', error, stack),
+  );
 }
 
 /// Initialises Supabase when credentials were supplied at build time.

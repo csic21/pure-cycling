@@ -1,5 +1,6 @@
 import 'package:cycling_app/app/app.dart';
 import 'package:cycling_app/core/database/database.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -175,6 +176,62 @@ void main() {
       // The seeded trace reports ±2.5 m vertical accuracy, so the climb is
       // presented as a measurement rather than hedged as an estimate.
       expect(find.text('爬升（估算）'), findsNothing);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('a note can be written, and it shows on the detail screen',
+        (tester) async {
+      await seedRide(database, name: '周末环湖');
+      await pumpApp(tester);
+
+      await openTab(tester, '记录');
+      await tester.tap(find.text('周末环湖'));
+      await settle(tester);
+
+      // The ride has no note yet, so the section is absent rather than empty.
+      expect(find.text('备注'), findsNothing);
+
+      await tester.tap(find.byTooltip('更多'));
+      await settle(tester);
+      await tester.tap(find.text('编辑信息'));
+      await settle(tester);
+
+      // The sheet submits both fields, so the name is prefilled rather than
+      // blank — an accidental save must not erase it.
+      expect(find.text('周末环湖'), findsWidgets);
+
+      await tester.enterText(find.byType(TextField).last, '风大，注意补给');
+      await tester.tap(find.text('保存'));
+      await settle(tester);
+
+      expect(find.text('备注'), findsOneWidget);
+      expect(find.text('风大，注意补给'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('an existing note is shown, and can be emptied', (tester) async {
+      await seedRide(database, name: '通勤', notes: '链条有点响');
+      await pumpApp(tester);
+
+      await openTab(tester, '记录');
+      await tester.tap(find.text('通勤'));
+      await settle(tester);
+
+      expect(find.text('链条有点响'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('更多'));
+      await settle(tester);
+      await tester.tap(find.text('编辑信息'));
+      await settle(tester);
+
+      await tester.enterText(find.byType(TextField).last, '');
+      await tester.tap(find.text('保存'));
+      await settle(tester);
+
+      // Emptied means gone, not "kept because null means leave alone".
+      expect(find.text('链条有点响'), findsNothing);
 
       await shutdownApp(tester, database);
     });

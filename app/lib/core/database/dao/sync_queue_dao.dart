@@ -39,17 +39,39 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
   ///
   /// One entry per (entity, operation): re-saving a ride five times while
   /// offline still results in a single upload.
+  ///
+  /// The conflict target has to be spelled out. `insertOnConflictUpdate` only
+  /// detects a conflict on the *primary key*, and this table's primary key is
+  /// an auto-increment id that nothing supplies — so the unique key the table
+  /// is actually built on (entity, operation) never matched, and a second
+  /// enqueue threw `UNIQUE constraint failed` instead of replacing the row.
+  /// The same call also resets the backoff: a fresh edit is a new reason to
+  /// try, and it should not inherit the failed attempt's timer.
   Future<void> enqueue(
     SyncEntityType type,
     String entityId,
     SyncOperation operation,
   ) async {
-    await into(syncQueueItems).insertOnConflictUpdate(
+    final now = DateTime.now().toUtc();
+    await into(syncQueueItems).insert(
       SyncQueueItemsCompanion.insert(
         entityType: type.id,
         entityId: entityId,
         operation: operation.id,
-        createdAt: DateTime.now().toUtc(),
+        createdAt: now,
+      ),
+      onConflict: DoUpdate(
+        (old) => SyncQueueItemsCompanion(
+          createdAt: Value(now),
+          retryCount: const Value(0),
+          nextAttemptAt: const Value(null),
+          lastError: const Value(null),
+        ),
+        target: [
+          syncQueueItems.entityType,
+          syncQueueItems.entityId,
+          syncQueueItems.operation,
+        ],
       ),
     );
   }
