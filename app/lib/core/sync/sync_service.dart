@@ -19,6 +19,11 @@ import 'sync_status.dart';
 enum SyncPhase {
   notConfigured,
   signedOut,
+
+  /// The rider turned cloud sync off. Nothing is uploaded — this phase exists
+  /// so the screen can say that instead of showing an idle cloud.
+  disabled,
+
   idle,
   syncing,
   offline,
@@ -167,9 +172,23 @@ class SyncService {
   /// Runs a full push-then-pull cycle.
   ///
   /// [force] bypasses the "wifi only" preference, for an explicit user action
-  /// — a rider tapping 立即同步 on cellular means it.
+  /// — a rider tapping 立即同步 on cellular means it. It does **not** bypass
+  /// the cloud-sync switch: that one is a privacy promise, and a promise with
+  /// a bypass is not a promise.
+  ///
+  /// This method is the single choke point for the switch on purpose. Every
+  /// trigger — network returning, the backlog retry, app resume, login,
+  /// pull-to-refresh, the manual button — funnels through here, so the gate
+  /// cannot be forgotten in a new call site. It is checked before the client
+  /// is resolved and before connectivity is queried, so "off" means no
+  /// network work at all.
   Future<SyncReport> syncNow({bool force = false}) async {
     if (_running) return _report;
+
+    if (!_settings.cloudSync) {
+      _emit(_report.copyWith(phase: SyncPhase.disabled, message: null));
+      return _report;
+    }
 
     final client = _resolveClient();
     if (client == null || !SupabaseConfig.isConfigured) {
@@ -434,6 +453,9 @@ class SyncService {
   // ---- Helpers ----
 
   SyncPhase get _baselinePhase {
+    // Off before anything else: the screen must not say "已就绪" while the
+    // rider has switched uploading off.
+    if (!_settings.cloudSync) return SyncPhase.disabled;
     if (!SupabaseConfig.isConfigured) return SyncPhase.notConfigured;
     if (_resolveClient()?.auth.currentUser == null) return SyncPhase.signedOut;
     return SyncPhase.idle;

@@ -82,6 +82,10 @@ flutter run
 
 ### 启用云同步（Supabase）
 
+设置里的「启用云同步」**默认关闭**；关闭时任何触发路径都不会上传，
+包括手动同步（`test/sync_gate_test.dart` 锁着这条承诺）。
+打开后，传输的是骑行摘要、完整轨迹（GPX 文件）、保存的路线和设置。
+
 ```sh
 flutter run \
   --dart-define=SUPABASE_URL=https://xxxx.supabase.co \

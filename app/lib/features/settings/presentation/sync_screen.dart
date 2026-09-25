@@ -105,10 +105,20 @@ class _StatusSection extends ConsumerWidget {
       rows: [
         SettingsSwitch(
           title: '启用云同步',
-          subtitle: '关闭后不会上传，但仍可手动同步',
+          subtitle: settings.cloudSync
+              ? '已开启：上传摘要、轨迹和路线，用于换手机后找回'
+              : '已关闭：不会上传任何内容，手动同步也不会',
           value: settings.cloudSync,
           onChanged: (v) =>
               ref.read(settingsProvider.notifier).mutate((s) => s.copyWith(cloudSync: v)),
+        ),
+        const SettingsTile(
+          // Stated once, always visible, so the switch is an informed choice
+          // rather than a toggle whose consequences show up later.
+          title: '会上传什么',
+          subtitle: '骑行摘要（距离、时间、速度、爬升）、完整轨迹（GPX 文件）、'
+              '保存的路线和你的设置。不上传通讯录、广告标识或其它应用的数据。',
+          leading: Icon(Icons.cloud_upload_outlined),
         ),
         SettingsSwitch(
           title: '仅 Wi-Fi 上传',
@@ -140,19 +150,25 @@ class _StatusSection extends ConsumerWidget {
         if (current.pendingCount > 0)
           SettingsTile(
             title: '待上传 ${current.pendingCount} 条',
-            subtitle: '网络恢复后会自动上传',
+            subtitle: settings.cloudSync
+                ? '网络恢复后会自动上传'
+                : '打开云同步后才会上传',
             leading: const Icon(Icons.cloud_upload_outlined,
                 color: AppColors.warning),
           ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-          child: FilledButton(
-            onPressed: current.isBusy
-                ? null
-                : () => ref.read(syncServiceProvider).syncNow(force: true),
-            child: const Text('立即同步'),
+        // The button disappears when the switch is off instead of sitting
+        // there disabled: there is nothing to press, and offering a dead
+        // control next to a privacy switch reads as a loophole.
+        if (settings.cloudSync)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+            child: FilledButton(
+              onPressed: current.isBusy
+                  ? null
+                  : () => ref.read(syncServiceProvider).syncNow(force: true),
+              child: const Text('立即同步'),
+            ),
           ),
-        ),
       ],
     );
   }
@@ -163,6 +179,7 @@ class _StatusSection extends ConsumerWidget {
         SyncPhase.offline => Icons.wifi_off,
         SyncPhase.signedOut => Icons.person_off_outlined,
         SyncPhase.notConfigured => Icons.settings_outlined,
+        SyncPhase.disabled => Icons.lock_outline,
         SyncPhase.idle => Icons.cloud_done_outlined,
       };
 
@@ -179,6 +196,7 @@ class _StatusSection extends ConsumerWidget {
         SyncPhase.offline => '离线',
         SyncPhase.signedOut => '未登录',
         SyncPhase.notConfigured => '未配置',
+        SyncPhase.disabled => '云同步已关闭',
         SyncPhase.idle => '已就绪',
       };
 }

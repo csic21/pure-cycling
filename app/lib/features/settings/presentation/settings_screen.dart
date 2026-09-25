@@ -166,10 +166,14 @@ class SettingsScreen extends ConsumerWidget {
   }
 
   static String _syncSubtitle(SyncReport? report, AuthUser? user) {
+    // The switch outranks the session state: "已关闭" is the fact that matters,
+    // and it stays true whether or not someone is signed in.
+    if (report?.phase == SyncPhase.disabled) return '已关闭';
     if (!SupabaseConfig.isConfigured) return '未配置';
     if (user == null) return '未登录';
     if (report == null) return '已登录';
     return switch (report.phase) {
+      SyncPhase.disabled => '已关闭',
       SyncPhase.syncing => '同步中…',
       SyncPhase.offline => '离线',
       SyncPhase.failed => report.message ?? '同步失败',
@@ -178,7 +182,7 @@ class SettingsScreen extends ConsumerWidget {
       SyncPhase.idle => report.lastSyncedAt == null
           ? '已登录，尚未同步'
           : '上次同步 ${UnitFormatter.clock(report.lastSyncedAt!)}'
-              '${report.pendingCount > 0 ? ' · 待上传 ${report.pendingCount}' : ''}',
+              '${report.pendingCount > 0 ? '，待上传 ${report.pendingCount}' : ''}',
     };
   }
 }

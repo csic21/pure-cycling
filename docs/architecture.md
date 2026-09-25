@@ -221,6 +221,27 @@ route_geometry = coalesce(excluded.route_geometry, rides.route_geometry)
 
 网络恢复时 `resetBackoff()` 会清空退避，立即重试。
 
+### 开关是唯一的闸门
+
+设置里的「启用云同步」默认关闭。关闭时**不上传任何内容**，包括手动按下
+「立即同步」——`syncNow()` 在所有触发点之前先看这个开关，闸门只有一处：
+
+```text
+网络恢复 / 退避重试 / App 回前台 / 登录成功 / 下拉刷新 / 手动按钮
+                              │
+                              ▼
+                    syncNow()  ← 先看 cloudSync
+                      │ 关 → SyncPhase.disabled，连客户端都不解析
+                      ▼ 开
+                    推送 → 拉取
+```
+
+放在这里而不是放在每个调用点，是因为调用点会随功能增加，而承诺不会。
+`test/sync_gate_test.dart` 锁住三件事：关闭时不上传、`force` 不能绕过、
+打开后闸门确实放行。
+
+「关闭后仍可手动同步」曾经是设置页的原话——那不是开关，是建议。
+
 ### 跨设备恢复
 
 云端只存骑行摘要和一条 LineString，完整轨迹在 Storage 里是 GPX。
