@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12 (API 31) draws the splash screen itself and ignores
+         `android:windowBackground`: the system window and the centred icon come
+         from these attributes instead. Without them the launch screen on a
+         modern Android phone is the *system* default — which is a white card
+         behind the launcher icon — no matter what `launch_background.xml` says.
+
+         The icon is deliberately a black square for now. The template icon is
+         on a white field, and putting it on a black splash would be worse than
+         showing nothing. Replace `@drawable/splash_icon` at the same time the
+         real launcher icon lands. -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+        <item name="android:windowSplashScreenBackground">@android:color/black</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/black</item>
+    </style>
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">?android:colorBackground</item>
+    </style>
+</resources>

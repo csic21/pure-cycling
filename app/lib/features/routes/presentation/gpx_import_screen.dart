@@ -13,6 +13,7 @@ import '../../../core/gpx/gpx_codec.dart';
 import '../../../core/map/map_providers.dart';
 import '../../../core/utils/units.dart';
 import '../../../shared/widgets/elevation_chart.dart';
+import '../../../shared/widgets/error_notice.dart';
 import '../../../shared/widgets/route_map.dart';
 import '../data/route_repository.dart';
 
@@ -79,33 +80,7 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
                 if (_error != null)
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: AppColors.danger.withValues(alpha: 0.4),
-                        ),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(
-                            Icons.error_outline,
-                            size: 18,
-                            color: AppColors.danger,
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _error!,
-                              style: AppText.caption
-                                  .copyWith(color: AppColors.danger),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    child: ErrorBanner(message: _error!),
                   ),
 
                 if (_parsed != null) ...[
@@ -158,10 +133,16 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
       // already be gone by the time a path is opened.
       final bytes = await file.readAsBytes();
       _parse(utf8.decode(bytes, allowMalformed: true), file.name);
-    } catch (e) {
+    } catch (e, stack) {
       setState(() {
         _busy = false;
-        _error = '读取文件失败：$e';
+        _error = ref.read(failureReporterProvider).report(
+              'gpx_import.read_file',
+              e,
+              stack: stack,
+              message: '读取文件失败。换一个文件再试；'
+                  '如果是从文件管理器分享进来的，先保存到本机再导入。',
+            );
       });
     }
   }
@@ -204,10 +185,16 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
         _busy = false;
         _error = null;
       });
-    } catch (e) {
+    } catch (e, stack) {
       setState(() {
         _busy = false;
-        _error = '无法解析这个文件，可能不是有效的 GPX：$e';
+        _error = ref.read(failureReporterProvider).report(
+              'gpx_import.parse',
+              e,
+              stack: stack,
+              message: '这个文件不是有效的 GPX，或者内容已经损坏。'
+                  '换一个文件，或者把 GPX 文本粘贴进来。',
+            );
       });
     }
   }
@@ -235,10 +222,16 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
         _busy = false;
         _error = e.message;
       });
-    } catch (e) {
+    } catch (e, stack) {
       setState(() {
         _busy = false;
-        _error = '保存失败：$e';
+        _error = ref.read(failureReporterProvider).report(
+              'gpx_import.save',
+              e,
+              stack: stack,
+              message: '路线没有保存成功。重试一次；'
+                  '如果一直失败，可以在「设置 → 诊断日志」中导出日志。',
+            );
       });
     }
   }

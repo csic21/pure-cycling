@@ -80,56 +80,15 @@ class AccountSection extends ConsumerWidget {
   /// The account id does not change, so every ride already synced under it
   /// stays attached — this adds a way back in, it does not move anything.
   Future<void> _attachEmail(BuildContext context, WidgetRef ref) async {
-    final email = TextEditingController();
-    final password = TextEditingController();
-
-    final submitted = await showDialog<bool>(
+    final submitted = await showDialog<({String email, String password})>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('绑定邮箱'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              '已同步的骑行不会受影响，只是多了一种登录方式。',
-              style: AppText.caption,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: email,
-              autofocus: true,
-              keyboardType: TextInputType.emailAddress,
-              autocorrect: false,
-              decoration: const InputDecoration(labelText: '邮箱'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: password,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: '设置密码',
-                helperText: '至少 6 位',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('绑定'),
-          ),
-        ],
-      ),
+      builder: (_) => const _AttachEmailDialog(),
     );
 
-    if (submitted != true || !context.mounted) return;
+    if (submitted == null || !context.mounted) return;
 
-    final address = email.text.trim();
-    final secret = password.text;
+    final address = submitted.email;
+    final secret = submitted.password;
 
     if (address.isEmpty || secret.length < 6) {
       _showMessage(context, '请填写邮箱，密码至少 6 位');
@@ -175,5 +134,76 @@ class AccountSection extends ConsumerWidget {
 
     if (confirmed != true) return;
     await ref.read(authRepositoryProvider).signOut();
+  }
+}
+
+/// Collects the address and password for binding an anonymous account.
+///
+/// It owns its controllers, and that is the whole reason it is a widget. The
+/// dialog's exit animation keeps rebuilding its fields after `showDialog`
+/// resolves, so controllers disposed at that moment are *used after dispose* —
+/// which throws during a rebuild rather than leaking quietly.
+class _AttachEmailDialog extends StatefulWidget {
+  const _AttachEmailDialog();
+
+  @override
+  State<_AttachEmailDialog> createState() => _AttachEmailDialogState();
+}
+
+class _AttachEmailDialogState extends State<_AttachEmailDialog> {
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('绑定邮箱'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            '已同步的骑行不会受影响，只是多了一种登录方式。',
+            style: AppText.caption,
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _email,
+            autofocus: true,
+            keyboardType: TextInputType.emailAddress,
+            autocorrect: false,
+            decoration: const InputDecoration(labelText: '邮箱'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _password,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: '设置密码',
+              helperText: '至少 6 位',
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(
+            context,
+            (email: _email.text.trim(), password: _password.text),
+          ),
+          child: const Text('绑定'),
+        ),
+      ],
+    );
   }
 }

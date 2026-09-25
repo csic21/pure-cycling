@@ -51,8 +51,11 @@ class AccountDeletionClient {
             body: '{}',
           )
           .timeout(timeout);
-    } catch (e) {
-      throw AccountDeletionException('网络不可用：$e');
+    } catch (_) {
+      // Same rule as the routing relay: the rider gets a sentence, not a type
+      // name. The call is authenticated and short, so a failure here is almost
+      // always "no network" or "the token has expired".
+      throw const AccountDeletionException('网络不可用，请检查连接后重试');
     }
 
     Map<String, dynamic>? body;

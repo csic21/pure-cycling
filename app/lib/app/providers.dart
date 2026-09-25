@@ -9,6 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart'
 
 import '../core/database/database.dart';
 import '../core/diagnostics/diagnostic_log.dart';
+import '../core/diagnostics/failure_reporter.dart';
 import '../core/location/elevation_tuning.dart';
 import '../core/location/location_service.dart';
 import '../core/map/amap/amap_client.dart';
@@ -65,6 +66,11 @@ final locationServiceProvider = Provider<LocationService>(
 /// when it does not care — under `flutter test` there is no `path_provider`
 /// plugin, so it quietly does nothing rather than failing the test.
 final diagnosticLogProvider = Provider<DiagnosticLog>((ref) => DiagnosticLog());
+
+/// Turns a caught exception into something the rider sees and the log keeps.
+final failureReporterProvider = Provider<FailureReporter>(
+  (ref) => FailureReporter(ref.watch(diagnosticLogProvider)),
+);
 
 final authRepositoryProvider = Provider<AuthRepository>(
   (ref) => AuthRepository(),

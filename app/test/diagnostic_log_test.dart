@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/fake_diagnostic_log.dart';
 import 'support/test_harness.dart';
 
 /// The app has no crash-reporting SDK, so this file *is* the support story:
@@ -191,24 +192,3 @@ void main() {
   });
 }
 
-/// A log that lives in memory, for the screen tests.
-class FakeDiagnosticLog extends DiagnosticLog {
-  String content = '';
-
-  @override
-  Future<void> init() async {}
-
-  @override
-  Future<void> error(String source, Object error, StackTrace? stack) async {
-    content = '$content[$source] $error\n';
-  }
-
-  @override
-  Future<String> read() async => content;
-
-  @override
-  Future<int> sizeBytes() async => content.length;
-
-  @override
-  Future<void> clear() async => content = '';
-}

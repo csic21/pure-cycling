@@ -8,6 +8,7 @@ import '../../../app/providers.dart';
 import '../../../app/router.dart';
 import '../../../app/theme.dart';
 import '../../../core/utils/units.dart';
+import '../../../shared/widgets/error_notice.dart';
 import '../../../shared/widgets/route_map.dart';
 import '../domain/route.dart';
 
@@ -37,7 +38,17 @@ class RouteDetailScreen extends ConsumerWidget {
       ),
       body: routeAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('读取失败：$e')),
+        error: (e, stack) => ErrorNotice(
+          title: '读取路线失败',
+          message: ref.read(failureReporterProvider).report(
+                'route_detail.read',
+                e,
+                stack: stack,
+                message: '本机数据库没有响应。重启应用通常可以恢复；'
+                    '如果反复出现，可以在「设置 → 诊断日志」中导出日志。',
+              ),
+          onRetry: () => ref.invalidate(routeProvider(routeId)),
+        ),
         data: (route) {
           if (route == null) {
             return const Center(child: Text('这条路线已被删除'));

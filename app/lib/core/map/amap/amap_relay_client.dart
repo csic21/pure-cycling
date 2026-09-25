@@ -111,9 +111,11 @@ class AmapRelayClient implements AmapRouteClient {
       );
     } on RoutePlanningException {
       rethrow;
-    } catch (e) {
-      // Offline is the expected case on a bike, not an exceptional one.
-      throw RoutePlanningException('网络不可用：$e');
+    } catch (_) {
+      // Offline is the expected case on a bike, not an exceptional one. The
+      // underlying exception is deliberately not interpolated: a rider who is
+      // out of signal should read 「网络不可用」, not a Dart type name.
+      throw const RoutePlanningException('网络不可用，请检查连接后重试');
     }
   }
 

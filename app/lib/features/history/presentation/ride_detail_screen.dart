@@ -7,6 +7,7 @@ import '../../../app/theme.dart';
 import '../../../core/location/elevation_tuning.dart';
 import '../../../core/utils/units.dart';
 import '../../../shared/widgets/elevation_chart.dart';
+import '../../../shared/widgets/error_notice.dart';
 import '../../../shared/widgets/route_map.dart';
 import '../../ride/domain/ride.dart';
 
@@ -58,7 +59,17 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
       ),
       body: rideAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('读取失败：$e')),
+        error: (e, stack) => ErrorNotice(
+          title: '读取骑行失败',
+          message: ref.read(failureReporterProvider).report(
+                'ride_detail.read',
+                e,
+                stack: stack,
+                message: '本机数据库没有响应。重启应用通常可以恢复；'
+                    '如果反复出现，可以在「设置 → 诊断日志」中导出日志。',
+              ),
+          onRetry: () => ref.invalidate(rideProvider(widget.rideId)),
+        ),
         data: (ride) {
           if (ride == null) {
             return const Center(child: Text('这条记录已被删除'));
@@ -248,10 +259,17 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
           subject: ride.displayName('骑行'),
         ),
       );
-    } catch (e) {
+    } catch (e, stack) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出失败：$e')),
+      showFailureSnackBar(
+        context,
+        ref.read(failureReporterProvider).report(
+              'ride_detail.export_gpx',
+              e,
+              stack: stack,
+              message: '导出 GPX 失败。可以先重试；如果一直失败，'
+                  '这一趟的轨迹仍在本机记录里，可以在「设置 → 诊断日志」导出日志。',
+            ),
       );
     }
   }
@@ -265,10 +283,17 @@ class _RideDetailScreenState extends ConsumerState<RideDetailScreen> {
           subject: ride.displayName('骑行'),
         ),
       );
-    } catch (e) {
+    } catch (e, stack) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出失败：$e')),
+      showFailureSnackBar(
+        context,
+        ref.read(failureReporterProvider).report(
+              'ride_detail.export_fit',
+              e,
+              stack: stack,
+              message: '导出 FIT 失败。可以先重试；如果一直失败，'
+                  '可以在「设置 → 诊断日志」导出日志。',
+            ),
       );
     }
   }

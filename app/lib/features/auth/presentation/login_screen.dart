@@ -206,11 +206,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         _busy = false;
         _error = e.message;
       });
-    } catch (e) {
+    } catch (e, stack) {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = '操作失败：$e';
+        _error = ref.read(failureReporterProvider).report(
+              'login.submit',
+              e,
+              stack: stack,
+              message: '登录没有完成。检查网络后重试；'
+                  '如果一直失败，可以在「设置 → 诊断日志」中导出日志。',
+            );
       });
     }
   }

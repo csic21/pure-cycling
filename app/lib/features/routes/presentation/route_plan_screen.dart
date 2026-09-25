@@ -132,13 +132,21 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
     } on RoutePlanningException catch (e) {
       if (!mounted) return;
       setState(() {
+        // Curated: the provider's messages are already written for the rider
+        // ("高德没有返回可用的骑行路线"), so they are shown as they are.
         _error = e.message;
         _planning = false;
       });
-    } catch (e) {
+    } catch (e, stack) {
       if (!mounted) return;
       setState(() {
-        _error = '规划失败：$e';
+        _error = ref.read(failureReporterProvider).report(
+              'route_plan.plan',
+              e,
+              stack: stack,
+              message: '规划没有完成。检查网络后重试；'
+                  '如果一直失败，可以在「设置 → 诊断日志」中导出日志。',
+            );
         _planning = false;
       });
     }

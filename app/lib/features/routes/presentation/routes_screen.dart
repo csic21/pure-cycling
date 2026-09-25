@@ -6,6 +6,7 @@ import '../../../app/providers.dart';
 import '../../../app/router.dart';
 import '../../../app/theme.dart';
 import '../../../core/utils/units.dart';
+import '../../../shared/widgets/error_notice.dart';
 import '../domain/route.dart';
 
 /// Saved routes (spec §3, §38).
@@ -37,7 +38,17 @@ class RoutesScreen extends ConsumerWidget {
       ),
       body: routes.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('读取失败：$e')),
+        error: (e, stack) => ErrorNotice(
+          title: '读取路线失败',
+          message: ref.read(failureReporterProvider).report(
+                'routes.read',
+                e,
+                stack: stack,
+                message: '本机数据库没有响应。重启应用通常可以恢复；'
+                    '如果反复出现，可以在「设置 → 诊断日志」中导出日志。',
+              ),
+          onRetry: () => ref.invalidate(savedRoutesProvider),
+        ),
         data: (list) {
           if (list.isEmpty) return const _EmptyRoutes();
 

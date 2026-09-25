@@ -89,11 +89,14 @@ class AmapClient implements AmapRouteClient {
 
   static String _describe(Object error) {
     final text = error.toString();
-    // ClientException's message includes the full URL, which is noise in a
-    // user-facing string.
+    // The underlying exception is deliberately not interpolated: a rider who
+    // is out of signal should read 「无法连接网络」, not a Dart type name and a
+    // URL. The kind of failure — timeout versus no route — is worth keeping
+    // distinct because the rider's next move differs.
+    if (text.contains('TimeoutException')) return '请求超时';
     if (text.contains('SocketException') || text.contains('Connection')) {
       return '无法连接网络';
     }
-    return text.length > 120 ? '${text.substring(0, 120)}…' : text;
+    return '网络请求失败';
   }
 }

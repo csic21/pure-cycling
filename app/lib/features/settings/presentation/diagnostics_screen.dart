@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../../app/providers.dart';
 import '../../../app/theme.dart';
+import '../../../shared/widgets/error_notice.dart';
 import '../../../shared/widgets/settings_widgets.dart';
 
 /// The diagnostic log, and the two things anyone can do with it.
@@ -128,10 +129,16 @@ class _DiagnosticsScreenState extends ConsumerState<DiagnosticsScreen> {
           subject: '纯粹骑行 诊断日志',
         ),
       );
-    } catch (e) {
+    } catch (e, stack) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出失败：$e')),
+      showFailureSnackBar(
+        context,
+        ref.read(failureReporterProvider).report(
+              'diagnostics.export',
+              e,
+              stack: stack,
+              message: '导出没有完成。重试一次；如果一直失败，日志本身仍然保留在本机。',
+            ),
       );
     } finally {
       if (mounted) setState(() => _busy = false);

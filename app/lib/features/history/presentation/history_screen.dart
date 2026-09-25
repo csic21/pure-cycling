@@ -6,6 +6,7 @@ import '../../../app/providers.dart';
 import '../../../app/router.dart';
 import '../../../app/theme.dart';
 import '../../../core/utils/units.dart';
+import '../../../shared/widgets/error_notice.dart';
 import '../../ride/domain/ride.dart';
 import 'widgets/ride_summary_row.dart';
 
@@ -62,9 +63,19 @@ class HistoryScreen extends ConsumerWidget {
                 hasScrollBody: false,
                 child: Center(child: CircularProgressIndicator()),
               ),
-              error: (error, _) => SliverFillRemaining(
+              error: (error, stack) => SliverFillRemaining(
                 hasScrollBody: false,
-                child: _Message(text: '读取记录失败：$error'),
+                child: ErrorNotice(
+                  title: '读取记录失败',
+                  message: ref.read(failureReporterProvider).report(
+                        'history.read',
+                        error,
+                        stack: stack,
+                        message: '本机数据库没有响应。重启应用通常可以恢复；'
+                            '如果反复出现，可以在「设置 → 诊断日志」中导出日志。',
+                      ),
+                  onRetry: () => ref.invalidate(ridesProvider),
+                ),
               ),
               data: (list) {
                 if (list.isEmpty) {
@@ -266,18 +277,3 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _Message extends StatelessWidget {
-  const _Message({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(40),
-        child: Text(text, style: AppText.caption, textAlign: TextAlign.center),
-      ),
-    );
-  }
-}
