@@ -11,7 +11,7 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-270 个测试通过          flutter test
+289 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
@@ -158,7 +158,7 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 270 个测试（单元 + 界面）
+│   └── test/                 289 个测试（单元 + 界面）
 ├── admin/                    管理后台（Next.js，直连 Supabase）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
@@ -305,6 +305,9 @@ flutter test
 | `app_flow_test.dart` | 界面冒烟：四个标签页、历史、详情、设置、路线、同步 |
 | `ride_flow_test.dart` | 记录流程：倒计时、实时速度、暂停/继续、权限、返回键守卫、崩溃恢复 |
 | `password_recovery_test.dart` | 重置链接 → 设置新密码 → 生效的整条链路 |
+| `ride_metadata_test.dart` | 名称与备注的编辑、清空，以及和云端副本的合并 |
+| `sync_queue_test.dart` | 出件箱：重复入队只留一行，新的编辑重置退避 |
+| `diagnostic_log_test.dart` | 诊断日志的写入 / 上限 / 不抛异常，以及出错页与导出入口 |
 | `auth_test.dart` | 深链配置、账号标签、Supabase 错误翻译 |
 | `account_section_test.dart` | 匿名 / 实名两种账号状态的界面 |
 | `voice_coach_test.dart` | 播报策略：远近两级、去重、隧道跳级、偏航 / 重算 / 到达、优先级与队列 |
@@ -351,7 +354,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 270 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 289 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 
@@ -440,8 +443,14 @@ Android 那步特意用 **release** 而不是 debug：debug 不跑 R8，而 R8 �
 
 - **码表布局是三种固定版式**，不是自由拖拽。版式编码了「主数字至少占屏幕 20%」这条规则（§5.1），
   自由布局允许做出在骑行中无法阅读的码表。
-- **骑行结束后只有名称、备注、车辆可改**（§28）。这让与云端的合并变得非常简单：
+- **骑行结束后只有名称和备注可改**（§28）。这让与云端的合并变得非常简单：
   永远没有统计数字需要协商。
+- **自行车（车辆）没有做成功能** —— `rides.bike_id` 这个字段从第一版就在，
+  但没有任何东西能写它：本地没有 bikes 表，云端 `public.bikes` 也没有对应的
+  上传路径（`push_ride` 的 payload 里没有 `bike_id`）。所以「选一辆车」在今天
+  只能是一个本地有效、重装即失、且上传后被静默丢弃的下拉框 —— 规格 §2.3 把
+  自行车管理放在 V2，这里先不给这个承诺。真要做需要三件事：本地 bikes 表 +
+  `public.rides.bike_id` 列 + `push_ride` 带上它。
 - **路线收藏是本地偏好，不上传**。你自己收藏了哪条路线，不需要告诉别的设备。
 - **删除采用 tombstone**，本地行保留，避免离线设备重新上传已删除的记录。
 - **`trip_distance` 字段未实现** —— 规格 §6 的可选字段里它和 `distance` 是同一个数值，
