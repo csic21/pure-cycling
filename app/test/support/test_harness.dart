@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/core/database/database.dart';
+import 'package:cycling_app/core/location/barometer_source.dart';
 import 'package:cycling_app/core/location/location_fix.dart';
 import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/core/permissions/notification_permission.dart';
@@ -51,6 +52,13 @@ class FakeLocationService extends LocationService {
   final _controller = StreamController<LocationFix>.broadcast();
   bool streamOpened = false;
   bool appSettingsOpened = false;
+
+  /// Every sampling profile the app has asked for, oldest first.
+  ///
+  /// The profile is part of the subscription, so this is also the record of
+  /// re-subscriptions — which is how the stationary policy is observed from a
+  /// test (see `sampling_policy_test.dart`).
+  final List<GpsAccuracyMode> requestedModes = [];
 
   /// Pushes a fix, as the platform would.
   void emit(LocationFix fix) {
@@ -115,6 +123,7 @@ class FakeLocationService extends LocationService {
     bool background = true,
   }) {
     streamOpened = true;
+    requestedModes.add(mode);
     return _controller.stream;
   }
 
@@ -175,9 +184,17 @@ List<Override> testOverrides({
   FakeLocationService? location,
   AuthRepository? auth,
   NotificationPermission? notifications,
+  BarometerSource? barometer,
 }) {
   return [
     databaseProvider.overrideWithValue(database),
+    // The platform channel has no implementation under `flutter test`, and
+    // asking it anyway makes the framework report a missing plugin — which the
+    // test binding treats as a failure. Rides in tests are barometer-free
+    // unless a test says otherwise.
+    barometerSourceProvider.overrideWithValue(
+      barometer ?? const NullBarometerSource(),
+    ),
     if (location != null) locationServiceProvider.overrideWithValue(location),
     if (auth != null) authRepositoryProvider.overrideWithValue(auth),
     if (notifications != null)

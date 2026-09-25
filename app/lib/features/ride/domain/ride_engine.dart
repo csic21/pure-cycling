@@ -337,6 +337,10 @@ class RideEngine {
   int? _heartRate;
   int? _cadence;
   int? _power;
+
+  /// `first GPS altitude − first barometric reading`, so that
+  /// `anchor + relative` is an altitude. Null until both have been seen.
+  double? _barometerAnchor;
   GeoPoint? _lastPoint;
   double? _bearing;
 
@@ -523,7 +527,9 @@ class RideEngine {
           speed: speed,
           bearing: processing.bearing,
           horizontalAccuracy: fix.hasAccuracy ? fix.accuracy : null,
-          verticalAccuracy: fix.altitudeAccuracy,
+          // The accuracy of the altitude in the line above, which is the
+          // barometer's when one is reporting — see `onBarometricAltitude`.
+          verticalAccuracy: processing.altitudeAccuracyMeters,
           heartRate: _heartRate,
           cadence: _cadence,
           power: _power,
@@ -532,6 +538,70 @@ class RideEngine {
     }
 
     _publish(force: isAutoPausing || isAutoResuming);
+  }
+
+  /// Feeds a barometric altitude, in metres above the first sample of the
+  /// current stream.
+  ///
+  /// ## Why this is anchored rather than trusted
+  ///
+  /// A barometer measures pressure, and pressure at a given height changes
+  /// with the weather — a phone has no way to know the local sea-level
+  /// pressure, so the absolute height is unknowable. What it knows precisely
+  /// is *change*: 0.1 m of resolution, and noise that does not drift the way
+  /// GPS altitude does.
+  ///
+  /// So the shape comes from the barometer and the position from GPS: the
+  /// anchor is `first GPS altitude − first relative reading`, and every
+  /// reading is then an absolute altitude good to the GPS fix's own vertical
+  /// error (tens of metres) in *value* but to about a metre in *change*. The
+  /// climb total and the profile care only about the latter; the exported GPX
+  /// carries the former, which is no worse than it was before a barometer
+  /// existed.
+  ///
+  /// Before any GPS altitude exists there is nothing to anchor to, so samples
+  /// are dropped rather than invented.
+  void onBarometricAltitude(
+    double relativeAltitudeMeters, {
+    DateTime? at,
+  }) {
+    if (!_status.isActive) return;
+    if (!relativeAltitudeMeters.isFinite) return;
+
+    final timestamp = at ?? _now();
+
+    if (_barometerAnchor == null) {
+      final gpsAltitude = _filter.gpsSmoothedAltitude;
+      if (gpsAltitude == null) return;
+      _barometerAnchor = gpsAltitude - relativeAltitudeMeters;
+    }
+
+    final altitude = _barometerAnchor! + relativeAltitudeMeters;
+    final firstSample = !_filter.barometerActive;
+    _filter.onBarometricAltitude(altitude, at: timestamp);
+
+    // Threshold and quality follow the new source; this may also re-seed the
+    // accumulator if the threshold moved.
+    _applyElevationTuning();
+
+    // The series is fed here as well as from accepted fixes, and that is the
+    // point of a barometer: it keeps measuring through a tunnel, under trees
+    // and between two fixes, none of which stop a climb from happening. The
+    // accumulator is a series processor, so samples from both paths interleave
+    // correctly — a fix is just another sample.
+    final smoothed = _filter.smoothedAltitude;
+    if (smoothed == null) return;
+
+    if (firstSample) {
+      // The series just changed coordinate systems — GPS metres to barometric
+      // metres, with an offset of however wrong the GPS altitude was. The
+      // accumulator's running extremes are in the old system, so that offset
+      // would be banked as terrain. Reseeding keeps the leg already measured
+      // and re-anchors without inventing a climb.
+      _elevation.reseed(smoothed);
+    } else {
+      _elevation.add(smoothed);
+    }
   }
 
   /// Feeds a normalized sensor value.
@@ -634,10 +704,16 @@ class RideEngine {
   /// keeps the switch itself from creating or destroying gain.
   void _applyElevationTuning() {
     final tuning = _filter.tuning;
+
+    // The label follows the tuning whether or not the threshold moved: a
+    // source can change quality without changing bucket, and a stale 「估算」
+    // on a measured climb is the kind of wrong that erodes trust in every
+    // other number on the screen.
+    _elevationQuality = tuning.quality;
+
     if (tuning.gainThresholdMeters == _elevation.thresholdMeters) return;
 
     _elevation.thresholdMeters = tuning.gainThresholdMeters;
-    _elevationQuality = tuning.quality;
 
     final altitude = _filter.smoothedAltitude;
     if (altitude != null) _elevation.reseed(altitude);
@@ -820,6 +896,7 @@ class RideEngine {
     _filter.reset();
     _distance.reset();
     _elevation.reset();
+    _barometerAnchor = null;
     _averages.clear();
     _status = RideStatus.idle;
     _rideId = '';

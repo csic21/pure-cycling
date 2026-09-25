@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:battery_plus/battery_plus.dart';
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 // `show` rather than a bare import: the Supabase SDK also exports a type
@@ -11,6 +12,7 @@ import 'package:supabase_flutter/supabase_flutter.dart'
 import '../core/database/database.dart';
 import '../core/diagnostics/diagnostic_log.dart';
 import '../core/diagnostics/failure_reporter.dart';
+import '../core/location/barometer_source.dart';
 import '../core/location/elevation_tuning.dart';
 import '../core/location/location_service.dart';
 import '../core/map/amap/amap_client.dart';
@@ -59,6 +61,30 @@ final databaseProvider = Provider<AppDatabase>((ref) {
 
 final locationServiceProvider = Provider<LocationService>(
   (ref) => LocationService(),
+);
+
+/// The phone's own barometer.
+///
+/// Unlike the BLE sensors there is nothing to pair, so the only reason to
+/// replace it is a test or a platform without a barometer implementation.
+final barometerSourceProvider = Provider<BarometerSource>((ref) {
+  // The channel is implemented for Android and iOS. macOS has a barometer in
+  // some MacBooks but no implementation here, and asking anyway would report a
+  // missing plugin on every ride — the app already knows how to ride without
+  // one.
+  final platform = defaultTargetPlatform;
+  if (platform != TargetPlatform.android && platform != TargetPlatform.iOS) {
+    return const NullBarometerSource();
+  }
+  return const PlatformBarometerSource();
+});
+
+/// Whether this phone has a barometer, for the sensors screen.
+///
+/// Read once and cached: the answer cannot change while the app runs, and the
+/// probe costs a brief listen on the sensor.
+final barometerAvailabilityProvider = FutureProvider<bool>(
+  (ref) => ref.watch(barometerSourceProvider).isAvailable(),
 );
 
 /// The Android 13+ grant behind the recording notification.
@@ -318,6 +344,9 @@ final rideRecorderProvider = Provider<RideRecorder>((ref) {
     // devices, shows live values on its own screen, and sends nothing to the
     // ride — which is exactly what the code did before anyone checked.
     sensorReadings: ref.watch(sensorManagerProvider).readings,
+    // The barometer is not a paired device; it is part of the phone, and when
+    // it exists the climb stops being an estimate.
+    barometer: ref.watch(barometerSourceProvider),
   );
   ref.onDispose(recorder.dispose);
   return recorder;

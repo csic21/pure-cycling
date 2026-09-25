@@ -4,9 +4,11 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/database/dao/active_ride_dao.dart';
 import '../../../core/database/database.dart';
+import '../../../core/location/barometer_source.dart';
 import '../../../core/location/gps_filter.dart';
 import '../../../core/location/location_fix.dart';
 import '../../../core/location/location_service.dart';
+import '../../../core/location/sampling_policy.dart';
 import '../../../core/utils/geo.dart';
 import '../../sensors/domain/sensor.dart';
 import '../../settings/domain/app_settings.dart';
@@ -37,11 +39,16 @@ class RideRecorder {
     required LocationService locationService,
     ActiveRideDao? activeRideDao,
     Stream<SensorReading>? sensorReadings,
+    BarometerSource? barometer,
+    SamplingPolicy? samplingPolicy,
   })  : _db = db,
         _repository = repository,
         _location = locationService,
         _activeRideDao = activeRideDao ?? db.activeRideDao,
-        _sensorReadings = sensorReadings;
+        _sensorReadings = sensorReadings,
+        _barometer = barometer,
+        _sampling = samplingPolicy ??
+            SamplingPolicy(chosen: const AppSettings().gpsAccuracy);
 
   final AppDatabase _db;
   final RideRepository _repository;
@@ -56,11 +63,26 @@ class RideRecorder {
   /// and so a test can feed a reading directly.
   final Stream<SensorReading>? _sensorReadings;
 
+  /// The phone's own barometer, when it has one.
+  ///
+  /// Injected rather than constructed so a test can feed a synthetic climb
+  /// through the whole pipeline without a device — which is the only way to
+  /// check that the elevation arithmetic is right before standing on a hill.
+  final BarometerSource? _barometer;
+
+  /// How often the platform is asked for a fix, which is not always what the
+  /// rider chose — see [SamplingPolicy].
+  final SamplingPolicy _sampling;
+
+  /// The profile the current subscription was opened with, so a change is a
+  /// re-subscription and nothing else is.
+  GpsAccuracyMode? _requestedMode;
+
   RideEngine? _engine;
   StreamSubscription<LocationFix>? _locationSub;
   StreamSubscription<SensorReading>? _sensorSub;
+  StreamSubscription<BarometerSample>? _barometerSub;
   final _pending = <TrackPoint>[];
-  AppSettings _settings = const AppSettings();
   bool _disposed = false;
 
   /// The trace so far, for the live map.
@@ -100,7 +122,7 @@ class RideRecorder {
   /// Returns false when location permission is missing — the caller is
   /// expected to surface the reason rather than silently doing nothing.
   Future<bool> startRide(AppSettings settings) async {
-    _settings = settings;
+    _sampling.setChosen(settings.gpsAccuracy);
 
     final permission = await _location.ensurePermission();
     lastPermissionStatus = permission;
@@ -137,13 +159,14 @@ class RideRecorder {
 
     _subscribeLocation();
     _subscribeSensors();
+    _subscribeBarometer();
 
     return true;
   }
 
   /// Restores an interrupted ride from its checkpoint (spec §42).
   Future<bool> resumeRide(RideCheckpoint checkpoint, AppSettings settings) async {
-    _settings = settings;
+    _sampling.setChosen(settings.gpsAccuracy);
 
     final permission = await _location.ensurePermission();
     lastPermissionStatus = permission;
@@ -185,6 +208,7 @@ class RideRecorder {
 
     _subscribeLocation();
     _subscribeSensors();
+    _subscribeBarometer();
 
     return true;
   }
@@ -253,8 +277,12 @@ class RideRecorder {
 
   /// Applies changed settings to a ride already in progress.
   void applySettings(AppSettings settings) {
-    _settings = settings;
     _engine?.applyConfig(_engineConfig(settings));
+
+    // A rider who switches profile mid-ride gets it now, rather than at the
+    // next ride. Nothing else about the subscription changes.
+    _sampling.setChosen(settings.gpsAccuracy);
+    _syncSamplingProfile();
   }
 
   /// Writes a checkpoint immediately. Called when the app is backgrounded or
@@ -280,14 +308,26 @@ class RideRecorder {
   void _forward(RideEngine engine) {
     engine.states.listen((s) {
       if (_disposed) return;
+
+      // One state per second is the policy's clock: it needs the smoothed
+      // speed and nothing else, and the engine already decided what that is.
+      if (_sampling.update(
+        speedMps: s.stats.currentSpeedMps,
+        at: DateTime.now().toUtc(),
+      )) {
+        _syncSamplingProfile();
+      }
+
       _stateController.add(s);
     });
   }
 
   void _subscribeLocation() {
+    final mode = _sampling.effective;
+    _requestedMode = mode;
     _locationSub?.cancel();
     _locationSub = _location
-        .fixes(mode: _settings.gpsAccuracy)
+        .fixes(mode: mode)
         .listen(
           (fix) => _engine?.onLocation(fix),
           onError: (_) {
@@ -302,6 +342,20 @@ class RideRecorder {
   Future<void> _cancelLocation() async {
     await _locationSub?.cancel();
     _locationSub = null;
+    _requestedMode = null;
+  }
+
+  /// Re-opens the fix stream if the profile in force has changed.
+  ///
+  /// Re-subscribing is the only way to change a platform's sampling settings:
+  /// they are part of the subscription. The engine keeps its state across it —
+  /// the last accepted fix, the distance anchor, the smoothed speed — so the
+  /// switch costs one interval's worth of resolution, not a segment of the
+  /// ride.
+  void _syncSamplingProfile() {
+    if (_locationSub == null) return;
+    if (_requestedMode == _sampling.effective) return;
+    _subscribeLocation();
   }
 
   /// Attaches the sensor stream for the duration of a ride.
@@ -332,6 +386,33 @@ class RideRecorder {
     _sensorSub = null;
   }
 
+  /// Attaches the barometer for the duration of a ride.
+  ///
+  /// Errors are the normal case on a device without one, and on iOS when the
+  /// motion permission was refused: the altitude stays GPS-only, the climb
+  /// figure stays labelled as an estimate, and nothing else notices.
+  void _subscribeBarometer() {
+    final source = _barometer;
+    if (source == null) return;
+
+    _barometerSub?.cancel();
+    _barometerSub = source.samples().listen(
+      (sample) {
+        final relative = sample.relativeAltitudeMeters;
+        if (relative != null) {
+          _engine?.onBarometricAltitude(relative, at: sample.timestamp);
+        }
+      },
+      onError: (_) {},
+      cancelOnError: false,
+    );
+  }
+
+  Future<void> _cancelBarometer() async {
+    await _barometerSub?.cancel();
+    _barometerSub = null;
+  }
+
   /// Stops the engine, then the location subscription.
   ///
   /// The order matters and is not obvious. `RideEngine.dispose` cancels its
@@ -349,6 +430,7 @@ class RideRecorder {
     final stopping = engine?.dispose();
     await _cancelLocation();
     await _cancelSensors();
+    await _cancelBarometer();
     await stopping;
   }
 

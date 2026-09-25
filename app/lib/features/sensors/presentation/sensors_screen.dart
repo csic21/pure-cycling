@@ -174,6 +174,8 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
             footnote: '只使用标准 GATT 服务，不区分品牌。'
                 'ANT+ 设备需要额外的硬件，暂不支持。',
           ),
+
+          const _BarometerSection(),
         ],
       ),
     );
@@ -190,6 +192,45 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
     if (rssi >= -60) return '强';
     if (rssi >= -80) return '中';
     return '弱';
+  }
+}
+
+/// Whether this phone has a barometer, which decides what the climb figure is
+/// worth.
+///
+/// Not a BLE device and not pairable — it is part of the phone — so it gets its
+/// own section rather than a row under 「支持的设备」. The rider-facing question
+/// it answers is why one phone reports 300 m of climbing on a pass and another
+/// reports 「≈」.
+class _BarometerSection extends ConsumerWidget {
+  const _BarometerSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final availability = ref.watch(barometerAvailabilityProvider);
+    final has = availability.valueOrNull;
+
+    return SettingsSection(
+      title: '手机自带',
+      rows: [
+        SettingsTile(
+          title: '气压计',
+          subtitle: switch (has) {
+            null => '正在检查…',
+            true => '有此设备。爬升和坡度按气压变化测量，不会标注为估算',
+            false => '这台手机没有气压计。爬升来自 GPS 高度，是估算值 —— '
+                '平路可能虚报十几米，长爬坡几乎无损',
+          },
+          leading: Icon(
+            has == false ? Icons.speed_outlined : Icons.terrain_outlined,
+          ),
+        ),
+      ],
+      footnote: has == false
+          ? '要拿到测量值需要手机自带气压计（大多数中高端机型有，'
+              '少数没有）。这是硬件差异，不是设置问题。'
+          : null,
+    );
   }
 }
 

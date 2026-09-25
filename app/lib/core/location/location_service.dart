@@ -147,15 +147,32 @@ class LocationService {
 
   /// Location settings for a sampling profile (spec §32).
   ///
-  /// One hertz is the target while riding — a bicycle at 30 km/h moves 8 m
-  /// between fixes, which is the right resolution for both distance and a
-  /// smooth map. `distanceFilter: 0` is essential: the platform's default
-  /// distance-based filter would silently drop fixes at low speed, which is
-  /// exactly where the auto-pause rule needs them.
+  /// One hertz at the default profile: a bicycle at 30 km/h moves 8 m between
+  /// fixes, which is the right resolution for both distance and a smooth map.
+  /// The two frugal profiles trade that resolution for battery, and they are
+  /// what the stationary policy drops to — five seconds while parked is
+  /// plenty, and the distance calculator's anchor design means nothing is lost
+  /// when the rider sets off again.
+  ///
+  /// `distanceFilter: 0` is essential: the platform's default distance-based
+  /// filter would silently drop fixes at low speed, which is exactly where the
+  /// auto-pause rule needs them.
+  ///
+  /// **iOS has no rate control.** `CLLocationManager` decides how often to
+  /// deliver, guided by the accuracy request; the tuple below therefore buys
+  /// less on iOS than on Android, where `intervalDuration` is honoured. What
+  /// iOS does get from the frugal profiles is a lower-accuracy request, which
+  /// is the largest part of the radio's power draw.
   LocationSettings _settingsFor(
     GpsAccuracyMode mode, {
     required bool background,
   }) {
+    final interval = switch (mode) {
+      GpsAccuracyMode.high => const Duration(seconds: 1),
+      GpsAccuracyMode.balanced => const Duration(seconds: 2),
+      GpsAccuracyMode.batterySaver => const Duration(seconds: 5),
+    };
+
     final android = AndroidSettings(
       accuracy: switch (mode) {
         GpsAccuracyMode.high => LocationAccuracy.best,
@@ -163,7 +180,7 @@ class LocationService {
         GpsAccuracyMode.batterySaver => LocationAccuracy.medium,
       },
       distanceFilter: 0,
-      intervalDuration: const Duration(seconds: 1),
+      intervalDuration: interval,
       // Fused provider: better accuracy and materially better battery than
       // the raw LocationManager on every Android device with Play Services.
       forceLocationManager: false,

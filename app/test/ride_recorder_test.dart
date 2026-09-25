@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/location/location_service.dart';
+import 'package:cycling_app/core/location/sampling_policy.dart';
 import 'package:cycling_app/core/sync/sync_status.dart';
 import 'package:cycling_app/features/ride/data/ride_recorder.dart';
 import 'package:cycling_app/features/ride/data/ride_repository.dart';
@@ -189,6 +190,66 @@ void main() {
     await recorder.dispose();
     await readings.close();
     await location.dispose();
+  });
+
+  group('the sampling profile', () {
+    test('a relaxed policy is what the platform is asked for', () async {
+      final location = FakeLocationService();
+      final policy = SamplingPolicy(chosen: GpsAccuracyMode.high);
+
+      // Half a minute of stillness, the way the engine's state stream would
+      // drive it.
+      final start = DateTime.utc(2026, 9, 25, 6);
+      policy.update(speedMps: 0, at: start);
+      policy.update(speedMps: 0, at: start.add(const Duration(seconds: 31)));
+      expect(policy.isRelaxed, isTrue);
+
+      final recorder = RideRecorder(
+        db: database,
+        repository: RideRepository(database),
+        locationService: location,
+        samplingPolicy: policy,
+      );
+
+      await recorder.startRide(const AppSettings());
+      expect(
+        location.requestedModes,
+        [GpsAccuracyMode.batterySaver],
+        reason: '停车时应改用省电档，而不是继续每秒采样',
+      );
+
+      await recorder.dispose();
+      await location.dispose();
+    });
+
+    test('changing the setting mid-ride re-subscribes at the new profile',
+        () async {
+      final location = FakeLocationService();
+      final recorder = RideRecorder(
+        db: database,
+        repository: RideRepository(database),
+        locationService: location,
+      );
+
+      await recorder.startRide(
+        const AppSettings(gpsAccuracy: GpsAccuracyMode.high),
+      );
+      expect(location.requestedModes, [GpsAccuracyMode.high]);
+
+      // The rider switches to 均衡 in the settings screen while riding.
+      recorder.applySettings(
+        const AppSettings(gpsAccuracy: GpsAccuracyMode.balanced),
+      );
+
+      expect(
+        location.requestedModes,
+        [GpsAccuracyMode.high, GpsAccuracyMode.balanced],
+        reason: '档位属于订阅本身，只能重新订阅',
+      );
+
+      await recorder.dispose();
+      await location.dispose();
+    });
   });
 
   test('discarding a ride leaves nothing behind', () async {

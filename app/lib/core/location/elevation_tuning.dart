@@ -67,6 +67,17 @@ class ElevationTuning {
     required this.quality,
   });
 
+  /// What a phone barometer is worth, in metres.
+  ///
+  /// Resolution is around 0.1 m and the noise is white; what remains is the
+  /// weather, which moves the reading by a few metres over hours. Within one
+  /// ride, a metre is honest.
+  ///
+  /// Feeding this number anywhere a `verticalAccuracy` is expected is the
+  /// entire integration: the thresholds below already know what to do with a
+  /// source this good.
+  static const double barometerAccuracyMeters = 1.0;
+
   /// How far the smoothed altitude must move before the raw value is followed.
   ///
   /// Keeps the displayed altitude — and the bar on a profile chart — from

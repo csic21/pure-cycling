@@ -39,6 +39,7 @@ class ProcessedFix {
     required this.rejection,
     this.speedMps,
     this.altitudeMeters,
+    this.altitudeAccuracyMeters,
     this.gradePercent,
     this.bearing,
     this.distanceAddedMeters = 0,
@@ -51,7 +52,18 @@ class ProcessedFix {
   final double? speedMps;
 
   /// Smoothed altitude in meters.
+  ///
+  /// When a barometer is reporting this is the barometric series, not the GPS
+  /// one — see [GpsFilter.onBarometricAltitude].
   final double? altitudeMeters;
+
+  /// How much to trust [altitudeMeters], for the track point that stores it.
+  ///
+  /// Normally the fix's own `altitudeAccuracy`, but a barometer overrides it:
+  /// the point carries the barometric altitude, so it has to carry the
+  /// barometric accuracy too, or the ride detail would label a measured climb
+  /// as an estimate.
+  final double? altitudeAccuracyMeters;
 
   /// Smoothed gradient in percent, over a rolling distance window.
   final double? gradePercent;
@@ -144,7 +156,15 @@ class GpsFilter {
 
   LocationFix? _lastAccepted;
   double? _smoothedSpeed;
-  double? _smoothedAltitude;
+
+  /// The GPS altitude series. The one that drifts.
+  double? _smoothedGpsAltitude;
+
+  /// The barometric altitude series. Present only while a barometer reports.
+  double? _smoothedBaroAltitude;
+
+  DateTime? _lastBaroAt;
+  double? _lastGpsVerticalAccuracy;
   double? _bearing;
 
   /// Rolling window of (cumulative distance, altitude) for gradient.
@@ -161,7 +181,62 @@ class GpsFilter {
   int rejectedFixes = 0;
 
   LocationFix? get lastAccepted => _lastAccepted;
-  double? get smoothedAltitude => _smoothedAltitude;
+
+  /// The altitude in force: the barometer when one is reporting, GPS otherwise.
+  double? get smoothedAltitude => _smoothedBaroAltitude ?? _smoothedGpsAltitude;
+
+  /// The GPS-only altitude, ignoring any barometer.
+  ///
+  /// Used by the engine to anchor the barometric series to a real height: a
+  /// barometer knows the *shape* of a climb, GPS knows roughly where in the
+  /// world that shape sits.
+  double? get gpsSmoothedAltitude => _smoothedGpsAltitude;
+
+  /// Whether the altitude in force came from a barometer.
+  bool get barometerActive => _smoothedBaroAltitude != null;
+
+  /// Feeds a barometric altitude, in metres.
+  ///
+  /// No deadband here, unlike the GPS path, and the reason is the opposite of
+  /// the GPS reason. A barometer's noise is white and tiny, so a deadband
+  /// would filter nothing — it would *stall* the series on any climb slow
+  /// enough that consecutive samples move less than the threshold. A gentle 5%
+  /// grade at 7 km/h is 0.1 m/s; sampled at 5 Hz that is 2 cm per sample, and a
+  /// 0.3 m deadband would freeze the profile for the entire ascent.
+  ///
+  /// A light EMA follows instead. Light on purpose: the lag of a plain EMA is
+  /// `(1−α)/α` samples, so a heavy α would leave a *systematic* shortfall on
+  /// any sustained climb — at 0.15, a 120 m pass would read about 11 m low.
+  /// Half is enough to halve a one-sample glitch (a door slamming, a gust)
+  /// while costing a couple of centimetres of lag at the platform's cadence,
+  /// and the real filtering is the accumulator's 2 m threshold, which is ten
+  /// to forty standard deviations of the sensor's noise.
+  ///
+  /// The vertical-accuracy estimate is pinned while a barometer reports: it
+  /// decides the smoothing, the gain threshold and the quality label, and the
+  /// GPS figure would pull it straight back to the pessimistic bucket.
+  static const double _barometricSmoothingAlpha = 0.5;
+
+  void onBarometricAltitude(double altitudeMeters, {required DateTime at}) {
+    if (!altitudeMeters.isFinite) return;
+
+    // The time comes from the caller rather than from `DateTime.now()`, so
+    // that staleness is judged against the same clock the fixes use. Reading
+    // the wall clock here would compare platform timestamps with process time
+    // the moment a test — or a device with a corrected clock — uses anything
+    // but "now".
+    _lastBaroAt = at;
+
+    final previous = _smoothedBaroAltitude;
+    if (previous == null) {
+      _smoothedBaroAltitude = altitudeMeters;
+    } else {
+      _smoothedBaroAltitude =
+          previous + _barometricSmoothingAlpha * (altitudeMeters - previous);
+    }
+
+    _verticalAccuracyEstimate = ElevationTuning.barometerAccuracyMeters;
+  }
 
   /// Validates and smooths one sample.
   ///
@@ -172,6 +247,18 @@ class GpsFilter {
     double cumulativeDistanceMeters = 0,
   }) {
     totalFixes++;
+
+    // A barometer that stops reporting has to hand the altitude back to GPS,
+    // or the ride keeps a frozen altitude for the rest of the day. Fifteen
+    // seconds is well past the sensor's normal cadence and well short of a
+    // tunnel.
+    final lastBaro = _lastBaroAt;
+    if (lastBaro != null &&
+        fix.timestamp.difference(lastBaro) > const Duration(seconds: 15)) {
+      _smoothedBaroAltitude = null;
+      _lastBaroAt = null;
+      _verticalAccuracyEstimate = _lastGpsVerticalAccuracy;
+    }
 
     final last = _lastAccepted;
 
@@ -192,7 +279,13 @@ class GpsFilter {
         // Report the previous smoothed values so the UI does not flicker to
         // zero on a single bad timestamp.
         speedMps: _smoothedSpeed,
-        altitudeMeters: _smoothedAltitude,
+        // Report the previous smoothed values so the UI does not flicker to
+        // zero on one bad sample. The altitude is whichever source is in
+        // force, barometer included.
+        altitudeMeters: smoothedAltitude,
+        altitudeAccuracyMeters: barometerActive
+            ? ElevationTuning.barometerAccuracyMeters
+            : _reportedVerticalAccuracy(fix),
         gradePercent: _currentGrade,
         bearing: _bearing,
       );
@@ -209,7 +302,13 @@ class GpsFilter {
         raw: fix,
         rejection: FixRejection.mocked,
         speedMps: _smoothedSpeed,
-        altitudeMeters: _smoothedAltitude,
+        // Report the previous smoothed values so the UI does not flicker to
+        // zero on one bad sample. The altitude is whichever source is in
+        // force, barometer included.
+        altitudeMeters: smoothedAltitude,
+        altitudeAccuracyMeters: barometerActive
+            ? ElevationTuning.barometerAccuracyMeters
+            : _reportedVerticalAccuracy(fix),
         gradePercent: _currentGrade,
         bearing: _bearing,
       );
@@ -226,7 +325,13 @@ class GpsFilter {
             ? FixRejection.accuracyTooPoor
             : FixRejection.teleport,
         speedMps: _smoothedSpeed,
-        altitudeMeters: _smoothedAltitude,
+        // Report the previous smoothed values so the UI does not flicker to
+        // zero on one bad sample. The altitude is whichever source is in
+        // force, barometer included.
+        altitudeMeters: smoothedAltitude,
+        altitudeAccuracyMeters: barometerActive
+            ? ElevationTuning.barometerAccuracyMeters
+            : _reportedVerticalAccuracy(fix),
         gradePercent: _currentGrade,
         bearing: _bearing,
       );
@@ -244,7 +349,13 @@ class GpsFilter {
         raw: fix,
         rejection: FixRejection.teleport,
         speedMps: _smoothedSpeed,
-        altitudeMeters: _smoothedAltitude,
+        // Report the previous smoothed values so the UI does not flicker to
+        // zero on one bad sample. The altitude is whichever source is in
+        // force, barometer included.
+        altitudeMeters: smoothedAltitude,
+        altitudeAccuracyMeters: barometerActive
+            ? ElevationTuning.barometerAccuracyMeters
+            : _reportedVerticalAccuracy(fix),
         gradePercent: _currentGrade,
         bearing: _bearing,
       );
@@ -260,7 +371,13 @@ class GpsFilter {
         raw: fix,
         rejection: FixRejection.accuracyTooPoor,
         speedMps: _smoothedSpeed,
-        altitudeMeters: _smoothedAltitude,
+        // Report the previous smoothed values so the UI does not flicker to
+        // zero on one bad sample. The altitude is whichever source is in
+        // force, barometer included.
+        altitudeMeters: smoothedAltitude,
+        altitudeAccuracyMeters: barometerActive
+            ? ElevationTuning.barometerAccuracyMeters
+            : _reportedVerticalAccuracy(fix),
         gradePercent: _currentGrade,
         bearing: _bearing,
       );
@@ -288,13 +405,20 @@ class GpsFilter {
       accuracy: fix.hasAccuracy ? fix.accuracy : null,
     );
 
-    final altitude = _smoothAltitude(fix.altitude, fix.altitudeAccuracy);
+    // The GPS series is always updated — it is what the barometer hands back
+    // to if it stops — but the altitude that leaves this method prefers the
+    // barometer.
+    final gpsAltitude = _smoothAltitude(fix.altitude, fix.altitudeAccuracy);
+    final altitude = smoothedAltitude ?? gpsAltitude;
 
     return ProcessedFix(
       raw: fix,
       rejection: FixRejection.accepted,
       speedMps: speed,
       altitudeMeters: altitude,
+      altitudeAccuracyMeters: barometerActive
+          ? ElevationTuning.barometerAccuracyMeters
+          : _reportedVerticalAccuracy(fix),
       gradePercent: _currentGrade,
       bearing: bearing,
     );
@@ -307,7 +431,7 @@ class GpsFilter {
   /// must not skew the gradient.
   void noteDistance(double distanceAddedMeters) {
     if (distanceAddedMeters <= 0) return;
-    final alt = _smoothedAltitude;
+    final alt = smoothedAltitude;
     if (alt == null) return;
 
     _gradeWindowDistance += distanceAddedMeters;
@@ -332,7 +456,7 @@ class GpsFilter {
 
   ProcessedFix _acceptFirst(LocationFix fix) {
     _lastAccepted = fix;
-    _smoothedAltitude = fix.altitude;
+    _smoothedGpsAltitude = fix.altitude;
     // The first sample has no predecessor, so there is no derived speed. Use
     // the reported one if it exists; otherwise report zero rather than
     // inventing motion.
@@ -342,16 +466,29 @@ class GpsFilter {
     _bearing = fix.heading;
     _gradeWindow.clear();
     _gradeWindowDistance = 0;
-    if (_smoothedAltitude != null) {
-      _gradeWindow.add((distance: 0, altitude: _smoothedAltitude!));
+    final altitude = smoothedAltitude;
+    if (altitude != null) {
+      _gradeWindow.add((distance: 0, altitude: altitude));
     }
     return ProcessedFix(
       raw: fix,
       rejection: FixRejection.firstFix,
       speedMps: _smoothedSpeed,
-      altitudeMeters: _smoothedAltitude,
+      altitudeMeters: altitude,
+      altitudeAccuracyMeters: barometerActive
+          ? ElevationTuning.barometerAccuracyMeters
+          : _reportedVerticalAccuracy(fix),
       bearing: _bearing,
     );
+  }
+
+  /// The fix's own vertical accuracy, normalised: null when the platform did
+  /// not report one.
+  static double? _reportedVerticalAccuracy(LocationFix fix) {
+    final accuracy = fix.altitudeAccuracy;
+    return (accuracy != null && accuracy.isFinite && accuracy > 0)
+        ? accuracy
+        : null;
   }
 
   /// Blends the platform's Doppler speed with the distance-derived one
@@ -463,15 +600,15 @@ class GpsFilter {
   /// that no amount of filtering separates from real terrain. See
   /// [ElevationTuning].
   double? _smoothAltitude(double? rawAltitude, double? verticalAccuracy) {
-    if (rawAltitude == null) return _smoothedAltitude;
+    if (rawAltitude == null) return _smoothedGpsAltitude;
 
     _noteVerticalAccuracy(verticalAccuracy);
     final tuning = this.tuning;
 
-    final previous = _smoothedAltitude;
+    final previous = _smoothedGpsAltitude;
     if (previous == null) {
-      _smoothedAltitude = rawAltitude;
-      return _smoothedAltitude;
+      _smoothedGpsAltitude = rawAltitude;
+      return _smoothedGpsAltitude;
     }
 
     final delta = rawAltitude - previous;
@@ -486,8 +623,8 @@ class GpsFilter {
         ? config.minAltitudeSmoothingAlpha
         : tuning.smoothingAlpha;
 
-    _smoothedAltitude = previous + alpha * (rawAltitude - previous);
-    return _smoothedAltitude;
+    _smoothedGpsAltitude = previous + alpha * (rawAltitude - previous);
+    return _smoothedGpsAltitude;
   }
 
   /// Tracks the typical vertical accuracy this receiver is actually giving.
@@ -497,11 +634,17 @@ class GpsFilter {
   /// one sample of it.
   void _noteVerticalAccuracy(double? verticalAccuracy) {
     if (verticalAccuracy == null || verticalAccuracy <= 0) return;
+
+    _lastGpsVerticalAccuracy = verticalAccuracy;
+
+    // A reporting barometer owns the answer; the GPS figure is still recorded
+    // above so it can take over again if the barometer goes quiet.
+    if (barometerActive) return;
+
     final previous = _verticalAccuracyEstimate;
     _verticalAccuracyEstimate = previous == null
         ? verticalAccuracy
         : previous + 0.1 * (verticalAccuracy - previous);
-    if (previous == null) return;
   }
 
   double? _verticalAccuracyEstimate;
@@ -540,16 +683,25 @@ class GpsFilter {
   void reset() {
     _lastAccepted = null;
     _smoothedSpeed = null;
-    _smoothedAltitude = null;
+    _smoothedGpsAltitude = null;
     _bearing = null;
     _gradeWindow.clear();
     _gradeWindowDistance = 0;
     poorAccuracyStreak = 0;
     totalFixes = 0;
     rejectedFixes = 0;
+
+    // The next ride gets a fresh barometric baseline: a new stream zeroes on
+    // its own first sample.
+    _smoothedBaroAltitude = null;
+    _lastBaroAt = null;
+
     // The accuracy estimate is deliberately *not* cleared: it describes the
     // receiver, which has not changed, and discarding it would re-tighten the
     // elevation tuning to the pessimistic default for the next few minutes.
+    // What it cannot keep is a barometer's pin — that described the *source*,
+    // and this filter may not see one again.
+    _verticalAccuracyEstimate = _lastGpsVerticalAccuracy;
   }
 
   /// Restores smoothing state after a crash so the readout does not restart
@@ -561,7 +713,7 @@ class GpsFilter {
   }) {
     _lastAccepted = lastFix;
     _smoothedSpeed = smoothedSpeed;
-    _smoothedAltitude = smoothedAltitude;
+    _smoothedGpsAltitude = smoothedAltitude;
     _gradeWindow.clear();
     _gradeWindowDistance = 0;
     if (smoothedAltitude != null) {
