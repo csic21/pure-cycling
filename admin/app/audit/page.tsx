@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { ConsoleShell } from '@/components/console-shell';
@@ -26,18 +27,37 @@ function stamp(value: string): string {
   });
 }
 
-export default async function AuditPage() {
+/// One page of the log.
+///
+/// The first version asked for 200 rows and stopped, with no way to tell
+/// whether that was all of them. An audit log whose *end* is silently
+/// truncated is worse than a short one: it reads as "this is everything that
+/// happened". The count comes back with the page, so the header can say how
+/// much there is.
+const PAGE_SIZE = 100;
+
+export default async function AuditPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect('/login');
 
-  const { data, error } = await supabase
+  const parsed = await searchParams;
+  const page = Math.max(1, Number.parseInt(parsed.page ?? '1', 10) || 1);
+  const offset = (page - 1) * PAGE_SIZE;
+
+  const { data, error, count } = await supabase
     .from('admin_audit')
-    .select('id, admin_id, action, target_user_id, detail, created_at')
+    .select('id, admin_id, action, target_user_id, detail, created_at', {
+      count: 'exact',
+    })
     .order('created_at', { ascending: false })
-    .limit(200);
+    .range(offset, offset + PAGE_SIZE - 1);
 
   const who = user.email ?? user.id.slice(0, 8);
 
@@ -58,13 +78,18 @@ export default async function AuditPage() {
   }
 
   const rows = (data ?? []) as AuditRow[];
+  const total = count ?? null;
+  const hasNext = rows.length === PAGE_SIZE;
+  const hasPrev = page > 1;
 
   return (
     <ConsoleShell active="audit" email={who}>
       <main className="page">
         <div className="page-head">
           <h1>审计</h1>
-          <span className="quiet small num">最近 {rows.length} 条</span>
+          <span className="quiet small num">
+            {total === null ? `本页 ${rows.length} 条` : `共 ${total} 条`}
+          </span>
         </div>
 
         {rows.length === 0 ? (
@@ -103,6 +128,24 @@ export default async function AuditPage() {
             </table>
           </div>
         )}
+
+        {hasPrev || hasNext ? (
+          <nav className="pager">
+            {hasPrev ? (
+              <Link href={page === 2 ? '/audit' : `/audit?page=${page - 1}`}>
+                ← 上一页
+              </Link>
+            ) : (
+              <span />
+            )}
+            <span className="quiet small num">第 {page} 页</span>
+            {hasNext ? (
+              <Link href={`/audit?page=${page + 1}`}>下一页 →</Link>
+            ) : (
+              <span />
+            )}
+          </nav>
+        ) : null}
 
         <p className="footnote">
           记录只增不改。管理员或目标账号被删除之后，这里的行仍然保留。
