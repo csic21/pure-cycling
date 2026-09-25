@@ -213,6 +213,24 @@ App 启动 → 读取 active_ride → 有未完成的骑行？
 导出走系统分享（`设置 → 诊断日志 → 导出日志`），在 iOS 上这是唯一能拿到那份
 文件的路径；没有导出，这个日志等于不存在。
 
+### 被捕获的错误也走同一条路
+
+上面三层管的是**没人接**的错误。还有一类是代码接住了、然后决定怎么告诉骑手的 ——
+读数据库失败、导出失败、导入的文件损坏。这些曾经是这样写的：
+
+```dart
+error: (e, _) => Center(child: Text('读取失败：$e')),
+```
+
+骑手看到 `SqliteException(11): database disk image is malformed`，
+而唯一对排查有用的东西没有进日志 —— 因为它根本没被当成错误上报。
+
+现在统一成 `FailureReporter`：**屏幕上一句话说明下一步做什么，异常和堆栈进日志**。
+界面用 `ErrorNotice`（整屏，带「重试」）或 `ErrorBanner`（行内），
+数据从哪里失败就用哪个，但文案的分工是一样的。已经写成人话的异常
+（`RoutePlanningException` / `AuthFailure` 的 message）直接显示，不进日志 ——
+没网不是缺陷，不该把日志塞满。
+
 ## 已知的一个反面教材
 
 `sync_queue_items` 上的 `enqueue` 曾经用 `insertOnConflictUpdate`，注释写着

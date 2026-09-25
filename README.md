@@ -11,7 +11,7 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-289 个测试通过          flutter test
+292 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
@@ -158,7 +158,7 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 289 个测试（单元 + 界面）
+│   └── test/                 292 个测试（单元 + 界面）
 ├── admin/                    管理后台（Next.js，直连 Supabase）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
@@ -308,6 +308,7 @@ flutter test
 | `ride_metadata_test.dart` | 名称与备注的编辑、清空，以及和云端副本的合并 |
 | `sync_queue_test.dart` | 出件箱：重复入队只留一行，新的编辑重置退避 |
 | `diagnostic_log_test.dart` | 诊断日志的写入 / 上限 / 不抛异常，以及出错页与导出入口 |
+| `error_reporting_test.dart` | 失败在屏幕上是人话、在日志里是原文，重试真的重试 |
 | `auth_test.dart` | 深链配置、账号标签、Supabase 错误翻译 |
 | `account_section_test.dart` | 匿名 / 实名两种账号状态的界面 |
 | `voice_coach_test.dart` | 播报策略：远近两级、去重、隧道跳级、偏航 / 重算 / 到达、优先级与队列 |
@@ -354,7 +355,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 289 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 292 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 

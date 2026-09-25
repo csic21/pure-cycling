@@ -45,7 +45,7 @@ jobs:
         run: ./scripts/check-secrets.sh
 
   # -------------------------------------------------------------------------
-  # The bulk of the value: 289 tests over the recording pipeline, the
+  # The bulk of the value: 292 tests over the recording pipeline, the
   # navigation engine, the GPX codec, the datum conversion, the GATT parsers,
   # and the screens themselves. None of them need a network or a device.
   # -------------------------------------------------------------------------
