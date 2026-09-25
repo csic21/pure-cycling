@@ -90,7 +90,10 @@ GoTrue 有按 IP 的注册/登录限流，Supabase 平台也有全局配额。�
       断言指向它；本地通过不代表云端设置一致）
 - [ ] 管理后台：管理员账号开 MFA；`SUPABASE_SERVICE_ROLE_KEY` 只配在部署环境
 - [ ] 确认发布产物里没有 service_role：`scripts/check-secrets.sh` + 后台构建
-- [ ] 不要把高德 Key 打进构建；分发走服务端薄代理（[map.md](map.md) 的「Key 由谁持有」）
+- [ ] 不要把高德 Key 打进构建；部署 `route` 函数并 `supabase secrets set AMAP_KEY=...`，
+      `ROUTING_RELAY_URL` 只写进构建参数（[map.md](map.md) 的「Key 由谁持有」）
+- [ ] `route` 函数：确认 `verify_jwt` 开着、`ROUTE_DAILY_LIMIT` 按预算设好
+      （它只暴露算路一个接口，防的是配额被一个人跑完）
 
 
 ## 一句话

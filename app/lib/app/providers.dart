@@ -11,10 +11,12 @@ import '../core/location/elevation_tuning.dart';
 import '../core/location/location_service.dart';
 import '../core/map/amap/amap_client.dart';
 import '../core/map/amap/amap_place_provider.dart';
+import '../core/map/amap/amap_relay_client.dart';
 import '../core/map/amap/amap_route_provider.dart';
 import '../core/map/amap/amap_traffic_light_provider.dart';
 import '../core/map/local/offline_providers.dart';
 import '../core/map/map_providers.dart';
+import '../core/map/routing_relay.dart';
 import '../core/sync/supabase_config.dart';
 import '../core/sync/sync_service.dart';
 import '../core/utils/geo.dart';
@@ -157,6 +159,28 @@ final amapKeyProvider = FutureProvider<String>((ref) async {
 /// without leaving a mark on the UI.
 final mapServicesProvider = Provider<MapServices>((ref) {
   final settings = ref.watch(currentSettingsProvider);
+  final relayEndpoint = RoutingRelayConfig.endpoint.trim();
+
+  // The relay comes first: it is the distribution shape, and it needs no key
+  // on the device at all. A rider who also happens to have their own key can
+  // still be served by the relay — the quota is what matters, not the key.
+  if (relayEndpoint.isNotEmpty) {
+    return MapServices(
+      // Search is not relayed (only routing is), so it degrades to "no
+      // results" rather than to a broken screen. A rider who wants search can
+      // fill their own key below.
+      places: const NullPlaceProvider(),
+      routes: AmapRouteProvider(
+        client: AmapRelayClient(
+          endpoint: relayEndpoint,
+          accessToken: _relayAccessToken,
+        ),
+      ),
+      trafficLights: const AmapTrafficLightProvider(),
+      tileSource: MapTileSource.amapVector,
+    );
+  }
+
   final amapKey = ref.watch(amapKeyProvider).valueOrNull ?? '';
 
   if (amapKey.trim().isEmpty) {
@@ -195,6 +219,16 @@ final routingAvailabilityProvider = Provider<({bool available, String reason})>(
     if (!services.routes.isDegraded) {
       return (available: true, reason: '');
     }
+    if (RoutingRelayConfig.isConfigured) {
+      // The relay is built in but the session is not: "not signed in" is the
+      // actionable half of this, and the straight line is the fallback either
+      // way.
+      return (
+        available: false,
+        reason: '登录后可使用在线骑行路线（匿名账号也可以）；'
+            '未登录时使用直线路径。',
+      );
+    }
     return (
       available: false,
       reason: '未配置高德 Key，当前只能使用直线路径。'
@@ -202,6 +236,21 @@ final routingAvailabilityProvider = Provider<({bool available, String reason})>(
     );
   },
 );
+
+/// The current session token, or null.
+///
+/// A function rather than a value: supabase_flutter refreshes the session in
+/// place, and the provider graph is built once.
+String? _relayAccessToken() {
+  if (!SupabaseConfig.isConfigured) return null;
+  try {
+    return Supabase.instance.client.auth.currentSession?.accessToken;
+  } catch (_) {
+    // The SDK throws when it has not been initialised; treat that the same as
+    // signed out.
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Recording

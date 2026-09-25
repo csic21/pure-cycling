@@ -3,13 +3,15 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../map_providers.dart';
+import 'amap_errors.dart';
+import 'amap_route_client.dart';
 
 /// Shared HTTP plumbing for AMap's Web Service APIs (高德 Web 服务).
 ///
 /// All three AMap providers talk to the same host with the same envelope and
 /// the same failure modes, so the request, the key check and the error mapping
 /// live here once.
-class AmapClient {
+class AmapClient implements AmapRouteClient {
   AmapClient({
     required this.apiKey,
     http.Client? httpClient,
@@ -27,6 +29,7 @@ class AmapClient {
 
   static const String _host = 'https://restapi.amap.com';
 
+  @override
   bool get isConfigured => apiKey.trim().isNotEmpty;
 
   /// Issues a GET and returns the decoded JSON body.
@@ -34,6 +37,7 @@ class AmapClient {
   /// AMap returns HTTP 200 for many failures and signals the problem in the
   /// body, so the status code alone is not enough — `status` and `infocode`
   /// must both be checked before the payload can be trusted.
+  @override
   Future<Map<String, dynamic>> get(
     String path,
     Map<String, String> params,
@@ -73,8 +77,8 @@ class AmapClient {
       final info = body['info']?.toString() ?? '未知错误';
       final infocode = body['infocode']?.toString() ?? '';
       throw RoutePlanningException(
-        _describeAmapError(info, infocode),
-        isConfiguration: _isConfigurationError(infocode),
+        AmapErrors.describe(info, infocode),
+        isConfiguration: AmapErrors.isConfiguration(infocode),
       );
     }
 
@@ -82,27 +86,6 @@ class AmapClient {
   }
 
   void close() => _http.close();
-
-  static bool _isConfigurationError(String infocode) {
-    // 10001 invalid key, 10002 service disabled, 10003 daily quota exceeded,
-    // 10009/10012/10013 signature and IP-whitelist failures.
-    return const {'10001', '10002', '10003', '10009', '10012', '10013'}
-        .contains(infocode);
-  }
-
-  static String _describeAmapError(String info, String infocode) {
-    final hint = switch (infocode) {
-      '10001' => '：Key 无效，请检查设置中的高德 Key',
-      '10002' => '：该 Key 未开通此服务',
-      '10003' => '：今日配额已用完',
-      '10009' => '：数字签名校验失败',
-      '10012' => '：IP 白名单限制',
-      '20800' => '：起点或终点在服务范围外',
-      '20802' => '：无法规划出骑行路线',
-      _ => '',
-    };
-    return '高德错误 $infocode$hint（$info）';
-  }
 
   static String _describe(Object error) {
     final text = error.toString();

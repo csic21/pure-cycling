@@ -516,4 +516,64 @@ end $$;
 reset role;
 SQL
 
+echo "==> asserting the rate limit"
+psql_stdin <<'SQL'
+-- The routing relay is an edge function: it runs with the service role, so
+-- RLS is not its guard — this counter is. Three things have to hold: it
+-- allows up to the limit, it refuses after it, and only the service role can
+-- touch it.
+do $$
+declare
+  v_allowed boolean;
+  v_user uuid := '11111111-1111-7111-8111-111111111111';
+  i integer;
+begin
+  for i in 1..3 loop
+    select public.consume_rate_limit(v_user, 'route-test', 3, 3600) into v_allowed;
+    if not v_allowed then
+      raise exception 'rate limit refused call % of 3', i;
+    end if;
+  end loop;
+
+  select public.consume_rate_limit(v_user, 'route-test', 3, 3600) into v_allowed;
+  if v_allowed then
+    raise exception 'rate limit allowed a call past the limit';
+  end if;
+
+  -- A different bucket has its own window.
+  select public.consume_rate_limit(v_user, 'other-bucket', 3, 3600) into v_allowed;
+  if not v_allowed then
+    raise exception 'rate limit leaked across buckets';
+  end if;
+
+  raise notice 'rate limit allows the quota, refuses the next call, and is per bucket';
+end $$;
+
+-- The table is invisible through the Data API, and the function is not
+-- callable by anyone but the service role.
+set role authenticated;
+
+do $$
+begin
+  begin
+    perform 1 from public.rate_limits;
+    raise exception 'rate_limits is reachable through the Data API';
+  exception
+    when insufficient_privilege then
+      raise notice 'rate_limits is not exposed';
+  end;
+
+  begin
+    perform public.consume_rate_limit(
+      '11111111-1111-7111-8111-111111111111', 'x', 1, 60);
+    raise exception 'a normal user could consume the quota';
+  exception
+    when insufficient_privilege then
+      raise notice 'only the service role can consume the quota';
+  end;
+end $$;
+
+reset role;
+SQL
+
 echo "==> migrations OK"

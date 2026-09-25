@@ -173,9 +173,49 @@ App ── POST /route {origin, destination, waypoints} ──> 代理（持有�
 `ProxyRouteProvider`、在 `providers.dart` 里换一个工厂函数，页面一行不动。
 代理不可达时仍然退回直线路径，记录与导航不受影响（本地优先不变）。
 
-**现状**：自用/开发继续自带 Key；分发之前再做代理。这件事与「要不要独立
-后端」的关系见 [backend.md](backend.md)——代理正是那份文档里「第三方服务
-密钥」这一条触发条件的第一个真实例子，而且它只做算路一件事，不改同步路径。
+### 已经实现：`supabase/functions/route`
+
+代理就是这一个函数（`supabase/functions/route/index.ts`）：
+
+- **要求 Supabase 会话**（匿名账号也可以）：配额是按账号算的，开放的中转
+  等于把 Key 借给整个互联网；
+- **每次调用先扣配额**（默认每账号每天 200 次，`ROUTE_DAILY_LIMIT` 可改）。
+  计数在 Postgres 里而不是函数内存里——边缘函数是机群，内存计数器冷启动
+  就清零、多实例就翻倍；
+- **只接受两个坐标，只调用 `/v5/direction/bicycling`**：参数能指向别处，
+  就等于把「不泄露 Key」降级成「泄露 Key 但多走一步」；
+- **返回 AMap 原样的信封**，客户端沿用已有的解析与错误翻译（包括
+  GCJ-02 → WGS-84 的转换，只在一处实现）；函数自己的拒绝（401/429/400）
+  也用同一个信封，客户端只有一条错误路径。
+
+开启：
+
+```sh
+supabase functions deploy route
+supabase secrets set AMAP_KEY=...
+flutter run \
+  --dart-define=ROUTING_RELAY_URL=https://xxx.supabase.co/functions/v1/route
+```
+
+本地验证（不需要真 Key，桩代替高德）：
+
+```sh
+scripts/verify-routing-relay.sh
+```
+
+它断言：未登录 401、带会话能拿到路线与转向、**Key 由服务端附加**（桩的
+请求日志就是证据）、配额用尽后 429、坏输入 400。
+
+客户端的两种实现共用同一份解析与坐标转换：`AmapClient`（自带 Key）和
+`AmapRelayClient`（用会话），都实现 `AmapRouteClient`，`AmapRouteProvider`
+不知道用的是哪一个。
+
+**现状**：自用/开发继续自带 Key；分发时用中转。它只做算路一件事，不改同步
+路径——与「要不要独立后端」的关系见 [backend.md](backend.md)，代理正是那份
+文档里「第三方服务密钥」这一条触发条件的第一个真实例子。
+
+> 还没有中转的能力：POI 搜索。没有 Key 时搜索返回空结果（不是报错），
+> 需要搜索的构建可以同时配置中转和自己的 Key。
 
 ---
 

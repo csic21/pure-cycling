@@ -384,12 +384,23 @@ authorization_url_path = "/oauth/consent"
 allow_dynamic_registration = false
 
 [edge_runtime]
-# No edge functions. Everything that touches the database is a SQL function
-# called through PostgREST (`push_ride`, `push_route`).
-enabled = false
+# One function lives here: `route`, the AMap relay. The vendor key must not
+# ship in the client — anything a client sends, the device owner can read — so
+# the app calls this instead, with its own JWT, and the key stays in the
+# function's environment.
+#
+# Everything else the app needs is still a SQL function over PostgREST
+# (`push_ride`, `push_route`, `admin_list_users`); the runtime is not a second
+# backend, it is one endpoint that holds one secret.
+enabled = true
 
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
+
+[functions.route]
+# The quota is per account, and an open relay is a free routing API for the
+# whole internet, so the caller must hold a real (possibly anonymous) session.
+verify_jwt = true
 
 [analytics]
 # Logflare plus a vector sidecar, for a log pipeline this project does not

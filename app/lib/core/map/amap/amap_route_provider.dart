@@ -3,9 +3,15 @@ import '../../utils/geo.dart';
 import '../../utils/ids.dart';
 import '../coord_transform.dart';
 import '../map_providers.dart';
-import 'amap_client.dart';
+import 'amap_route_client.dart';
 
 /// Cycling route planning via AMap's 路径规划 2.0 (`/v5/direction/bicycling`).
+///
+/// ## Where the request goes
+///
+/// It does not know. [AmapRouteClient] is either the vendor called with the
+/// rider's own key, or our relay called with the rider's session — the parsing
+/// below, including the datum conversion, is identical either way.
 ///
 /// ## Datum
 ///
@@ -31,7 +37,7 @@ class AmapRouteProvider implements RouteProvider {
     this.alternatives = 1,
   });
 
-  final AmapClient client;
+  final AmapRouteClient client;
 
   /// How many alternative paths to request. V1 shows one; the parameter is
   /// plumbed because showing alternatives is a routing-UI change, not a
