@@ -32,6 +32,9 @@ defaults:
 # Variables (not secrets) — safe to read in logs:
 #
 #   SUPABASE_URL
+#   ROUTING_RELAY_URL   the `route` edge function's URL. Public by nature (it
+#                       is in every binary that uses it); the function guards
+#                       itself with a session check and a per-account quota.
 #
 # The AMap key is deliberately absent. It is entered by the rider in the app's
 # own settings and stored in their device's database, so it never enters a
@@ -113,7 +116,8 @@ jobs:
           cat > dart_define.json <<EOF
           {
             "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
-            "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}"
+            "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}",
+            "ROUTING_RELAY_URL": "${{ vars.ROUTING_RELAY_URL }}"
           }
           EOF
 
@@ -159,7 +163,8 @@ jobs:
           cat > dart_define.json <<EOF
           {
             "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
-            "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}"
+            "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}",
+            "ROUTING_RELAY_URL": "${{ vars.ROUTING_RELAY_URL }}"
           }
           EOF
 

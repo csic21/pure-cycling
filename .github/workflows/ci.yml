@@ -77,6 +77,42 @@ jobs:
         run: flutter test --reporter expanded
 
   # -------------------------------------------------------------------------
+  # The edge function.
+  #
+  # `deno check` plus unit tests, no Docker: the handler's logic with the
+  # network stubbed, and the refusals (401 / 429 / 503 / 400) that a leaked or
+  # misconfigured relay gets wrong first. The other half — the real function
+  # served by the real runtime against a stub vendor — is
+  # scripts/verify-routing-relay.sh, which needs the full local stack and
+  # stays on a development machine.
+  #
+  # `working-directory: .` on the job: the workflow sets `app/` as the default
+  # for every step (there is no pubspec at the root), and the function lives at
+  # the repository root.
+  # -------------------------------------------------------------------------
+  functions:
+    name: Edge functions
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Typecheck
+        run: deno check supabase/functions/route/index.ts
+
+      - name: Unit tests
+        run: deno test supabase/functions/route/
+
+      - name: The relay must require a session
+        run: ./scripts/check-relay-config.sh
+
+  # -------------------------------------------------------------------------
   # The migrations only fail against a real Postgres: RLS is enforced by the
   # database, not by the client, and a policy typo is invisible until a second
   # account can read the first one's rides.

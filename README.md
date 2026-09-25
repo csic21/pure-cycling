@@ -16,6 +16,7 @@ V1 功能已经完整实现并通过测试，可以构建运行。
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
 管理后台构建通过        cd admin && pnpm run build
+Edge Function 测试通过  deno test supabase/functions/route/   （13 个，不需要 Docker）
 SQL 迁移在 Supabase 官方镜像上验证通过   scripts/verify-migrations.sh
 Auth 流程在真实 GoTrue 上验证通过        scripts/verify-auth-flow.sh
 管理员边界在本地整栈上验证通过          scripts/verify-admin-flow.sh
