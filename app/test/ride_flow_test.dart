@@ -3,6 +3,8 @@ import 'package:cycling_app/app/router.dart';
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/features/ride/presentation/ride_screen.dart';
+import 'package:cycling_app/features/ride/presentation/widgets/location_notice.dart';
+import 'package:cycling_app/features/settings/data/settings_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -23,6 +25,10 @@ void main() {
 
   Future<FakeLocationService> pumpApp(WidgetTester tester) async {
     final location = FakeLocationService();
+    // These cases are about rides, not about the one-time location notice that
+    // precedes the first one — the notice has its own group below, which pumps
+    // the tree without this flag.
+    await markLocationDisclosureSeen(database);
     useTallSurface(tester);
     await tester.pumpWidget(
       ProviderScope(
@@ -118,12 +124,120 @@ void main() {
 
   });
 
+  group('location notices', () {
+    /// Boots the app *without* marking the disclosure as seen — the state a
+    /// fresh install is in.
+    Future<FakeLocationService> pumpFreshApp(
+      WidgetTester tester, {
+      bool backgroundAccess = true,
+    }) async {
+      final location = FakeLocationService(backgroundAccess: backgroundAccess);
+      useTallSurface(tester);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: testOverrides(database: database, location: location),
+          child: const CyclingApp(),
+        ),
+      );
+      await settle(tester);
+      return location;
+    }
+
+    Future<String?> storedFlag(String key) =>
+        SettingsRepository(database).getString(key);
+
+    testWidgets('the disclosure comes before the system dialog, and is kept',
+        (tester) async {
+      await pumpFreshApp(tester);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+
+      // What Play requires before a background-location request, and what the
+      // rider needs before a system sheet asks for 「始终允许」.
+      expect(find.text('为什么需要「始终允许」定位'), findsOneWidget);
+      expect(find.textContaining('锁屏后还要继续记录'), findsOneWidget);
+      expect(find.textContaining('轨迹默认只保存在本机'), findsOneWidget);
+
+      await tester.tap(find.text('继续'));
+      await settle(tester);
+
+      expect(find.text('准备开始'), findsOneWidget);
+      expect(
+        await storedFlag(LocationNoticeKeys.disclosureSeen),
+        LocationNoticeKeys.seen,
+        reason: '看过一次就不该再看第二次',
+      );
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('declining leaves the rider where they were', (tester) async {
+      await pumpFreshApp(tester);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+      await tester.tap(find.text('先不开，我等会儿再骑'));
+      await settle(tester);
+
+      // Still on the home screen, and nothing was recorded.
+      expect(find.text('开始骑行'), findsOneWidget);
+      expect(find.text('准备开始'), findsNothing);
+      expect(
+        await storedFlag(LocationNoticeKeys.disclosureSeen),
+        isNull,
+        reason: '没同意就不算看过，下次还要解释',
+      );
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('a foreground-only grant is called out once', (tester) async {
+      await markLocationDisclosureSeen(database);
+      await pumpFreshApp(tester, backgroundAccess: false);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+
+      // The failure this prevents: a ride that stops the moment the phone goes
+      // into a pocket, discovered at the end of the ride.
+      expect(find.text('锁屏后记录可能中断'), findsOneWidget);
+      expect(find.textContaining('始终允许'), findsWidgets);
+
+      await tester.tap(find.text('知道了'));
+      await settle(tester);
+
+      expect(find.text('准备开始'), findsOneWidget);
+      expect(
+        await storedFlag(LocationNoticeKeys.backgroundHintSeen),
+        LocationNoticeKeys.seen,
+      );
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('a full grant is not nagged about', (tester) async {
+      await markLocationDisclosureSeen(database);
+      await pumpFreshApp(tester);
+
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+
+      expect(find.text('锁屏后记录可能中断'), findsNothing);
+      expect(find.text('准备开始'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+  });
+
   group('permission handling', () {
     testWidgets('a denied permission is explained before the ride screen opens',
         (tester) async {
       final location = FakeLocationService(
         permission: LocationPermissionStatus.deniedForever,
       );
+      // This case is about the refusal dialog, which comes after the notice.
+      await markLocationDisclosureSeen(database);
       useTallSurface(tester);
       await tester.pumpWidget(
         ProviderScope(
@@ -156,6 +270,7 @@ void main() {
       final location = FakeLocationService(
         permission: LocationPermissionStatus.serviceDisabled,
       );
+      await markLocationDisclosureSeen(database);
       useTallSurface(tester);
       await tester.pumpWidget(
         ProviderScope(

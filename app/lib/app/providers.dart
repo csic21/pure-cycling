@@ -59,6 +59,16 @@ final locationServiceProvider = Provider<LocationService>(
   (ref) => LocationService(),
 );
 
+/// Whether the OS will keep delivering fixes with the screen off.
+///
+/// A future rather than a value: it is a platform query, and the settings
+/// screen shows it beside the other location settings. Unknown (`null` while
+/// it resolves, or `true` on a platform that will not answer) is presented as
+/// granted — nagging is worse than staying quiet.
+final backgroundLocationProvider = FutureProvider<bool>(
+  (ref) => ref.watch(locationServiceProvider).hasBackgroundAccess(),
+);
+
 /// The process's diagnostic log.
 ///
 /// `main` overrides this with the instance its global error handlers write to.

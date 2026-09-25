@@ -11,6 +11,7 @@ import '../../../core/location/location_service.dart';
 import '../../../core/utils/units.dart';
 import '../../history/presentation/widgets/ride_summary_row.dart';
 import '../domain/ride.dart';
+import 'widgets/location_notice.dart';
 import 'widgets/resume_ride_sheet.dart';
 
 /// The home screen (spec §4).
@@ -124,7 +125,24 @@ class HomeScreen extends ConsumerWidget {
   /// The permission check happens here rather than on the ride screen so a
   /// refusal is explained *before* the rider has mounted their phone and is
   /// waiting for something to happen.
+  ///
+  /// It also runs the disclosure that has to come before the system dialog —
+  /// see [showLocationDisclosure] — and, once, the warning that a
+  /// foreground-only grant will not survive the screen going off.
   Future<void> _startRide(BuildContext context, WidgetRef ref) async {
+    final store = ref.read(settingsRepositoryProvider);
+
+    if (await store.getString(LocationNoticeKeys.disclosureSeen) !=
+        LocationNoticeKeys.seen) {
+      if (!context.mounted) return;
+      final agreed = await showLocationDisclosure(context);
+      if (!agreed || !context.mounted) return;
+      await store.setString(
+        LocationNoticeKeys.disclosureSeen,
+        LocationNoticeKeys.seen,
+      );
+    }
+
     final permission = await ref.read(locationServiceProvider).checkPermission();
 
     if (permission == LocationPermissionStatus.serviceDisabled) {
@@ -149,6 +167,18 @@ class HomeScreen extends ConsumerWidget {
         onAction: () => ref.read(locationServiceProvider).openAppSettings(),
       );
       return;
+    }
+
+    if (await ref.read(locationServiceProvider).hasBackgroundAccess() == false &&
+        await store.getString(LocationNoticeKeys.backgroundHintSeen) !=
+            LocationNoticeKeys.seen) {
+      if (!context.mounted) return;
+      await showBackgroundLocationHint(context);
+      await store.setString(
+        LocationNoticeKeys.backgroundHintSeen,
+        LocationNoticeKeys.seen,
+      );
+      if (!context.mounted) return;
     }
 
     if (!context.mounted) return;

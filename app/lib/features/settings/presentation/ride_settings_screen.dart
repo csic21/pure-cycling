@@ -131,6 +131,7 @@ class RideSettingsScreen extends ConsumerWidget {
                 onChanged: (v) =>
                     notifier.mutate((s) => s.copyWith(gpsSignalLostSeconds: v)),
               ),
+              const _BackgroundLocationRow(),
             ],
             footnote: '高精度档位每秒采样一次。停车时应用会自动降低采样频率以节省电量。',
           ),
@@ -145,6 +146,39 @@ class RideSettingsScreen extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Whether the phone will keep delivering fixes with the screen off.
+///
+/// The one permission state that is invisible until it hurts: a foreground-only
+/// grant produces a working app that stops recording when the rider pockets
+/// the phone. The home screen says so once before the first ride; this row is
+/// where they can check it again after dismissing that notice.
+class _BackgroundLocationRow extends ConsumerWidget {
+  const _BackgroundLocationRow();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final access = ref.watch(backgroundLocationProvider);
+    final granted = access.valueOrNull;
+
+    return SettingsTile(
+      title: '锁屏继续记录',
+      subtitle: granted == null
+          ? '正在检查系统权限…'
+          : granted
+              ? '已授权「始终允许」定位，锁屏后继续记录'
+              : '当前只有「使用 App 期间」定位。锁屏后系统可能停止提供位置，'
+                  '记录会中断 —— 到系统设置里改成「始终允许」',
+      leading: Icon(
+        granted == false ? Icons.warning_amber_outlined : Icons.lock_clock,
+        color: granted == false ? AppColors.warning : null,
+      ),
+      onTap: granted == false
+          ? () => ref.read(locationServiceProvider).openAppSettings()
+          : null,
     );
   }
 }

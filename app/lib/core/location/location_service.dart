@@ -90,6 +90,27 @@ class LocationService {
 
   Future<bool> openLocationSettings() => Geolocator.openLocationSettings();
 
+  /// Whether the OS grants location beyond the foreground.
+  ///
+  /// Android 10+ and iOS 13+ split the grant in two, and only the "always"
+  /// tier keeps a ride alive with the screen off. A rider who picked
+  /// 「使用 App 期间」 has an app that works and stops recording when they
+  /// pocket the phone — which they discover at the end of the ride, from a
+  /// straight line on the map. Worth saying out loud, once.
+  ///
+  /// Unknown counts as granted: nagging somebody whose platform did not answer
+  /// is worse than staying quiet.
+  Future<bool> hasBackgroundAccess() async {
+    try {
+      // On Android ≤ 9 there is no background tier at all, and geolocator
+      // reports `always` once fine location is granted — so the same check is
+      // right on both platforms.
+      return await Geolocator.checkPermission() == LocationPermission.always;
+    } catch (_) {
+      return true;
+    }
+  }
+
   /// One-shot fix, used by route planning and by the pre-ride GPS check.
   Future<LocationFix?> currentFix({
     Duration timeout = const Duration(seconds: 12),

@@ -10,6 +10,8 @@ import 'package:cycling_app/features/auth/data/auth_repository.dart';
 import 'package:cycling_app/features/ride/domain/ride.dart';
 import 'package:cycling_app/features/ride/domain/ride_engine.dart';
 import 'package:cycling_app/features/ride/domain/track_point.dart';
+import 'package:cycling_app/features/ride/presentation/widgets/location_notice.dart';
+import 'package:cycling_app/features/settings/data/settings_repository.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
@@ -33,9 +35,17 @@ import 'package:flutter_test/flutter_test.dart';
 /// A location service that grants permission and answers from a stream the
 /// test controls.
 class FakeLocationService extends LocationService {
-  FakeLocationService({this.permission = LocationPermissionStatus.granted});
+  FakeLocationService({
+    this.permission = LocationPermissionStatus.granted,
+    this.backgroundAccess = true,
+  });
 
   LocationPermissionStatus permission;
+
+  /// Whether the OS is pretending to grant location beyond the foreground.
+  /// False is the state that produces a ride which stops at the first locked
+  /// screen.
+  bool backgroundAccess;
 
   final _controller = StreamController<LocationFix>.broadcast();
   bool streamOpened = false;
@@ -87,6 +97,9 @@ class FakeLocationService extends LocationService {
 
   @override
   Future<LocationPermissionStatus> checkPermission() async => permission;
+
+  @override
+  Future<bool> hasBackgroundAccess() async => backgroundAccess;
 
   @override
   Future<LocationFix?> currentFix({
@@ -187,6 +200,18 @@ void useTallSurface(WidgetTester tester) {
 
 /// A fresh in-memory database. The caller owns closing it.
 AppDatabase openTestDatabase() => AppDatabase.forTesting(NativeDatabase.memory());
+
+/// Marks the location disclosure as already shown on this device.
+///
+/// The disclosure is a one-time modal before the first ride — the in-app
+/// notice Play requires before the system background-location dialog. Tests
+/// that are about *rides* rather than about that notice say so here, instead
+/// of tapping through it in every case.
+Future<void> markLocationDisclosureSeen(AppDatabase database) =>
+    SettingsRepository(database).setString(
+      LocationNoticeKeys.disclosureSeen,
+      LocationNoticeKeys.seen,
+    );
 
 /// Tears a widget test down in the order the binding requires.
 ///

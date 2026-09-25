@@ -34,6 +34,10 @@ void main() {
   /// assertion. The failure surfaces in a test that never asked for a location.
   Future<FakeLocationService> pumpApp(WidgetTester tester) async {
     final location = FakeLocationService();
+    // These tests are about rides, not about the one-time location notice that
+    // precedes the first one. That notice has its own tests in
+    // `ride_flow_test.dart`.
+    await markLocationDisclosureSeen(database);
     useTallSurface(tester);
     await tester.pumpWidget(
       ProviderScope(
@@ -286,6 +290,35 @@ void main() {
         await tester.pageBack();
         await settle(tester);
       }
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('the lock-screen permission state is visible in 骑行 settings',
+        (tester) async {
+      final location = await pumpApp(tester);
+      // The state that hurts: a working app that stops recording when the
+      // phone goes into a pocket.
+      location.backgroundAccess = false;
+
+      await openTab(tester, '设置');
+      await tester.tap(find.text('自动暂停'));
+      await settle(tester);
+
+      expect(find.text('锁屏继续记录'), findsOneWidget);
+      expect(find.textContaining('锁屏后系统可能停止提供位置'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('a full grant reads as granted', (tester) async {
+      await pumpApp(tester);
+
+      await openTab(tester, '设置');
+      await tester.tap(find.text('自动暂停'));
+      await settle(tester);
+
+      expect(find.textContaining('已授权「始终允许」定位'), findsOneWidget);
 
       await shutdownApp(tester, database);
     });
