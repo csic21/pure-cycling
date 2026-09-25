@@ -11,7 +11,7 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-254 个测试通过          flutter test
+260 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
@@ -20,6 +20,7 @@ Edge Function 测试通过  deno test supabase/functions/route/   （13 个，�
 SQL 迁移在 Supabase 官方镜像上验证通过   scripts/verify-migrations.sh
 Auth 流程在真实 GoTrue 上验证通过        scripts/verify-auth-flow.sh
 管理员边界在本地整栈上验证通过          scripts/verify-admin-flow.sh
+删除账号在本地整栈上验证通过            scripts/verify-account-deletion.sh
 完整本地栈（含 PostgREST / Storage）通过 scripts/local-stack.sh
 密钥扫描自检通过        scripts/check-secrets.sh --self-test
 ```
@@ -89,7 +90,7 @@ flutter run
 supabase functions deploy route
 supabase secrets set AMAP_KEY=...
 flutter run \
-  --dart-define=ROUTING_RELAY_URL=https://xxx.supabase.co/functions/v1/route
+  --dart-define=SUPABASE_FUNCTIONS_URL=https://xxx.supabase.co/functions/v1
 ```
 
 代理要求登录（匿名账号也可以）、按账号扣配额、只暴露算路一个接口。
@@ -157,7 +158,7 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 254 个测试（单元 + 界面）
+│   └── test/                 260 个测试（单元 + 界面）
 ├── admin/                    管理后台（Next.js，直连 Supabase）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
@@ -317,6 +318,7 @@ scripts/verify-auth-flow.sh     # 真实注册 + 匿名 + 令牌 + 跨账号隔�
 scripts/local-stack.sh          # 完整本地栈：PostgREST + Storage + Studio（开发用）
 scripts/verify-admin-flow.sh    # 管理员边界走真实 PostgREST（需要本地栈在跑）
 scripts/verify-routing-relay.sh # 算路代理走真实 Edge Function，桩代替高德（需要本地栈）
+scripts/verify-account-deletion.sh # 自助删除账号走真实函数与存储（需要本地栈）
 ```
 
 `verify-auth-flow.sh` 会真的注册两个账号（一个邮箱、一个匿名），
@@ -348,7 +350,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 254 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 260 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 

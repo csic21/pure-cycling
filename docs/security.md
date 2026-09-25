@@ -91,9 +91,10 @@ GoTrue 有按 IP 的注册/登录限流，Supabase 平台也有全局配额。�
 - [ ] 管理后台：管理员账号开 MFA；`SUPABASE_SERVICE_ROLE_KEY` 只配在部署环境
 - [ ] 确认发布产物里没有 service_role：`scripts/check-secrets.sh` + 后台构建
 - [ ] 不要把高德 Key 打进构建；部署 `route` 函数并 `supabase secrets set AMAP_KEY=...`，
-      `ROUTING_RELAY_URL` 只写进构建参数（[map.md](map.md) 的「Key 由谁持有」）
-- [ ] `route` 函数：确认 `verify_jwt` 开着、`ROUTE_DAILY_LIMIT` 按预算设好
-      （它只暴露算路一个接口，防的是配额被一个人跑完）
+      `SUPABASE_FUNCTIONS_URL` 只写进构建参数（[map.md](map.md) 的「Key 由谁持有」）
+- [ ] 部署 `delete-account` 函数（自助删除账号；它自带 service_role，无需额外 secret）
+- [ ] 两个函数：`scripts/check-functions-config.sh` 确认 `verify_jwt` 都开着；
+      `ROUTE_DAILY_LIMIT` 按预算设好（防的是配额被一个人跑完）
 
 
 ## 一句话

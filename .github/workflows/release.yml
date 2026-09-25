@@ -32,9 +32,10 @@ defaults:
 # Variables (not secrets) — safe to read in logs:
 #
 #   SUPABASE_URL
-#   ROUTING_RELAY_URL   the `route` edge function's URL. Public by nature (it
-#                       is in every binary that uses it); the function guards
-#                       itself with a session check and a per-account quota.
+#   SUPABASE_FUNCTIONS_URL  the edge functions' base URL
+#                       (…/functions/v1). Public by nature — it is in every
+#                       binary that uses it; each function guards itself with a
+#                       session check, and the relay also with a quota.
 #
 # The AMap key is deliberately absent. It is entered by the rider in the app's
 # own settings and stored in their device's database, so it never enters a
@@ -117,7 +118,7 @@ jobs:
           {
             "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
             "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}",
-            "ROUTING_RELAY_URL": "${{ vars.ROUTING_RELAY_URL }}"
+            "SUPABASE_FUNCTIONS_URL": "${{ vars.SUPABASE_FUNCTIONS_URL }}"
           }
           EOF
 
@@ -164,7 +165,7 @@ jobs:
           {
             "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
             "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}",
-            "ROUTING_RELAY_URL": "${{ vars.ROUTING_RELAY_URL }}"
+            "SUPABASE_FUNCTIONS_URL": "${{ vars.SUPABASE_FUNCTIONS_URL }}"
           }
           EOF
 

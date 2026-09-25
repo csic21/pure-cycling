@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../app/theme.dart';
+import '../../../core/sync/account_deletion_client.dart';
+import '../../../core/sync/functions_config.dart';
 import '../../../core/sync/supabase_config.dart';
 import '../../../core/sync/sync_service.dart';
 import '../../../core/utils/units.dart';
@@ -60,9 +62,21 @@ class SyncScreen extends ConsumerWidget {
                         color: AppColors.danger),
                     onTap: () => _confirmDeleteCloudData(context, ref),
                   ),
+                  if (FunctionsConfig.isConfigured)
+                    SettingsTile(
+                      title: '删除账号',
+                      subtitle: '永久删除账号和云端的全部数据。本机记录保留，'
+                          '但不会再有备份，也不再用这个账号登录。',
+                      leading: const Icon(Icons.person_remove_outlined,
+                          color: AppColors.danger),
+                      onTap: () => _confirmDeleteAccount(context, ref),
+                    ),
                 ],
-                footnote: '删除用你自己的登录令牌完成，服务端按行级权限校验，'
-                    '没有旁路。删除后如果重新打开云同步，会重新备份一遍。',
+                footnote: FunctionsConfig.isConfigured
+                    ? '删除用你自己的登录令牌完成，服务端按行级权限校验，没有旁路。'
+                        '删除后如果重新打开云同步，会重新备份一遍。'
+                    : '这个构建没有配置在线服务地址：删除云端数据仍可用，'
+                        '删除账号请联系运营方。',
               ),
           ],
 
@@ -147,6 +161,66 @@ Future<void> _confirmDeleteCloudData(BuildContext context, WidgetRef ref) async 
   if (!context.mounted) return;
   ScaffoldMessenger.of(context)
       .showSnackBar(SnackBar(content: Text(report.summary)));
+}
+
+/// Confirms and performs self-service account deletion.
+///
+/// The local bookkeeping is deliberately *not* the same as the cloud wipe's:
+/// with the account gone there is nowhere to upload to, so the queue is
+/// cleared instead of re-filled. A queue that can never drain would sit there
+/// saying 「待上传 N 条」 for the rest of the install's life.
+Future<void> _confirmDeleteAccount(BuildContext context, WidgetRef ref) async {
+  // Captured before the first await: after sign-out this widget's context may
+  // no longer be mounted, and the confirmation has to be able to report what
+  // happened either way.
+  final messenger = ScaffoldMessenger.of(context);
+
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('删除账号？'),
+      content: const Text(
+        '将永久删除你的账号，以及云端的全部骑行、路线和 GPX 文件。\n\n'
+        '本机记录会保留，但不会再备份到云端，也不能再用这个账号登录。'
+        '这一步不可恢复。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: AppColors.danger,
+            foregroundColor: Colors.black,
+          ),
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('永久删除账号'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true) return;
+
+  try {
+    final files = await ref.read(accountDeletionClientProvider).deleteAccount();
+    await ref.read(syncServiceProvider).forgetCloudCopy(requeue: false);
+    await ref
+        .read(settingsProvider.notifier)
+        .mutate((s) => s.copyWith(cloudSync: false));
+    await ref.read(authRepositoryProvider).signOut();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          files > 0
+              ? '账号已删除。本机记录仍在，云端 $files 个 GPX 已清理。'
+              : '账号已删除。本机记录仍在。',
+        ),
+      ),
+    );
+  } on AccountDeletionException catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text(e.message)));
+  }
 }
 
 class _StatusSection extends ConsumerWidget {

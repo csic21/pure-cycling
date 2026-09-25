@@ -633,13 +633,25 @@ class SyncService {
 
   /// Local bookkeeping after the cloud copy is gone.
   ///
-  /// Everything local is marked "no cloud copy" and re-queued: the queue is
-  /// the list of what *should* be in the cloud, and after a wipe that is
-  /// everything again. Enqueueing is idempotent per entity, so rides that were
-  /// already pending do not double up.
-  Future<void> forgetCloudCopy() async {
+  /// Everything local is marked "no cloud copy". [requeue] then decides what
+  /// that means:
+  ///
+  /// * `true` (the default) — the records should be uploaded again if the
+  ///   rider turns sync back on, so they go back on the queue: the queue is
+  ///   the list of what *should* be in the cloud, and after a wipe that is
+  ///   everything again. Enqueueing is idempotent per entity, so rides that
+  ///   were already pending do not double up.
+  /// * `false` — used when the account itself is gone. There is nowhere to
+  ///   upload to, and a queue that can never drain would sit there showing
+  ///   「待上传 N 条」 for the rest of the install's life.
+  Future<void> forgetCloudCopy({bool requeue = true}) async {
     await _db.rideDao.markCloudCopyGone();
     await _db.routeDao.markCloudCopyGone();
+
+    if (!requeue) {
+      await _db.syncQueueDao.clear();
+      return;
+    }
 
     for (final ride in await _db.rideDao.getRides()) {
       if (ride.isDeleted) continue;

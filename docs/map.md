@@ -194,7 +194,7 @@ App ── POST /route {origin, destination, waypoints} ──> 代理（持有�
 supabase functions deploy route
 supabase secrets set AMAP_KEY=...
 flutter run \
-  --dart-define=ROUTING_RELAY_URL=https://xxx.supabase.co/functions/v1/route
+  --dart-define=SUPABASE_FUNCTIONS_URL=https://xxx.supabase.co/functions/v1
 ```
 
 本地验证（不需要真 Key，桩代替高德）：

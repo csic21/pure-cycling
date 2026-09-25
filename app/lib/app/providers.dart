@@ -16,8 +16,9 @@ import '../core/map/amap/amap_route_provider.dart';
 import '../core/map/amap/amap_traffic_light_provider.dart';
 import '../core/map/local/offline_providers.dart';
 import '../core/map/map_providers.dart';
-import '../core/map/routing_relay.dart';
+import '../core/sync/functions_config.dart';
 import '../core/sync/supabase_config.dart';
+import '../core/sync/account_deletion_client.dart';
 import '../core/sync/sync_service.dart';
 import '../core/utils/geo.dart';
 import '../core/utils/units.dart';
@@ -159,12 +160,12 @@ final amapKeyProvider = FutureProvider<String>((ref) async {
 /// without leaving a mark on the UI.
 final mapServicesProvider = Provider<MapServices>((ref) {
   final settings = ref.watch(currentSettingsProvider);
-  final relayEndpoint = RoutingRelayConfig.endpoint.trim();
+  final relayEndpoint = FunctionsConfig.routeUrl;
 
   // The relay comes first: it is the distribution shape, and it needs no key
   // on the device at all. A rider who also happens to have their own key can
   // still be served by the relay — the quota is what matters, not the key.
-  if (relayEndpoint.isNotEmpty) {
+  if (relayEndpoint != null) {
     return MapServices(
       // Search is not relayed (only routing is), so it degrades to "no
       // results" rather than to a broken screen. A rider who wants search can
@@ -173,7 +174,7 @@ final mapServicesProvider = Provider<MapServices>((ref) {
       routes: AmapRouteProvider(
         client: AmapRelayClient(
           endpoint: relayEndpoint,
-          accessToken: _relayAccessToken,
+          accessToken: _sessionAccessToken,
         ),
       ),
       trafficLights: const AmapTrafficLightProvider(),
@@ -219,7 +220,7 @@ final routingAvailabilityProvider = Provider<({bool available, String reason})>(
     if (!services.routes.isDegraded) {
       return (available: true, reason: '');
     }
-    if (RoutingRelayConfig.isConfigured) {
+    if (FunctionsConfig.isConfigured) {
       // The relay is built in but the session is not: "not signed in" is the
       // actionable half of this, and the straight line is the fallback either
       // way.
@@ -240,8 +241,9 @@ final routingAvailabilityProvider = Provider<({bool available, String reason})>(
 /// The current session token, or null.
 ///
 /// A function rather than a value: supabase_flutter refreshes the session in
-/// place, and the provider graph is built once.
-String? _relayAccessToken() {
+/// place, and the provider graph is built once. Shared by every edge-function
+/// client — the routing relay and account deletion want the same thing.
+String? _sessionAccessToken() {
   if (!SupabaseConfig.isConfigured) return null;
   try {
     return Supabase.instance.client.auth.currentSession?.accessToken;
@@ -275,6 +277,18 @@ final rideRecorderProvider = Provider<RideRecorder>((ref) {
 final voiceBackendProvider = Provider<VoiceBackend>(
   (ref) => FlutterTtsVoiceBackend(),
 );
+
+/// Self-service account deletion.
+///
+/// Constructed with an empty endpoint when the project has no functions
+/// configured; `isConfigured` is then false and the settings screen says the
+/// feature is unavailable rather than offering a button that cannot work.
+final accountDeletionClientProvider = Provider<AccountDeletionClient>((ref) {
+  return AccountDeletionClient(
+    endpoint: FunctionsConfig.deleteAccountUrl ?? '',
+    accessToken: _sessionAccessToken,
+  );
+});
 
 /// The ride session object, created once for the life of the app.
 ///

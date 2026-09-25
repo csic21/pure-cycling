@@ -19,7 +19,7 @@
 架构从第一天就是按「没有 key 也能开发」设计的：
 
 ```text
-254 个测试            没有一个需要 key
+260 个测试            没有一个需要 key
 SQL 迁移验证          用 Docker 起 Supabase 官方镜像，不需要云项目
 Auth 流程验证         真的注册账号，不需要云项目、不需要 key
 本地整栈开发           supabase start，完整 Kong + PostgREST + Storage
@@ -77,7 +77,7 @@ flutter run --dart-define-from-file=dart_define.json
 | 名称 | 用途 |
 |---|---|
 | `SUPABASE_URL` | 项目 URL。本身不是秘密，它就在每个 App 二进制里 |
-| `ROUTING_RELAY_URL` | `route` 函数的 URL。同样不是秘密——它就在每个用到它的二进制里；函数自己用会话校验和每账号配额守住 |
+| `SUPABASE_FUNCTIONS_URL` | `route` 函数的 URL。同样不是秘密——它就在每个用到它的二进制里；函数自己用会话校验和每账号配额守住 |
 
 生成 keystore 的 base64：
 
@@ -93,8 +93,8 @@ base64 -i upload-keystore.jks | pbcopy   # macOS
 
 ```
 secrets            key 扫描（含自检）
-analyze-and-test   生成 Drift 代码 → flutter analyze → 254 个测试
-functions          deno check + 13 个函数测试 + 中转必须要求会话（不需要 Docker）
+analyze-and-test   生成 Drift 代码 → flutter analyze → 260 个测试
+functions          deno check + 22 个函数测试 + 两个函数必须要求会话（不需要 Docker）
 migrations         Docker 起 Supabase 官方 Postgres，跑迁移 + RLS 隔离 + 管理员边界 + 配额验证
 auth-flow          Docker 起真实 GoTrue，注册账号验证触发器与令牌
 build-android      release APK（R8 开着）
@@ -124,11 +124,12 @@ node_modules 相对于 npm 省一半以上，而且全局 store 是内容寻址�
 
 | 检查 | 在哪 | 证明什么 |
 |---|---|---|
-| `deno check` + `deno test`（13 个） | `functions` job，每次 push | 拒绝路径（401/429/503/400）、上游 URL 只由服务端构造、配额三分支 |
-| `scripts/check-relay-config.sh` | `functions` job，每次 push | `verify_jwt = true` —— 这条错了，中转就是一个对全网开放的算路接口，而且请求看起来一切正常 |
+| `deno check` + `deno test`（22 个） | `functions` job，每次 push | 拒绝路径（401/429/503/400）、上游 URL 只由服务端构造、配额三分支、删除顺序（先文件后账号） |
+| `scripts/check-functions-config.sh` | `functions` job，每次 push | 每个函数 `verify_jwt = true` —— 中转那条错了，它就是一个对全网开放的算路接口，而且请求看起来一切正常 |
 | `scripts/verify-routing-relay.sh` | 本地（要整栈 + Edge runtime） | 真实运行时、真实 Kong、真实会话，桩代替高德 |
+| `scripts/verify-account-deletion.sh` | 本地（要整栈 + Edge runtime） | 账号真的被删掉、GPX 没留成孤儿、别人的数据一条不少、旧会话立即失效 |
 
-`check-relay-config.sh` 值得单独说一句：它是那种「错了不会报错、只会被人白嫖」
+`check-functions-config.sh` 值得单独说一句：它是那种「错了不会报错、只会被人白嫖」
 的配置，所以由脚本守，而不是靠 review 时记得看。
 
 几个刻意的选择：

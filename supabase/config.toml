@@ -402,6 +402,11 @@ enabled = true
 # whole internet, so the caller must hold a real (possibly anonymous) session.
 verify_jwt = true
 
+[functions.delete-account]
+# Not a bypass (it deletes the caller's own account, and there is no parameter
+# that names a user), but the identity is the whole operation.
+verify_jwt = true
+
 [analytics]
 # Logflare plus a vector sidecar, for a log pipeline this project does not
 # consume. Off to keep the local stack small.
