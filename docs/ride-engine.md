@@ -8,16 +8,28 @@
 ## 管线
 
 ```text
-原始定位 LocationFix
-   ↓  校验            GpsFilter     时间戳倒退 / 精度太差 / 速度不可能 / 重复
-   ↓  平滑            GpsFilter     EMA + 死区，速度用非对称平滑
-   ↓  距离            DistanceCalculator   锚点 + 半径门限
-   ↓  爬升            ElevationAccumulator 阈值参考点
-   ↓  统计            RideEngine    → RideState
+BLE 传感器 SensorReading ────────────────────┐
+                                             │ onSensorReading()
+原始定位 LocationFix                         │ 心率 / 踏频 / 功率 / 轮速
+   ↓  校验            GpsFilter              │
+   │                                        │ 时间戳倒退 / 精度太差 /
+   │                                        │ 速度不可能 / 重复
+   ↓  平滑            GpsFilter              │ EMA + 死区，非对称平滑
+   ↓  距离            DistanceCalculator     │ 锚点 + 半径门限
+   ↓  爬升            ElevationAccumulator   │ 阈值参考点
+   ↓  统计            RideEngine ←───────────┘
    ↓  持久化          RideRecorder  批量写入 + 检查点
 ```
 
 顺序是固定的。先校验再平滑，因为未经校验的采样会悄悄把一个坏点洗成「看起来正常」的值。
+
+传感器读数由 `SensorManager` 归一化后，经 `RideRecorder` 进入引擎：订阅在骑行开始时建立、
+在拆解引擎时取消，读数落在 `RideState.sensors` 和此后每个轨迹点上。
+
+这里曾经断过一次，值得记下来：manager 能配对、能在自己的页面显示实时值，
+但**没有任何东西订阅 `readings`**，引擎永远收不到心率，而引擎自己的测试全绿 ——
+因为它测的是 `onSensorReading`，不是「有没有人调它」。
+现在 `ride_recorder_test.dart` 里有一条从读数到落盘轨迹点的端到端测试锁着。
 
 ---
 
@@ -338,7 +350,8 @@ void withRide(void Function(void Function(Duration) advance, DateTime Function()
 - 距离：稳定骑行、完全静止无距离、传送门定位被拒
 - 自动暂停：延迟后暂停、超阈值后恢复、单次慢速采样不触发、可关闭
 - 爬升：有坡时有爬升、平地噪声不产生爬升
-- 传感器：心率/踏频/功率进入状态和轨迹点、不可能的值被丢弃
+- 传感器：心率/踏频/功率进入状态和轨迹点、不可能的值被丢弃 —— 引擎层；
+  从管理器的读数到落盘轨迹点的接线由 `ride_recorder_test.dart` 覆盖
 - 崩溃恢复：检查点按节奏写入、恢复不产生幽灵线段、序号从检查点继续
 - GPS 状态：精度差 vs 信号丢失的区分
 

@@ -19,7 +19,7 @@ App 完整可用。记录、码表、历史、GPX 导入导出全部在本地完
 |---|---|
 | 邮箱 + 密码注册 / 登录 | ✅ |
 | 邮箱验证 | ✅ 注册后发确认邮件，链接回到 App |
-| 忘记密码 | ✅ 重置链接回到 App |
+| 忘记密码 | ✅ 重置链接回到 App，在「设置新密码」页完成后才真正改掉 |
 | 匿名登录 | ✅ 拿到真实的 `auth.users` 行，骑行照常同步 |
 | 匿名账号绑定邮箱 | ✅ 账号 id 不变，已同步的骑行不受影响 |
 | 退出登录 | ✅ 不删除任何本地记录 |
@@ -94,6 +94,32 @@ purecycling://login-callback
 
 `updateUser` 会再发一封验证邮件，所以绑定后的提示是
 「已绑定，请到邮箱点击验证链接」而不是「已绑定」——地址在未验证前只是记录在案。
+
+---
+
+## 重置密码的第二步
+
+重置链接本身**不改密码**。Supabase 用它证明骑手拥有这个邮箱，并发给 App 一个
+恢复会话 —— 密码是被 `updateUser(UserAttributes(password:))` 换掉的。
+
+所以只把链接接回 App 是不够的：App 会看到一个「已登录」的账号，
+而旧密码依然能打开它。骑手以为重置成功了，实际什么都没变。
+这比没有这个功能更糟，因为它会让人停止怀疑。
+
+现在的流程：
+
+```text
+邮件链接 → 回到 App（SDK 换出恢复会话，发 passwordRecovery 事件）
+        → 「设置新密码」页（AppRoutes.setPassword）
+        → 保存 → updateUser → 完成
+```
+
+页面上还有一个「稍后再说」：不清除密码，只是关掉这次提示，旧密码继续可用 ——
+因为恢复会话已经登录了，骑手可以照常骑车，想改的时候再发一封邮件。
+
+检测靠的是 `AuthChangeEvent.passwordRecovery`，在 App 第一帧就订阅。
+冷启动从邮件进来也不会漏：SDK 要先拿链接去换会话（一次网络往返）
+才会发这个事件，而那一帧早就画完了。`test/password_recovery_test.dart` 锁着整条链路。
 
 ---
 
@@ -217,7 +243,9 @@ App 会提示「注册成功，请到邮箱点击验证链接后再登录」。
 |---|---|
 | `core/sync/supabase_config.dart` | URL、key、深链 scheme |
 | `features/auth/data/auth_repository.dart` | 全部 auth 调用 + 错误翻译 |
-| `features/auth/presentation/login_screen.dart` | 登录 / 注册 / 匿名 / 忘记密码 |
+| `features/auth/presentation/login_screen.dart` | 登录 / 注册 / 匿名 / 忘记密码（发信） |
+| `features/auth/presentation/set_password_screen.dart` | 重置链接之后的「设置新密码」 |
+| `test/password_recovery_test.dart` | 恢复事件 → 改密码 → 回家的整条链路 |
 | `features/settings/presentation/widgets/account_section.dart` | 账号状态、绑定邮箱、退出 |
 | `features/settings/presentation/sync_screen.dart` | 同步状态与手动同步 |
 | `test/auth_test.dart` | 深链配置、账号标签、错误翻译 |
