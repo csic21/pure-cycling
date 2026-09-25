@@ -333,6 +333,28 @@ button.row-action.restore:hover {
   border-color: var(--accent);
 }
 
+/* The same quiet control, for actions that navigate instead of submitting. */
+a.row-action {
+  display: inline-block;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+a.row-action:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 button.quiet {
   border-color: transparent;
   color: var(--text-3);
@@ -416,6 +438,9 @@ input:focus {
   margin: 0;
   color: var(--text-2);
   font-size: 13px;
+  /* Body copy stays inside a readable measure; the console is wide, the
+     sentences are not. */
+  max-width: 68ch;
 }
 
 .empty {

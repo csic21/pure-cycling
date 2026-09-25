@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { ConsoleShell } from '@/components/console-shell';
@@ -137,22 +138,34 @@ export default async function UsersPage({
                       </td>
                       <td className="right">
                         {row.is_admin ? null : (
-                          <form action={setUserDisabled}>
-                            <input type="hidden" name="userId" value={row.id} />
-                            <input
-                              type="hidden"
-                              name="disabled"
-                              value={banned ? 'false' : 'true'}
-                            />
-                            <button
-                              type="submit"
-                              className={
-                                banned ? 'row-action restore' : 'row-action'
-                              }
+                          <div className="row-actions">
+                            <form action={setUserDisabled}>
+                              <input
+                                type="hidden"
+                                name="userId"
+                                value={row.id}
+                              />
+                              <input
+                                type="hidden"
+                                name="disabled"
+                                value={banned ? 'false' : 'true'}
+                              />
+                              <button
+                                type="submit"
+                                className={
+                                  banned ? 'row-action restore' : 'row-action'
+                                }
+                              >
+                                {banned ? '解封' : '封禁'}
+                              </button>
+                            </form>
+                            <Link
+                              className="row-action"
+                              href={`/users/${row.id}/delete`}
                             >
-                              {banned ? '解封' : '封禁'}
-                            </button>
-                          </form>
+                              删除
+                            </Link>
+                          </div>
                         )}
                       </td>
                     </tr>
