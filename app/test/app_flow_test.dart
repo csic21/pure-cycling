@@ -1,8 +1,13 @@
 import 'package:cycling_app/app/app.dart';
 import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/core/database/database.dart';
+import 'package:cycling_app/core/elevation/elevation_provider.dart';
+import 'package:cycling_app/core/utils/geo.dart';
 import 'package:cycling_app/features/dashboard/presentation/dashboard_view.dart';
-import 'package:flutter/material.dart';
+import 'package:cycling_app/features/routes/domain/route.dart';
+import 'package:cycling_app/features/settings/data/settings_repository.dart';
+import 'package:cycling_app/features/settings/domain/app_settings.dart';
+import 'package:flutter/material.dart' hide Route;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -352,6 +357,12 @@ void main() {
       expect(find.text('隐私政策'), findsOneWidget);
       expect(find.textContaining('最近更新'), findsOneWidget);
       expect(find.textContaining('只在你按下「开始骑行」之后'), findsOneWidget);
+      expect(find.textContaining('地图瓦片缓存'), findsOneWidget);
+
+      // The policy is long enough that the licences are below the fold on a
+      // phone, and a `ListView` does not mount what it never shows.
+      await tester.drag(find.byType(ListView), const Offset(0, -900));
+      await settle(tester);
       expect(find.text('查看使用的开源组件'), findsOneWidget);
 
       await shutdownApp(tester, database);
@@ -477,6 +488,68 @@ void main() {
     });
   });
 
+  group('route elevation', () {
+    Future<void> seedRoute(AppDatabase database) => database.routeDao.upsertRoute(
+          Route(
+            id: 'route-elevation',
+            name: '有坡的路线',
+            points: [
+              for (var i = 0; i < 80; i++)
+                GeoPoint(39.9 + i / 1000, 116.4 + i / 1000),
+            ],
+            distanceMeters: 12000,
+            estimatedDuration: const Duration(minutes: 45),
+          ),
+        );
+
+    testWidgets('a profile appears when the rider has allowed it',
+        (tester) async {
+      await SettingsRepository(database)
+          .save(const AppSettings(routeElevation: true));
+      await seedRoute(database);
+
+      await pumpApp(
+        tester,
+        extraOverrides: [
+          elevationProviderProvider.overrideWithValue(FakeElevation()),
+        ],
+      );
+
+      await openTab(tester, '路线');
+      await tester.tap(find.text('有坡的路线'));
+      await settle(tester);
+
+      expect(find.text('海拔剖面'), findsOneWidget);
+      // 80 samples climbing 2 m each: the accumulator counts the leg.
+      expect(find.text('爬升'), findsOneWidget);
+      expect(find.textContaining('Fake（测试）'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('nothing is asked for while the setting is off',
+        (tester) async {
+      await seedRoute(database);
+
+      // The real provider chain, with the setting at its default: the null
+      // provider is selected, and no request can happen.
+      await pumpApp(tester);
+
+      await openTab(tester, '路线');
+      await tester.tap(find.text('有坡的路线'));
+      await settle(tester);
+
+      expect(find.text('海拔剖面'), findsNothing);
+      expect(
+        find.textContaining('不包含海拔数据'),
+        findsOneWidget,
+        reason: '关掉时要说清为什么是 —，以及去哪里打开',
+      );
+
+      await shutdownApp(tester, database);
+    });
+  });
+
   group('sync', () {
     testWidgets('reports that the cloud is not configured rather than failing',
         (tester) async {
@@ -493,4 +566,24 @@ void main() {
       await shutdownApp(tester, database);
     });
   });
+}
+
+/// A terrain service that answers with a steady climb.
+///
+/// Overridden at the provider seam, so the test exercises the sampling, the
+/// accumulator and the screen without a network call.
+class FakeElevation implements ElevationProvider {
+  @override
+  String get id => 'fake';
+
+  @override
+  String get displayName => 'Fake（测试）';
+
+  @override
+  bool get isConfigured => true;
+
+  @override
+  Future<List<double?>> heights(List<GeoPoint> points) async => [
+        for (var i = 0; i < points.length; i++) 100.0 + i * 2.0,
+      ];
 }

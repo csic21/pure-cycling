@@ -11,6 +11,7 @@ import 'package:supabase_flutter/supabase_flutter.dart'
 
 import '../core/database/database.dart';
 import '../core/diagnostics/diagnostic_log.dart';
+import '../core/elevation/elevation_provider.dart';
 import '../core/diagnostics/failure_reporter.dart';
 import '../core/location/barometer_source.dart';
 import '../core/location/elevation_tuning.dart';
@@ -38,6 +39,7 @@ import '../features/navigation/domain/voice_backend.dart';
 import '../features/ride/data/ride_recorder.dart';
 import '../features/ride/data/ride_repository.dart';
 import '../features/ride/data/ride_session.dart';
+import '../features/ride/domain/elevation_accumulator.dart';
 import '../features/ride/domain/ride.dart';
 import '../features/ride/domain/ride_engine.dart';
 import '../features/ride/domain/track_point.dart';
@@ -109,6 +111,79 @@ final appVersionProvider = FutureProvider<String?>((ref) async {
     return null;
   }
 });
+
+/// Terrain heights for planned routes, when the rider has allowed it.
+///
+/// Null when the setting is off: nothing about a route leaves the device, and
+/// the route screens keep showing `—` with the reason they always gave.
+final elevationProviderProvider = Provider<ElevationProvider>((ref) {
+  if (!ref.watch(currentSettingsProvider).routeElevation) {
+    return const NullElevationProvider();
+  }
+  return OpenTopoDataElevationProvider();
+});
+
+/// The elevation profile of a saved route.
+///
+/// One request per route per session: the provider is not auto-disposed, so
+/// opening the same route twice does not ask the terrain service twice.
+///
+/// Gain is computed with the same peak/valley accumulator the rides use, at a
+/// threshold of 5 m rather than 2 — a 30 m DEM is a measurement of the ground,
+/// but it is a coarse one, and counting its own noise as climbing would be the
+/// same mistake the GPS path was designed to avoid.
+final routeElevationProfileProvider =
+    FutureProvider.family<RouteElevationProfile?, String>((ref, routeId) async {
+  final provider = ref.watch(elevationProviderProvider);
+  if (!provider.isConfigured) return null;
+
+  final route = await ref.watch(routeRepositoryProvider).getRoute(routeId);
+  if (route == null || route.points.length < 2) return null;
+
+  final samples = sampleRoutePoints(route.points);
+  final heights = await provider.heights(samples);
+  // Nulls are where the terrain service had no data; the chart needs a
+  // contiguous series, and the axis is the route length rather than the sample
+  // count, so dropping them is honest.
+  final known = [for (final height in heights) ?height];
+  if (known.length < 2) return null;
+
+  final accumulator = ElevationAccumulator(thresholdMeters: 5);
+  for (final height in known) {
+    accumulator.add(height);
+  }
+
+  return RouteElevationProfile(
+    // Even spacing is ElevationChart's contract; the chart plots whatever it
+    // is given, so the nulls are dropped here and the axis is the route length.
+    samples: known,
+    gainMeters: accumulator.gainMeters,
+    lossMeters: accumulator.lossMeters,
+    distanceMeters: route.distanceMeters,
+    source: provider.displayName,
+  );
+});
+
+/// A route's terrain profile, as the UI needs it.
+class RouteElevationProfile {
+  const RouteElevationProfile({
+    required this.samples,
+    required this.gainMeters,
+    required this.lossMeters,
+    required this.distanceMeters,
+    required this.source,
+  });
+
+  /// Heights in metres, evenly spaced along the route.
+  final List<double> samples;
+
+  final double gainMeters;
+  final double lossMeters;
+  final double distanceMeters;
+
+  /// Who to credit, shown under the chart.
+  final String source;
+}
 
 /// Whether the OS will keep delivering fixes with the screen off.
 ///
@@ -239,6 +314,12 @@ final mapServicesProvider = Provider<MapServices>((ref) {
   final settings = ref.watch(currentSettingsProvider);
   final relayEndpoint = FunctionsConfig.routeUrl;
 
+  // A build-time choice beats everything below it. Routes are converted to
+  // the tile source's datum at the drawing boundary (`RouteMap`), so any
+  // combination is geometrically correct — this is about whose tiles we are
+  // allowed to serve, not about coordinates.
+  final tileOverride = MapConfig.tileSourceOverride;
+
   // The relay comes first: it is the distribution shape, and it needs no key
   // on the device at all. A rider who also happens to have their own key can
   // still be served by the relay — the quota is what matters, not the key.
@@ -255,7 +336,7 @@ final mapServicesProvider = Provider<MapServices>((ref) {
         ),
       ),
       trafficLights: const AmapTrafficLightProvider(),
-      tileSource: MapTileSource.amapVector,
+      tileSource: tileOverride ?? MapTileSource.amapVector,
     );
   }
 
@@ -266,9 +347,10 @@ final mapServicesProvider = Provider<MapServices>((ref) {
       places: const NullPlaceProvider(),
       routes: const OfflineRouteProvider(),
       trafficLights: const AmapTrafficLightProvider(),
-      tileSource: settings.mapStyle == MapStyle.dark
-          ? MapTileSource.cartoDark
-          : MapTileSource.osm,
+      tileSource: tileOverride ??
+          (settings.mapStyle == MapStyle.dark
+              ? MapTileSource.cartoDark
+              : MapTileSource.osm),
     );
   }
 
@@ -282,7 +364,7 @@ final mapServicesProvider = Provider<MapServices>((ref) {
     // Tiles follow the routing provider's datum: a GCJ-02 route drawn on
     // WGS-84 tiles is 300 m off, and this makes that impossible to configure
     // by accident.
-    tileSource: MapTileSource.amapVector,
+    tileSource: tileOverride ?? MapTileSource.amapVector,
   );
 });
 

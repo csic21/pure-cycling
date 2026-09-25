@@ -540,7 +540,7 @@ class _WaypointRow extends StatelessWidget {
   }
 }
 
-class _RouteResult extends StatelessWidget {
+class _RouteResult extends ConsumerWidget {
   const _RouteResult({
     required this.route,
     required this.formatter,
@@ -552,8 +552,10 @@ class _RouteResult extends StatelessWidget {
   final MapServices services;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isStraightLine = route.provider == 'offline';
+    final elevationEnabled =
+        ref.watch(currentSettingsProvider).routeElevation;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -601,10 +603,17 @@ class _RouteResult extends StatelessWidget {
           ),
         ),
         if (route.elevationGainMeters == null)
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 8, 20, 0),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
             child: Text(
-              '高德骑行路径规划不提供海拔数据，因此无法显示爬升和坡度剖面。',
+              // A planned route has no id yet, so the terrain lookup — which
+              // is per saved route — cannot run here. Saying which step makes
+              // it appear is more useful than saying it is impossible.
+              elevationEnabled
+                  ? '高德算路不返回海拔。保存这条路线后打开详情，即可看到高程查询给出的'
+                      '爬升与剖面。'
+                  : '高德算路不返回海拔。可在「设置 → 地图服务 → 路线海拔」中打开'
+                      '高程查询（会把路线坐标发给第三方服务）。',
               style: AppText.caption,
             ),
           ),

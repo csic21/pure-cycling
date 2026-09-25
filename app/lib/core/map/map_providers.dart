@@ -92,6 +92,45 @@ class MapTileSource {
         (s) => s.id == id,
         orElse: () => amapVector,
       );
+
+  /// Like [byId], but says so when the id is unknown.
+  ///
+  /// Used for the build-time override, where a typo (`--dart-define=
+  /// TILE_SOURCE=osmm`) must not quietly ship a different provider's tiles
+  /// than the one somebody thought they chose.
+  static MapTileSource? tryById(String id) {
+    for (final source in all) {
+      if (source.id == id) return source;
+    }
+    return null;
+  }
+}
+
+/// Which map tiles this build draws.
+///
+/// The default — no override — is to follow the routing provider: AMap tiles
+/// when AMap answers the routes, OSM or Carto otherwise. That keeps the
+/// development and self-use path correct without a decision.
+///
+/// A distributed build has one decision to make that self-use does not, and it
+/// is a licensing one: the AMap raster endpoint is a public tile server with
+/// no agreement behind it. See 「瓦片从哪来」 in `docs/map.md`. This flag makes
+/// that decision a build argument rather than a code change:
+///
+/// ```sh
+/// flutter build appbundle --dart-define=TILE_SOURCE=osm
+/// ```
+///
+/// An unknown id falls back to the default and the map settings screen shows
+/// the source actually in use, so the mistake is visible rather than silent.
+abstract final class MapConfig {
+  static const String tileSourceId = String.fromEnvironment('TILE_SOURCE');
+
+  static MapTileSource? get tileSourceOverride {
+    final id = tileSourceId.trim();
+    if (id.isEmpty) return null;
+    return MapTileSource.tryById(id);
+  }
 }
 
 /// A place returned by search or reverse geocoding.

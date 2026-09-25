@@ -160,6 +160,7 @@ class AppSettings {
     this.keepScreenOn = true,
     this.navigation = const NavigationConfig(),
     this.mapStyle = MapStyle.dark,
+    this.routeElevation = false,
     this.cloudSync = false,
     this.wifiOnlyUpload = false,
     this.autoPauseSpeedThresholdKph = 2.0,
@@ -220,6 +221,15 @@ class AppSettings {
 
   final MapStyle mapStyle;
 
+  /// Whether a planned route may be sent to a public terrain service to get
+  /// its elevation profile.
+  ///
+  /// Off by default, and deliberately: it is the only setting in the app that
+  /// sends the rider's *coordinates* to a third party that is not the map
+  /// provider they chose. A route's climb figure is nice to have; handing over
+  /// where the route goes is not something to do on their behalf.
+  final bool routeElevation;
+
   // ---- 数据 ----
 
   final bool cloudSync;
@@ -238,6 +248,7 @@ class AppSettings {
     bool? keepScreenOn,
     NavigationConfig? navigation,
     MapStyle? mapStyle,
+    bool? routeElevation,
     bool? cloudSync,
     bool? wifiOnlyUpload,
     double? autoPauseSpeedThresholdKph,
@@ -260,6 +271,7 @@ class AppSettings {
       keepScreenOn: keepScreenOn ?? this.keepScreenOn,
       navigation: navigation ?? this.navigation,
       mapStyle: mapStyle ?? this.mapStyle,
+      routeElevation: routeElevation ?? this.routeElevation,
       cloudSync: cloudSync ?? this.cloudSync,
       wifiOnlyUpload: wifiOnlyUpload ?? this.wifiOnlyUpload,
       autoPauseSpeedThresholdKph:
@@ -303,6 +315,7 @@ class AppSettings {
         // navigation options do not each need a top-level key.
         'navigation_config': jsonEncode(navigation.toJson()),
         'map_style': mapStyle.id,
+        'route_elevation': routeElevation.toString(),
         'cloud_sync': cloudSync.toString(),
         'wifi_only_upload': wifiOnlyUpload.toString(),
       };
@@ -336,6 +349,7 @@ class AppSettings {
         _nestedJson(kv['navigation_config']),
       ),
       mapStyle: MapStyle.fromId(kv['map_style']),
+      routeElevation: _bool(kv['route_elevation'], d.routeElevation),
       cloudSync: _bool(kv['cloud_sync'], d.cloudSync),
       wifiOnlyUpload: _bool(kv['wifi_only_upload'], d.wifiOnlyUpload),
     );

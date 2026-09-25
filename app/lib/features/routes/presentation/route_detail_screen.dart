@@ -8,6 +8,7 @@ import '../../../app/providers.dart';
 import '../../../app/router.dart';
 import '../../../app/theme.dart';
 import '../../../core/utils/units.dart';
+import '../../../shared/widgets/elevation_chart.dart';
 import '../../../shared/widgets/error_notice.dart';
 import '../../../shared/widgets/route_map.dart';
 import '../domain/route.dart';
@@ -23,6 +24,8 @@ class RouteDetailScreen extends ConsumerWidget {
     final routeAsync = ref.watch(routeProvider(routeId));
     final formatter = ref.watch(unitFormatterProvider);
     final tileSource = ref.watch(mapServicesProvider).tileSource;
+    // Null unless the rider opted in (see `elevationProviderProvider`).
+    final profile = ref.watch(routeElevationProfileProvider(routeId)).valueOrNull;
 
     return Scaffold(
       appBar: AppBar(
@@ -80,14 +83,19 @@ class RouteDetailScreen extends ConsumerWidget {
                             label: '预计用时',
                           ),
                           _Stat(
-                            value: route.elevationGainMeters == null
-                                ? '—'
-                                : formatter.elevation(
-                                    route.elevationGainMeters!,
-                                  ),
-                            unit: route.elevationGainMeters == null
-                                ? null
-                                : formatter.system.elevationSuffix,
+                            // The routing service does not know relief; the
+                            // terrain service does. Prefer whichever answered.
+                            value: profile != null
+                                ? formatter.elevation(profile.gainMeters)
+                                : route.elevationGainMeters == null
+                                    ? '—'
+                                    : formatter.elevation(
+                                        route.elevationGainMeters!,
+                                      ),
+                            unit: (profile != null ||
+                                    route.elevationGainMeters != null)
+                                ? formatter.system.elevationSuffix
+                                : null,
                             label: '爬升',
                           ),
                         ],
@@ -102,11 +110,36 @@ class RouteDetailScreen extends ConsumerWidget {
                         interactive: true,
                       ),
                     ),
-                    if (route.elevationGainMeters == null)
+                    if (profile != null) ...[
+                      const SizedBox(height: 24),
                       const Padding(
-                        padding: EdgeInsets.fromLTRB(20, 16, 20, 0),
+                        padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+                        child: Text('海拔剖面', style: AppText.sectionTitle),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: ElevationChart(
+                          samples: profile.samples,
+                          formatter: formatter,
+                          distanceMeters: profile.distanceMeters,
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
                         child: Text(
-                          '该路线由高德规划，不包含海拔数据。',
+                          '高程来自 ${profile.source}，'
+                          '30 米分辨率：坡和垭口可信，桥、隧道口这类人工地形不可信。',
+                          style: AppText.caption,
+                        ),
+                      ),
+                    ] else if (route.elevationGainMeters == null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                        child: Text(
+                          ref.watch(currentSettingsProvider).routeElevation
+                              ? '高德算路不返回海拔，高程查询没有拿到结果。'
+                              : '该路线由高德规划，不包含海拔数据。'
+                                  '可在「设置 → 地图服务 → 路线海拔」中打开高程查询。',
                           style: AppText.caption,
                         ),
                       ),

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/providers.dart';
 import '../../../app/theme.dart';
 import '../../../core/map/map_providers.dart';
+import '../../../core/map/tile_cache.dart';
 import '../../../shared/widgets/settings_widgets.dart';
 import '../domain/app_settings.dart';
 
@@ -134,6 +135,27 @@ class _MapSettingsScreenState extends ConsumerState<MapSettingsScreen> {
           ),
 
           SettingsSection(
+            title: '路线海拔',
+            rows: [
+              SettingsSwitch(
+                title: '查询路线高程',
+                subtitle: settings.routeElevation
+                    ? '已开启：规划好的路线会发往公开高程服务，用于计算爬升和海拔剖面'
+                    : '已关闭：路线的爬升显示为 —，因为高德算路不返回海拔',
+                value: settings.routeElevation,
+                onChanged: (v) =>
+                    notifier.mutate((s) => s.copyWith(routeElevation: v)),
+              ),
+            ],
+            footnote: '高程数据来自 OpenTopoData 的公开 SRTM 30m 数据集（无需 Key）。'
+                '开启意味着**路线的坐标**会发送给这个第三方服务 —— 这是本 App 里'
+                '唯一一处会把你的坐标发给非地图供应商的地方，所以默认关闭。'
+                '30 米分辨率能看清坡和垭口，看不清桥和隧道口。',
+          ),
+
+          const _TileCacheSection(),
+
+          SettingsSection(
             title: '地理编码',
             rows: [
               SettingsTile(
@@ -182,5 +204,109 @@ class _MapSettingsScreenState extends ConsumerState<MapSettingsScreen> {
   Future<void> _clearKey() async {
     _keyController.clear();
     await _saveKey();
+  }
+}
+
+/// What the map has kept on disk, and a way to throw it away.
+///
+/// Worth a section of its own for two reasons. It is the difference between a
+/// tunnel being a blank screen and a tunnel being the road the rider already
+/// looked at; and the cache is a record of where they have been looking — a
+/// location trace by another name. Anything that sensitive gets to be visible
+/// and clearable rather than an invisible side effect of opening the map.
+class _TileCacheSection extends ConsumerStatefulWidget {
+  const _TileCacheSection();
+
+  @override
+  ConsumerState<_TileCacheSection> createState() => _TileCacheSectionState();
+}
+
+class _TileCacheSectionState extends ConsumerState<_TileCacheSection> {
+  static const TileCache _cache = TileCache();
+
+  ({int bytes, int tiles})? _size;
+
+  @override
+  void initState() {
+    super.initState();
+    _measure();
+  }
+
+  Future<void> _measure() async {
+    final size = await _cache.measure();
+    if (mounted) setState(() => _size = size);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = _size;
+    final bytes = size?.bytes ?? 0;
+
+    return SettingsSection(
+      title: '离线瓦片',
+      rows: [
+        SettingsTile(
+          title: '已缓存的地图',
+          subtitle: size == null
+              ? '正在统计…'
+              : bytes == 0
+                  ? '暂无缓存。打开地图后，看过的区域会留在本机'
+                  : '${_formatBytes(bytes)} · ${size.tiles} 张。'
+                      '看过的区域断网后仍能显示',
+          leading: const Icon(Icons.map_outlined),
+        ),
+        if (bytes > 0)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+            child: OutlinedButton(
+              onPressed: () => _confirmClear(context),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.danger,
+                side: const BorderSide(color: AppColors.hairline),
+              ),
+              child: const Text('清空缓存'),
+            ),
+          ),
+      ],
+      footnote: '缓存最多占用 1 GB，系统也可能自行清理。它按你实际看过的区域记录，'
+          '本身就是一个位置线索，所以随时可以清空；清空不影响骑行记录。',
+    );
+  }
+
+  Future<void> _confirmClear(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清空离线瓦片？'),
+        content: const Text(
+          '删除本机缓存的地图图片。骑行记录、路线和 GPX 都不受影响；'
+          '下次打开地图时会重新下载。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.danger,
+              foregroundColor: Colors.black,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    await _cache.clear();
+    await _measure();
+  }
+
+  static String _formatBytes(int bytes) {
+    const mb = 1024 * 1024;
+    if (bytes >= mb) return '${(bytes / mb).toStringAsFixed(1)} MB';
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
   }
 }
