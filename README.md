@@ -11,7 +11,7 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-306 个测试通过          flutter test
+327 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
@@ -161,7 +161,7 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 306 个测试（单元 + 界面）
+│   └── test/                 327 个测试（单元 + 界面）
 ├── admin/                    管理后台（Next.js，直连 Supabase）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
@@ -316,6 +316,8 @@ flutter test
 | `password_recovery_test.dart` | 重置链接 → 设置新密码 → 生效的整条链路 |
 | `ride_metadata_test.dart` | 名称与备注的编辑、清空，以及和云端副本的合并 |
 | `sync_queue_test.dart` | 出件箱：重复入队只留一行，新的编辑重置退避 |
+| `barometer_test.dart` | 气压→高度换算、接管与回退、合成爬坡与平地虚报的实测 |
+| `sampling_policy_test.dart` | 停车降档、快速恢复、红绿灯不抖动、不优于骑手选择 |
 | `diagnostic_log_test.dart` | 诊断日志的写入 / 上限 / 不抛异常，以及出错页与导出入口 |
 | `error_reporting_test.dart` | 失败在屏幕上是人话、在日志里是原文，重试真的重试 |
 | `auth_test.dart` | 深链配置、账号标签、Supabase 错误翻译 |
@@ -364,7 +366,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 306 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 327 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 
@@ -465,9 +467,11 @@ Android 那步特意用 **release** 而不是 debug：debug 不跑 R8，而 R8 �
 - **删除采用 tombstone**，本地行保留，避免离线设备重新上传已删除的记录。
 - **`trip_distance` 字段未实现** —— 规格 §6 的可选字段里它和 `distance` 是同一个数值，
   提供两个做同一件事的选项只会让用户困惑。
-- **纯 GPS 设备的爬升是估算值** —— 详见 [docs/elevation.md](docs/elevation.md)。
-  没有气压计的手机，9 km 平路会虚报 15–32 m 爬升；这是物理限制而非实现缺陷。
-  长爬坡几乎无损（300 m 报 299 m），UI 会把结果标注为「估算」。
+- **爬升是不是估算值取决于手机有没有气压计** —— 详见 [docs/elevation.md](docs/elevation.md)。
+  有气压计的机型：读数由气压变化测量，阈值从 15 m 降到 2 m，UI 不再标注「估算」
+  （残余误差是天气漂移，一趟三小时约 8–25 m，专业码表同样如此）。
+  没有的：9 km 平路会虚报 15–32 m 爬升，这是物理限制而非实现缺陷，
+  UI 会把它标注为「估算」；传感器页会告诉骑手这台手机属于哪一种。
 - **语音播报默认关闭** —— 它比看屏幕更打扰，也更耗电。开关在骑行中即时生效：
   关掉立刻静音，打开从下一个定位开始播报。语速与音色跟随系统，App 不提供选择。
 - **macOS release 打包在当前工具链上不可用** —— Flutter 3.41.9 的

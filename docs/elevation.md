@@ -156,24 +156,39 @@ gainMeters = 已确认的爬升 + (当前正在上升 ? 当前段长度 : 0)
 
 ---
 
-## 更好的方案（未实现）
+## 更好的方案
 
-按性价比排序：
+按性价比排序，第一条已经做了：
 
-### 1. 读手机自带的气压计
+### 1. 读手机自带的气压计 —— 已实现
 
-差 15 m 和 2 m 的区别就是阈值 15 m 和 2 m 的区别。
-用 `sensors_plus` 的 `barometerEventStream()` 可以读 `TYPE_PRESSURE`。
+差 15 m 和 2 m 的区别就是阈值 15 m 和 2 m 的区别，所以这一条是性价比最高的。
+实现分三层：
 
-**没做的原因是一个真实的标定问题**：气压随天气变化，
-一趟三小时的骑行可能有 1.5–3 hPa 的漂移，即 12–24 m。
-这会被 2 m 的阈值当成真实爬升。
+```text
+平台（Kotlin TYPE_PRESSURE / Swift CMAltimeter）
+  → 原始气压 hPa（EventChannel）
+  → Dart 换算成「相对第一个采样的高度」（barometer_source.dart）
+  → GpsFilter 接管高度序列，质量升到 precise（阈值 2 m）
+  → ElevationAccumulator 照旧
+```
 
-修掉它需要高通滤波，但高通会吃掉真实的长爬坡 ——
-30 分钟的 300 m 爬坡，用 20 分钟时间常数的高通会滤掉大半。
+**为什么换算放在 Dart**：两端各写一遍就会有两个实现，而只有一个能被测试。
+`test/barometer_test.dart` 里的合成爬坡用的就是同一套公式的逆运算。
 
-**但 12–24 m 的漂移相对于 300 m 的真实爬升是可接受的**，
-所以这条路是值得走的，只是需要真机数据来定标定策略。
+**锚定**：气压计只知道「变了多少」，不知道「现在多高」——那需要当地海平面气压，
+手机上拿不到。所以绝对高度锚定在第一个 GPS 高度上：形状来自气压计，
+位置来自 GPS。导出的 GPX 里的绝对海拔因此和以前一样有十几米的误差，
+但爬升和剖面是测量值。
+
+**没有做天气漂移校正，这是有意的，也是已知的残余误差。**
+一趟三小时的骑行气压可能漂移 1–3 hPa（约 8–25 m），会被算进爬升。
+用高通滤波能滤掉它，但同一个滤波器会吃掉真实的长爬坡
+（30 分钟的 300 m 爬坡，20 分钟时间常数会滤掉大半）——
+专业码表也不做这件事，它们同样会被天气影响。要真正解决需要下面第 3 条。
+
+因此 `precise` 这个标签的含义是「有气压计在测」，不是「绝对准确到 1 米」。
+在长距离骑行里两者会分开，而分开的部分目前只有真机数据能回答。
 
 ### 2. 用 DEM 高程数据修正
 
@@ -183,10 +198,11 @@ gainMeters = 已确认的爬升 + (当前正在上升 ? 当前段长度 : 0)
 这是**准确度最高的方案**，代价是需要一个高程数据源（SRTM / 天地图 / Mapbox Terrain），
 以及离线缓存策略。
 
-### 3. 传感器融合
+### 3. 传感器融合（未做）
 
 用 GPS 的长期趋势修正气压计的天气漂移，用气压计的短期精度补 GPS 的噪声。
-这是专业码表的做法，也是最复杂的。
+这比第 1 条更复杂，收益是从「8–25 m 的天气漂移」收窄到几米 ——
+需要先有真机数据证明这个漂移值得处理。
 
 ---
 
@@ -194,8 +210,10 @@ gainMeters = 已确认的爬升 + (当前正在上升 ? 当前段长度 : 0)
 
 | 文件 | 作用 |
 |---|---|
-| `core/location/elevation_tuning.dart` | 按垂直精度推导阈值、死区、平滑系数 |
-| `core/location/gps_filter.dart` | 高度平滑，跟踪垂直精度估计 |
+| `core/location/elevation_tuning.dart` | 按垂直精度推导阈值、死区、平滑系数；气压计的精度常量 |
+| `core/location/barometer_source.dart` | 平台气压流 + 气压→高度的换算（纯函数，可测） |
+| `core/location/gps_filter.dart` | 高度平滑，跟踪垂直精度估计；气压计接管时切换序列 |
+| `android/.../BarometerStreamHandler.kt` · `ios/Runner/AppDelegate.swift` | 两端的原始气压（30 行，自己写而不是用停更的插件） |
 | `features/ride/domain/elevation_accumulator.dart` | 峰值 / 谷值累计算法 |
 | `features/ride/domain/ride_engine.dart` | `_applyElevationTuning()` 在中途切换阈值 |
 | `app/providers.dart` | `elevationQualityProvider` 从已存轨迹推导质量 |
