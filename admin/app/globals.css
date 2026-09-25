@@ -355,6 +355,55 @@ a.row-action:hover {
   gap: 8px;
 }
 
+/* The filter row and the pager. Both are structure, not chrome: a hairline
+   input, a quiet text button, and the same monospaced numerals as the table. */
+
+.filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.filter input {
+  width: 260px;
+}
+
+.filter button {
+  border-color: var(--hairline-strong);
+  color: var(--text-2);
+}
+
+.filter button:hover {
+  color: var(--text);
+}
+
+.quiet-link {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.quiet-link:hover {
+  color: var(--text);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.pager a {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.pager a:hover {
+  color: var(--text);
+}
+
 button.quiet {
   border-color: transparent;
   color: var(--text-3);

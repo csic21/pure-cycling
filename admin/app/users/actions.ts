@@ -6,8 +6,25 @@ import { redirect } from 'next/navigation';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 
+/// Where to send the operator after an action.
+///
+/// The list can be filtered and paged, and an action that throws the operator
+/// back to page one of an unfiltered list makes them find the row again — on a
+/// thousand accounts, that is the difference between a tool and a chore. The
+/// filter travels in hidden fields on the action forms.
+function backToList(formData: FormData, extra: { error?: string } = {}): string {
+  const params = new URLSearchParams();
+  const search = String(formData.get('q') ?? '').trim();
+  const page = Number.parseInt(String(formData.get('page') ?? '1'), 10) || 1;
+  if (search) params.set('q', search);
+  if (page > 1) params.set('page', String(page));
+  if (extra.error) params.set('error', extra.error);
+  const query = params.toString();
+  return query ? `/users?${query}` : '/users';
+}
+
 /// Shared guard: who is asking, and may they act on this account?
-async function requireActingAdmin(targetUserId: string) {
+async function requireActingAdmin(targetUserId: string, formData: FormData) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -16,10 +33,10 @@ async function requireActingAdmin(targetUserId: string) {
 
   const { data: isAdmin } = await supabase.rpc('is_admin');
   if (isAdmin !== true) {
-    redirect(`/users?error=${encodeURIComponent('当前账号不是管理员')}`);
+    redirect(backToList(formData, { error: '当前账号不是管理员' }));
   }
   if (targetUserId === user.id) {
-    redirect(`/users?error=${encodeURIComponent('不能对自己执行这个操作')}`);
+    redirect(backToList(formData, { error: '不能对自己执行这个操作' }));
   }
   return user;
 }
@@ -37,7 +54,7 @@ export async function setUserDisabled(formData: FormData) {
   const userId = String(formData.get('userId') ?? '');
   const disabled = formData.get('disabled') === 'true';
 
-  const user = await requireActingAdmin(userId);
+  const user = await requireActingAdmin(userId, formData);
 
   const admin = createAdminClient();
   const { error } = await admin.auth.admin.updateUserById(userId, {
@@ -45,7 +62,7 @@ export async function setUserDisabled(formData: FormData) {
     ban_duration: disabled ? '876000h' : 'none',
   });
   if (error) {
-    redirect(`/users?error=${encodeURIComponent(error.message)}`);
+    redirect(backToList(formData, { error: error.message }));
   }
 
   // Appended after the action succeeded. The console's 「已封禁」 badge is
@@ -76,7 +93,7 @@ export async function setUserDisabled(formData: FormData) {
  */
 export async function deleteUser(formData: FormData) {
   const userId = String(formData.get('userId') ?? '');
-  const user = await requireActingAdmin(userId);
+  const user = await requireActingAdmin(userId, formData);
 
   const admin = createAdminClient();
 
@@ -105,7 +122,7 @@ export async function deleteUser(formData: FormData) {
   // 3. The account. Rows follow by cascade.
   const { error } = await admin.auth.admin.deleteUser(userId);
   if (error) {
-    redirect(`/users?error=${encodeURIComponent(error.message)}`);
+    redirect(backToList(formData, { error: error.message }));
   }
 
   await admin.from('admin_audit').insert({

@@ -368,7 +368,7 @@ begin
   end;
 
   begin
-    perform public.admin_list_users(1, 0);
+    perform public.admin_list_users(null, 1, 0);
     raise exception 'anon executed admin_list_users';
   exception
     when insufficient_privilege then
@@ -403,7 +403,11 @@ psql_stdin <<'SQL'
 -- ---------------------------------------------------------------------------
 
 insert into auth.users (id, email) values
-  ('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa', 'admin@example.com');
+  ('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa', 'admin@example.com'),
+  -- An anonymous account: no address, so an email search cannot find it. It
+  -- still has to appear in the unfiltered list — the console says as much in
+  -- its empty state.
+  ('bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb', null);
 
 insert into public.admins (user_id, note) values
   ('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa', 'created by verify-migrations.sh');
@@ -421,13 +425,49 @@ set request.jwt.claim.sub = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa';
 do $$
 declare
   v_accounts bigint;
+  v_matches bigint;
+  v_total bigint;
   v_rider_email text;
   v_rides bigint;
   v_audit bigint;
 begin
   select count(*) into v_accounts from public.admin_list_users();
-  if v_accounts < 3 then
-    raise exception 'admin_list_users returned % accounts, expected at least 3', v_accounts;
+  if v_accounts < 4 then
+    raise exception 'admin_list_users returned % accounts, expected at least 4', v_accounts;
+  end if;
+
+  -- Search: only the matching account, and a total that follows the filter —
+  -- the console shows 「匹配 N 个」 from that number.
+  select count(*) into v_matches from public.admin_list_users('rider@');
+  if v_matches <> 1 then
+    raise exception 'searching for rider@ returned % rows, expected 1', v_matches;
+  end if;
+
+  select total into v_total from public.admin_list_users('rider@');
+  if v_total <> 1 then
+    raise exception 'search total was %, expected 1', v_total;
+  end if;
+
+  -- `position()`, not `ilike`: every email contains '@', and none of the
+  -- accounts with an address should be filtered out by it. The anonymous
+  -- account has no address, so it is not in this result.
+  select count(*) into v_matches from public.admin_list_users('@');
+  if v_matches <> 3 then
+    raise exception 'searching for @ returned %, expected the 3 accounts with an email',
+      v_matches;
+  end if;
+
+  -- Pagination: one row per page, while `total` stays the size of the whole
+  -- filtered set. That is what tells the console the next page exists.
+  select count(*) into v_matches from public.admin_list_users(null, 1, 0);
+  if v_matches <> 1 then
+    raise exception 'a one-row page returned % rows', v_matches;
+  end if;
+
+  select total into v_total from public.admin_list_users(null, 1, 0);
+  select count(*) into v_accounts from public.admin_list_users();
+  if v_total <> v_accounts then
+    raise exception 'paged total was %, unfiltered count was %', v_total, v_accounts;
   end if;
 
   select email into v_rider_email
@@ -449,7 +489,7 @@ begin
     raise exception 'an admin cannot read the audit log';
   end if;
 
-  raise notice 'admin can list accounts and read the audit log, but not rides';
+  raise notice 'admin can search, page, list accounts and read the audit log, but not rides';
 end $$;
 
 -- The console derives 「已封禁」 from its own audit trail, so the state has to

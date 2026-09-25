@@ -120,6 +120,29 @@ printf '%s' "$admin_body" |
   fail "账号列表里没有骑手账号"
 ok "管理员能看到账号列表（含邮箱）"
 
+# Search and pagination over the real Data API: the console sends `p_search`
+# and pages through `p_offset`. Both are new, and both are the kind of thing
+# that works in SQL and breaks in the RPC layer.
+search_out="$(rpc "$admin_token" admin_list_users \
+  "$(jq -nc --arg q "$RIDER_EMAIL" '{p_search:$q,p_limit:50,p_offset:0}')")"
+search_status="$(printf '%s' "$search_out" | tail -1)"
+search_body="$(printf '%s' "$search_out" | sed '$d')"
+[ "$search_status" = "200" ] || fail "带搜索的 admin_list_users 失败（HTTP ${search_status}）"
+printf '%s' "$search_body" |
+  jq -e --arg email "$RIDER_EMAIL" \
+    'length == 1 and .[0].email == $email and .[0].total == 1' >/dev/null ||
+  fail "搜索没有返回唯一匹配，或者 total 不对"
+ok "按邮箱搜索返回唯一匹配，并带上 total"
+
+page_out="$(rpc "$admin_token" admin_list_users '{"p_limit":1,"p_offset":0}')"
+page_status="$(printf '%s' "$page_out" | tail -1)"
+page_body="$(printf '%s' "$page_out" | sed '$d')"
+[ "$page_status" = "200" ] || fail "分页调用 admin_list_users 失败（HTTP ${page_status}）"
+printf '%s' "$page_body" |
+  jq -e 'length == 1 and .[0].total >= 2' >/dev/null ||
+  fail "一行的分页没有返回 1 行，或者 total 不是全集大小"
+ok "分页返回一行，total 仍是全集大小"
+
 rider_out="$(rpc "$rider_token" admin_list_users '{"p_limit":50,"p_offset":0}')"
 rider_status="$(printf '%s' "$rider_out" | tail -1)"
 [ "$rider_status" != "200" ] || fail "非管理员竟然能调用 admin_list_users"

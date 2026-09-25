@@ -20,7 +20,12 @@ type AdminUser = {
   route_count: number;
   is_admin: boolean;
   access_state: string;
+  total: number;
 };
+
+/// One page of accounts. The console is an operations tool for a small team:
+/// fifty rows is enough to scan, small enough that a query stays cheap.
+const PAGE_SIZE = 50;
 
 function stamp(value: string): string {
   return new Date(value).toLocaleString('zh-CN', {
@@ -29,10 +34,19 @@ function stamp(value: string): string {
   });
 }
 
+/// Builds a `/users` link that keeps the current filter.
+function usersHref(search: string, page: number): string {
+  const params = new URLSearchParams();
+  if (search) params.set('q', search);
+  if (page > 1) params.set('page', String(page));
+  const query = params.toString();
+  return query ? `/users?${query}` : '/users';
+}
+
 export default async function UsersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; q?: string; page?: string }>;
 }) {
   const supabase = await createClient();
   const {
@@ -40,11 +54,16 @@ export default async function UsersPage({
   } = await supabase.auth.getUser();
   if (!user) redirect('/login');
 
+  const parsed = await searchParams;
+  const { error: pageError } = parsed;
+  const search = (parsed.q ?? '').trim();
+  const page = Math.max(1, Number.parseInt(parsed.page ?? '1', 10) || 1);
+
   const { data, error } = await supabase.rpc('admin_list_users', {
-    p_limit: 100,
-    p_offset: 0,
+    p_search: search === '' ? null : search,
+    p_limit: PAGE_SIZE,
+    p_offset: (page - 1) * PAGE_SIZE,
   });
-  const { error: pageError } = await searchParams;
   const who = user.email ?? user.id.slice(0, 8);
 
   // A signed-in account that is not in `public.admins` gets a refusal from
@@ -73,14 +92,43 @@ export default async function UsersPage({
   }
 
   const users = (data ?? []) as AdminUser[];
+  // Present on every row when there is at least one, and therefore unknown on
+  // an empty page past the end. Showing 「共 0 个」 for "past the end of a
+  // filtered list" would be a lie.
+  const total = users.length > 0 ? Number(users[0].total) : null;
+  const hasNext = users.length === PAGE_SIZE;
+  const hasPrev = page > 1;
 
   return (
     <ConsoleShell active="users" email={who}>
       <main className="page">
         <div className="page-head">
           <h1>账号</h1>
-          <span className="quiet small num">共 {users.length} 个</span>
+          <span className="quiet small num">
+            {total === null
+              ? '没有匹配'
+              : search
+                ? `匹配 ${total} 个`
+                : `共 ${total} 个`}
+          </span>
         </div>
+
+        <form className="filter" action="/users" method="get">
+          <input
+            type="search"
+            name="q"
+            defaultValue={search}
+            placeholder="按邮箱搜索"
+            aria-label="按邮箱搜索"
+            autoComplete="off"
+          />
+          <button type="submit">搜索</button>
+          {search ? (
+            <Link className="quiet-link" href="/users">
+              清除筛选
+            </Link>
+          ) : null}
+        </form>
 
         {pageError ? (
           <div className="notice">
@@ -91,7 +139,9 @@ export default async function UsersPage({
 
         {users.length === 0 ? (
           <p className="empty">
-            还没有账号。先在 App 里注册一个，再把它加进管理员名单。
+            {search
+              ? `没有邮箱包含「${search}」的账号。匿名账号没有邮箱，只在不筛选时出现在列表里。`
+              : '还没有账号。先在 App 里注册一个，再把它加进管理员名单。'}
           </p>
         ) : (
           <div className="table-scroll">
@@ -140,16 +190,16 @@ export default async function UsersPage({
                         {row.is_admin ? null : (
                           <div className="row-actions">
                             <form action={setUserDisabled}>
-                              <input
-                                type="hidden"
-                                name="userId"
-                                value={row.id}
-                              />
+                              <input type="hidden" name="userId" value={row.id} />
                               <input
                                 type="hidden"
                                 name="disabled"
                                 value={banned ? 'false' : 'true'}
                               />
+                              {/* Keeps the operator's filter and page after the
+                                  action redirects back to the list. */}
+                              <input type="hidden" name="q" value={search} />
+                              <input type="hidden" name="page" value={String(page)} />
                               <button
                                 type="submit"
                                 className={
@@ -175,6 +225,22 @@ export default async function UsersPage({
             </table>
           </div>
         )}
+
+        {hasPrev || hasNext ? (
+          <nav className="pager">
+            {hasPrev ? (
+              <Link href={usersHref(search, page - 1)}>← 上一页</Link>
+            ) : (
+              <span />
+            )}
+            <span className="quiet small num">第 {page} 页</span>
+            {hasNext ? (
+              <Link href={usersHref(search, page + 1)}>下一页 →</Link>
+            ) : (
+              <span />
+            )}
+          </nav>
+        ) : null}
 
         <p className="footnote">
           这里只有账号元数据，读不到骑行内容、GPX 或位置轨迹。
