@@ -337,6 +337,14 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 
 配置方式见 [docs/ci.md](docs/ci.md)。
 
+### 分发出去之后：反编译拿到 key 能做什么
+
+App 二进制里**只有** Supabase URL 和 anon key，两者本来就是公开凭据；
+service_role、高德 Key、签名密钥都不在里面。拿到 anon key 的人能注册账号、
+操作**自己**的数据，读不到任何人的骑行、也调不了管理函数——
+这两层（SQL 与 API）都有断言，见 [docs/security.md](docs/security.md)。
+真正要防的是滥用（注册与存储配额）和 service_role 泄露，清单在同一份文档里。
+
 ```sh
 # 本地开发
 cp app/dart_define.example.json app/dart_define.json   # 填真实值，此文件不进 git

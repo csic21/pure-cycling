@@ -207,6 +207,46 @@ api -X POST "$API_URL/rest/v1/rpc/push_ride" \
 ok "the row now points at the uploaded GPX"
 
 # ---------------------------------------------------------------------------
+# The public key
+#
+# This is what a decompiled binary hands over: the URL and the anon key. Both
+# are meant to be public; what must hold is that they cannot reach anybody's
+# data. The SQL-level version of this check lives in verify-migrations.sh —
+# this one proves it through PostgREST and Storage, which is how an attacker
+# would actually ask.
+# ---------------------------------------------------------------------------
+
+echo "==> the public key (anon) against the API"
+
+for spec in rides:id routes:id profiles:id user_settings:user_id; do
+  table="${spec%%:*}"
+  column="${spec##*:}"
+  BODY="$(api "$API_URL/rest/v1/$table?select=$column" -H "apikey: $ANON_KEY")"
+  [ "$BODY" = "[]" ] || fail "anon can read $table: $BODY"
+done
+ok "anon reads no tables"
+
+STATUS="$(code "$DOWNLOAD_URL" -H "apikey: $ANON_KEY")"
+[ "$STATUS" != "200" ] || fail "anon downloaded the rider's GPX"
+ok "anon cannot download files (HTTP ${STATUS})"
+
+STATUS="$(code -X POST "$API_URL/rest/v1/rpc/push_ride" \
+  -H "apikey: $ANON_KEY" -H 'Content-Type: application/json' \
+  -d '{"p_ride":{"id":"00000000-0000-7000-8000-000000000000",
+        "started_at":"2026-09-24T06:00:00Z"}}')"
+case "$STATUS" in
+  200 | 201 | 204) fail "anon executed push_ride" ;;
+  *) ok "anon cannot execute push_ride (HTTP ${STATUS})" ;;
+esac
+
+STATUS="$(code -X POST "$API_URL/rest/v1/rpc/admin_list_users" \
+  -H "apikey: $ANON_KEY" -H 'Content-Type: application/json' -d '{}')"
+case "$STATUS" in
+  200) fail "anon executed admin_list_users" ;;
+  *) ok "anon cannot execute admin_list_users (HTTP ${STATUS})" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Deleting the cloud copy
 #
 # This is the request path behind 「删除云端数据」, in the app's order: read the

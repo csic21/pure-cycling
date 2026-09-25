@@ -300,6 +300,101 @@ begin
 end $$;
 SQL
 
+echo "==> asserting the public key boundary"
+psql_stdin <<'SQL'
+-- ---------------------------------------------------------------------------
+-- The public key
+--
+-- This is the boundary that matters once the app is distributed. The binary
+-- ships the anon key on purpose, so anyone can extract it and call PostgREST,
+-- GoTrue and Storage. "It is safe because the key is public" is only true
+-- while every table has RLS and every policy is scoped to a role that only a
+-- signed-in user holds — and Supabase's image grants `all` on new public
+-- tables to `anon` by default, so the grants are *not* the barrier. The
+-- policies are. Nothing here should be reachable.
+-- ---------------------------------------------------------------------------
+
+set role anon;
+
+do $$
+declare
+  v_rows integer;
+  v_table text;
+begin
+  foreach v_table in array array[
+    'rides', 'routes', 'profiles', 'user_settings', 'bikes', 'admin_audit'
+  ] loop
+    begin
+      execute format('select count(*) from public.%I', v_table) into v_rows;
+      if v_rows <> 0 then
+        raise exception 'public key leak: anon can read % row(s) from public.%',
+          v_rows, v_table;
+      end if;
+    exception
+      when insufficient_privilege then
+        -- No grant at all at this table (that is how `admins` and
+        -- `admin_audit` are set up). Stronger than an empty result, and just
+        -- as safe.
+        null;
+    end;
+  end loop;
+
+  select count(*) into v_rows from storage.objects;
+  if v_rows <> 0 then
+    raise exception 'public key leak: anon can list % storage object(s)', v_rows;
+  end if;
+
+  raise notice 'the public key reads nothing';
+end $$;
+
+do $$
+begin
+  begin
+    insert into public.rides (id, user_id, started_at, distance_meters)
+    values ('66666666-6666-7666-8666-666666666666',
+            '11111111-1111-7111-8111-111111111111', now(), 1);
+    raise exception 'anon wrote a ride';
+  exception
+    when insufficient_privilege then
+      raise notice 'anon cannot write rides';
+  end;
+
+  begin
+    perform public.push_ride('{}'::jsonb);
+    raise exception 'anon executed push_ride';
+  exception
+    when insufficient_privilege then
+      raise notice 'anon cannot execute push_ride';
+  end;
+
+  begin
+    perform public.admin_list_users(1, 0);
+    raise exception 'anon executed admin_list_users';
+  exception
+    when insufficient_privilege then
+      raise notice 'anon cannot execute admin_list_users';
+  end;
+
+  begin
+    perform public.is_admin();
+    raise exception 'anon executed is_admin';
+  exception
+    when insufficient_privilege then
+      raise notice 'anon cannot execute is_admin';
+  end;
+
+  begin
+    perform 1 from public.admins;
+    raise exception 'anon can read public.admins';
+  exception
+    when insufficient_privilege then
+      raise notice 'anon cannot read public.admins';
+  end;
+end $$;
+
+reset role;
+SQL
+
 echo "==> asserting the admin boundary"
 psql_stdin <<'SQL'
 -- ---------------------------------------------------------------------------
