@@ -48,8 +48,11 @@ class MinimalNavigationView extends StatelessWidget {
           // Mounted sideways, a phone is short and wide: three stacked bands
           // (speed, turn, remaining) leave each one too little height, so the
           // same information is laid out in three columns instead.
+          //
+          // The same 1.8 ratio as the dashboard: a wide-but-short *box* is not
+          // a wide-but-short *phone*.
           final landscape =
-              constraints.maxWidth > constraints.maxHeight * 1.4;
+              constraints.maxWidth > constraints.maxHeight * 1.8;
 
           final speedBlock = Center(
             child: Row(

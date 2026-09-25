@@ -1,6 +1,7 @@
 import 'package:cycling_app/app/app.dart';
 import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/core/database/database.dart';
+import 'package:cycling_app/features/dashboard/presentation/dashboard_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -404,6 +405,26 @@ void main() {
       expect(find.text('2 × 3'), findsOneWidget);
       expect(find.text('数据字段'), findsOneWidget);
       expect(find.text('页面 1'), findsOneWidget);
+
+      // The preview pane is wide and short, but the phone it previews is not:
+      // the stacked portrait layout is what the rider will see on a mounted
+      // phone, so that is what the preview draws. (A ratio-based layout that
+      // trusted width alone would flip this pane to the landscape shape.)
+      //
+      // Scoped to the preview: 距离 also appears as a field-row label further
+      // down the same screen.
+      final preview = find.byType(DashboardView);
+      final hero = tester.getRect(
+        find.descendant(of: preview, matching: find.text('28.6')),
+      );
+      final label = tester.getRect(
+        find.descendant(of: preview, matching: find.text('距离')),
+      );
+      expect(
+        hero.center.dy,
+        lessThan(label.center.dy),
+        reason: '预览必须是竖屏排布：数字在上，说明在下',
+      );
 
       await shutdownApp(tester, database);
     });

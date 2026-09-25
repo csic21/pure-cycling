@@ -43,8 +43,13 @@ class DashboardView extends StatelessWidget {
         // landscape is short and wide: a hero stacked over its supporting grid
         // leaves the number about a third of the height it needs. Side by side
         // is the shape every dedicated bike computer uses in this orientation.
+        //
+        // 1.8 rather than 1.4, deliberately: a *box* that happens to be wide
+        // and short is not a phone that way. The dashboard editor's preview
+        // pane is 358×238 — a 1.5 ratio — and a lower threshold would draw the
+        // landscape layout inside a portrait phone's editor.
         final landscape =
-            constraints.maxWidth > constraints.maxHeight * 1.4;
+            constraints.maxWidth > constraints.maxHeight * 1.8;
 
         if (minimal) {
           return _MinimalDashboard(
