@@ -126,6 +126,72 @@ class SupabaseRemote {
     }
   }
 
+  /// Every GPX object path this account references.
+  ///
+  /// Read *before* the rows are deleted: once they are gone there is no index
+  /// of what to remove from the bucket, and a location trace left behind in
+  /// Storage after a "delete my cloud data" is precisely the failure that
+  /// action must not have.
+  Future<List<String>> listGpxPaths() async {
+    final rows = await _client
+        .from('rides')
+        .select('gpx_path')
+        .eq('user_id', userId)
+        .not('gpx_path', 'is', null);
+    return [
+      for (final row in rows)
+        if (row['gpx_path'] is String) row['gpx_path'] as String,
+    ];
+  }
+
+  /// Removes objects in chunks — the Storage API takes a list per call.
+  ///
+  /// A missing object is not a failure: the goal state is "absent".
+  Future<int> deleteGpxObjects(List<String> paths) async {
+    var removed = 0;
+    const chunk = 100;
+    for (var i = 0; i < paths.length; i += chunk) {
+      final end = i + chunk < paths.length ? i + chunk : paths.length;
+      final slice = paths.sublist(i, end);
+      try {
+        await _client.storage
+            .from(SupabaseConfig.gpxBucket)
+            .remove(slice);
+        removed += slice.length;
+      } on StorageException {
+        // Keep going; the rest of the list still has to go.
+      }
+    }
+    return removed;
+  }
+
+  /// Hard-deletes every ride row, returning how many were removed.
+  ///
+  /// Hard, not a tombstone: the tombstone exists so *other devices* converge,
+  /// and after a wipe the local copy is the only copy left. `.select()` after
+  /// the delete is what makes PostgREST report the rows it removed.
+  Future<int> deleteAllRides() async {
+    final deleted = await _client
+        .from('rides')
+        .delete()
+        .eq('user_id', userId)
+        .select('id');
+    return deleted.length;
+  }
+
+  Future<int> deleteAllRoutes() async {
+    final deleted = await _client
+        .from('routes')
+        .delete()
+        .eq('user_id', userId)
+        .select('id');
+    return deleted.length;
+  }
+
+  Future<void> deleteSettings() async {
+    await _client.from('user_settings').delete().eq('user_id', userId);
+  }
+
   /// Upserts a ride row, including its PostGIS geometry.
   Future<void> pushRide(Ride ride) async {
     final payload = <String, dynamic>{

@@ -195,6 +195,85 @@ STATUS="$(code "$DOWNLOAD_URL" \
 [ "$STATUS" = "200" ] || fail "the rider could not download their own GPX (HTTP $STATUS)"
 ok "the rider downloads their own GPX"
 
+# The app's order at ride end: upload the object, then write the path into the
+# row. The row is what indexes the bucket, which is why the deletion below can
+# find the object at all.
+api -X POST "$API_URL/rest/v1/rpc/push_ride" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"p_ride\":{\"id\":\"$RIDE_ID\",\"started_at\":\"2026-09-24T06:00:00Z\",
+        \"distance_meters\":12000,\"gpx_path\":\"$OBJECT_NAME\",
+        \"updated_at\":\"2026-09-24T07:00:00Z\"}}" >/dev/null
+ok "the row now points at the uploaded GPX"
+
+# ---------------------------------------------------------------------------
+# Deleting the cloud copy
+#
+# This is the request path behind 「删除云端数据」, in the app's order: read the
+# object paths, remove the objects, then the rows. The rows are the index of
+# what lives in the bucket, so they cannot be the first to go — and if this
+# order ever slips, a location trace is left behind in Storage after the user
+# asked for it to be deleted.
+# ---------------------------------------------------------------------------
+
+echo "==> deleting the cloud copy (rides, routes, settings, GPX)"
+
+# A second account's data, to prove the wipe does not reach beyond its owner.
+EMAIL_RIDE_ID="$(uuidgen | tr 'A-Z' 'a-z')"
+api -X POST "$API_URL/rest/v1/rpc/push_ride" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $EMAIL_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"p_ride\":{\"id\":\"$EMAIL_RIDE_ID\",\"name\":\"Other account ride\",
+        \"started_at\":\"2026-09-24T06:00:00Z\",\"distance_meters\":1,
+        \"updated_at\":\"2026-09-24T07:00:00Z\"}}" >/dev/null
+api -X POST "$API_URL/rest/v1/rpc/push_route" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"p_route":{"id":"'"$(uuidgen | tr 'A-Z' 'a-z')"'","name":"待删路线",
+        "distance_meters":1000,"updated_at":"2026-09-24T07:00:00Z"}}' >/dev/null
+ok "seeded a route for the rider and a ride for the other account"
+
+# The object path, read back the way the app reads it before deleting rows.
+GPX_PATH="$(api "$API_URL/rest/v1/rides?select=gpx_path&gpx_path=not.is.null" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" |
+  python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0]["gpx_path"] if rows else "")')"
+[ "$GPX_PATH" = "$OBJECT_NAME" ] || fail "could not read the GPX path back before deleting"
+
+STATUS="$(code -X DELETE "$API_URL/storage/v1/object/$BUCKET/$OBJECT_NAME" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $EMAIL_TOKEN")"
+[ "$STATUS" != "200" ] || fail "a second account deleted the rider's GPX"
+ok "a second account cannot delete the object (HTTP $STATUS)"
+
+STATUS="$(code -X DELETE "$API_URL/storage/v1/object/$BUCKET/$OBJECT_NAME" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN")"
+[ "$STATUS" = "200" ] || fail "the rider could not delete their own GPX (HTTP $STATUS)"
+
+STATUS="$(code "$DOWNLOAD_URL" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN")"
+[ "$STATUS" != "200" ] || fail "the GPX is still downloadable after deletion"
+ok "the rider deletes their own GPX, and it is gone"
+
+# Rows, in the same order the app uses: storage first, then the tables.
+for table in rides routes user_settings; do
+  STATUS="$(code -X DELETE "$API_URL/rest/v1/$table?user_id=eq.$OWNER" \
+    -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" \
+    -H 'Prefer: return=minimal')"
+  [ "$STATUS" = "204" ] || fail "deleting from $table returned $STATUS"
+done
+ok "the rider's rows are gone (rides, routes, settings)"
+
+REMAINING="$(api "$API_URL/rest/v1/rides?select=id" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" |
+  python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+[ "$REMAINING" = "0" ] || fail "the rider still has $REMAINING ride(s) in the cloud"
+ok "the rider reads back nothing"
+
+OTHER="$(api "$API_URL/rest/v1/rides?select=id&id=eq.$EMAIL_RIDE_ID" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $EMAIL_TOKEN" |
+  python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+[ "$OTHER" = "1" ] || fail "the wipe reached another account's data"
+ok "the other account's ride is untouched"
+
 # ---------------------------------------------------------------------------
 # How to point the app here
 # ---------------------------------------------------------------------------

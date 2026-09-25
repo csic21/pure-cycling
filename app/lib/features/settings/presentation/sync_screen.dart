@@ -48,6 +48,22 @@ class SyncScreen extends ConsumerWidget {
           else ...[
             AccountSection(user: user),
             _StatusSection(report: report, settings: settings),
+            if (user != null)
+              SettingsSection(
+                title: '云端数据',
+                rows: [
+                  SettingsTile(
+                    title: '删除云端数据',
+                    subtitle: '删除云端保存的全部骑行、路线和 GPX 文件。'
+                        '本机记录不受影响，会变成「待上传」；云同步会同时关闭。',
+                    leading: const Icon(Icons.delete_outline,
+                        color: AppColors.danger),
+                    onTap: () => _confirmDeleteCloudData(context, ref),
+                  ),
+                ],
+                footnote: '删除用你自己的登录令牌完成，服务端按行级权限校验，'
+                    '没有旁路。删除后如果重新打开云同步，会重新备份一遍。',
+              ),
           ],
 
           SettingsSection(
@@ -88,6 +104,49 @@ class SyncScreen extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// Confirms and performs "delete my cloud data".
+///
+/// The order matters: the switch goes off *first*, so even a failed deletion
+/// cannot be followed by the next sync putting everything back. Deleting is
+/// the promise; turning uploads off is what keeps it.
+Future<void> _confirmDeleteCloudData(BuildContext context, WidgetRef ref) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('删除云端数据？'),
+      content: const Text(
+        '将删除你账号下云端的全部骑行、路线和 GPX 文件。\n\n'
+        '本机记录不会被删除，它们会变成「待上传」。云同步会同时关闭——'
+        '否则下一次同步会立刻把刚删掉的东西重新传上去。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: AppColors.danger,
+            foregroundColor: Colors.black,
+          ),
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('删除并关闭云同步'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true) return;
+
+  await ref
+      .read(settingsProvider.notifier)
+      .mutate((s) => s.copyWith(cloudSync: false));
+
+  final report = await ref.read(syncServiceProvider).deleteCloudData();
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context)
+      .showSnackBar(SnackBar(content: Text(report.summary)));
 }
 
 class _StatusSection extends ConsumerWidget {

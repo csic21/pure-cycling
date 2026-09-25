@@ -72,6 +72,29 @@ class SyncReport {
       );
 }
 
+/// The outcome of a "delete my cloud data" action.
+class CloudDeleteReport {
+  const CloudDeleteReport({
+    this.ok = false,
+    this.rides = 0,
+    this.routes = 0,
+    this.files = 0,
+    this.message,
+  });
+
+  final bool ok;
+  final int rides;
+  final int routes;
+  final int files;
+
+  /// Why nothing was deleted, when [ok] is false.
+  final String? message;
+
+  String get summary => ok
+      ? '已删除云端 $rides 条骑行、$routes 条路线、$files 个 GPX 文件'
+      : (message ?? '删除失败');
+}
+
 /// Drains the local outbox to Supabase and merges the cloud back down.
 ///
 /// ## Ordering
@@ -544,6 +567,90 @@ class SyncService {
 
     await _rides.importTrackPoints(rideId, points);
     return points.length;
+  }
+
+  // ---- Deleting the cloud copy ----
+
+  /// Deletes everything this account holds in the cloud: rows and GPX objects.
+  ///
+  /// Deliberately *not* gated on the cloud-sync switch. That switch is about
+  /// uploads, and asking for the existing copy to be gone is a separate
+  /// decision — someone who just turned uploading off is exactly who wants
+  /// this. It does require a session: deletion runs with the rider's own
+  /// token, so RLS stays the boundary instead of a service key.
+  ///
+  /// The caller is responsible for turning cloud sync off afterwards.
+  /// Otherwise the next sync uploads everything that was just deleted, which
+  /// would make the whole action a lie.
+  Future<CloudDeleteReport> deleteCloudData() async {
+    if (_running) {
+      return const CloudDeleteReport(message: '同步正在进行，请稍后再试');
+    }
+
+    // Cheapest and most fundamental first: with no Supabase configured there
+    // is nothing to delete against, and the client is never resolved.
+    if (!SupabaseConfig.isConfigured) {
+      return const CloudDeleteReport(message: '云同步未配置');
+    }
+    final client = _resolveClient();
+    if (client == null) {
+      return const CloudDeleteReport(message: '云同步不可用');
+    }
+    final userId = client.auth.currentUser?.id;
+    if (userId == null) {
+      return const CloudDeleteReport(message: '未登录，无法确认云端数据属于谁');
+    }
+
+    _running = true;
+    try {
+      final remote = SupabaseRemote(client, userId);
+
+      // Objects before rows: the rows are the index of what is in the bucket,
+      // so they must not be the first to go.
+      final paths = await remote.listGpxPaths();
+      final files = await remote.deleteGpxObjects(paths);
+      final rides = await remote.deleteAllRides();
+      final routes = await remote.deleteAllRoutes();
+      await remote.deleteSettings();
+
+      await forgetCloudCopy();
+      // A pull watermark from before the wipe would skip rows created after
+      // it; start over instead.
+      _lastPulledAt = null;
+
+      return CloudDeleteReport(
+        ok: true,
+        rides: rides,
+        routes: routes,
+        files: files,
+      );
+    } catch (e) {
+      return CloudDeleteReport(message: _describeError(e));
+    } finally {
+      _running = false;
+    }
+  }
+
+  /// Local bookkeeping after the cloud copy is gone.
+  ///
+  /// Everything local is marked "no cloud copy" and re-queued: the queue is
+  /// the list of what *should* be in the cloud, and after a wipe that is
+  /// everything again. Enqueueing is idempotent per entity, so rides that were
+  /// already pending do not double up.
+  Future<void> forgetCloudCopy() async {
+    await _db.rideDao.markCloudCopyGone();
+    await _db.routeDao.markCloudCopyGone();
+
+    for (final ride in await _db.rideDao.getRides()) {
+      if (ride.isDeleted) continue;
+      await _db.syncQueueDao
+          .enqueue(SyncEntityType.ride, ride.id, SyncOperation.upsert);
+    }
+    for (final route in await _db.routeDao.getRoutes()) {
+      if (route.isDeleted) continue;
+      await _db.syncQueueDao
+          .enqueue(SyncEntityType.route, route.id, SyncOperation.upsert);
+    }
   }
 }
 

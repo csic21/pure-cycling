@@ -86,6 +86,10 @@ flutter run
 包括手动同步（`test/sync_gate_test.dart` 锁着这条承诺）。
 打开后，传输的是骑行摘要、完整轨迹（GPX 文件）、保存的路线和设置。
 
+删除云端数据：设置 → 云同步 → **云端数据** → 删除。它会清空云端的行和 GPX，
+本机记录保留并变为「待上传」，**云同步同时关闭**——否则下一次同步会立刻
+把刚删掉的东西重新传上去。重新打开开关就是重新备份一遍。
+
 ```sh
 flutter run \
   --dart-define=SUPABASE_URL=https://xxxx.supabase.co \

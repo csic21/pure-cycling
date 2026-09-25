@@ -104,6 +104,20 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
     );
   }
 
+  /// Records that the cloud no longer holds a copy of anything.
+  ///
+  /// `gpx_path` is cleared because it addresses a Storage object that has just
+  /// been removed — a path pointing at a 404 is worse than no path. The sync
+  /// queue is *not* touched here; re-queueing is the caller's decision.
+  Future<void> markCloudCopyGone() async {
+    await update(localRides).write(
+      LocalRidesCompanion(
+        syncStatus: Value(SyncStatus.localOnly.id),
+        gpxPath: const Value(null),
+      ),
+    );
+  }
+
   /// Soft-deletes a ride and its trace.
   ///
   /// The row survives so the tombstone can travel; the track points do not,
