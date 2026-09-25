@@ -265,6 +265,12 @@ GPS 芯片和系统定位 API 返回 WGS-84。高德按法规发布 GCJ-02 的�
 **iOS** (`ios/Runner/Info.plist`)
 - 三级定位权限说明 + `UIBackgroundModes: location, bluetooth-central`
 - 蓝牙权限说明
+- **部署目标 15.0**（`Podfile` 与 `Runner.xcodeproj`）。这个数字现在的下限
+  来自工具链而不是依赖：`file_picker_darwin` 要 14.0，而 Xcode 27 根本不能为
+  15.0 以下构建。抬高它不损失覆盖 —— iOS 15 支持的机型和 iOS 14 完全相同
+  （iPhone 6s 及以后），第一次真正砍机型的是 iOS 16。
+  Podfile 的 `post_install` 会把每个 Pod 的目标也抬到 15.0：
+  组件自己声明的 12/13 会让整个 workspace 构建失败。
 
 **macOS** (entitlements)
 - 定位、蓝牙、网络客户端、用户选择文件读取

@@ -1,8 +1,10 @@
-# 14.0, not the generated 13.0: `file_picker_darwin` declares
-# `s.ios.deployment_target = '14.0'`, and CocoaPods refuses to integrate a pod
-# whose minimum is above the project's. iOS 14 covers iPhone 6s and later,
-# which is every device this app could plausibly be installed on.
-platform :ios, '14.0'
+# 15.0, and the floor is now the *toolchain's*, not a dependency's:
+# `file_picker_darwin` needs 14.0 and CocoaPods refuses a pod whose minimum is
+# above the project's, but Xcode 27 cannot build for anything below 15.0 at
+# all ("the range of supported deployment target versions is 15.0 to 27.0.x").
+# Raising it costs nothing in reach: iOS 15 supports exactly the same devices
+# as iOS 14 — iPhone 6s and later — and the next drop was iOS 16.
+platform :ios, '15.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -42,5 +44,14 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+
+    # Pods keep their own declared minimum — several still say 12.0 or 13.0 —
+    # and Xcode refuses to build a workspace whose *any* target is below 15.0.
+    # Nothing above cares about a pod's minimum, so it is raised here to the
+    # project's floor. Setting it after `flutter_additional_ios_build_settings`
+    # is deliberate: that helper may write the same key.
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+    end
   end
 end
