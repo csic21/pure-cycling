@@ -11,7 +11,7 @@
 |---|---|---|
 | Supabase URL + anon key | ✅ 在 | 公开凭据。能做什么由 RLS 决定，不由 key 决定 |
 | service_role key | ❌ 不在 | 只在管理后台的服务端环境变量和本地脚本里 |
-| 高德 Web 服务 Key | ❌ 不在 | 骑手自己填，存在本机 SQLite。泄露的代价是骑手自己的配额 |
+| 高德 Web 服务 Key | ❌ 不在 | 骑手自己填（自用/开发），存在本机 SQLite。**分发时也不能打进来**：客户端发出去的东西机器主人一定能读到，见 [map.md](map.md) 的「Key 由谁持有」 |
 | Android 签名密钥 | ❌ 不在 | 只在 CI secrets，构建时重建 |
 
 Flutter 二进制可以反编译，这是已知前提，也是设计的一部分：
@@ -90,6 +90,7 @@ GoTrue 有按 IP 的注册/登录限流，Supabase 平台也有全局配额。�
       断言指向它；本地通过不代表云端设置一致）
 - [ ] 管理后台：管理员账号开 MFA；`SUPABASE_SERVICE_ROLE_KEY` 只配在部署环境
 - [ ] 确认发布产物里没有 service_role：`scripts/check-secrets.sh` + 后台构建
+- [ ] 不要把高德 Key 打进构建；分发走服务端薄代理（[map.md](map.md) 的「Key 由谁持有」）
 
 
 ## 一句话

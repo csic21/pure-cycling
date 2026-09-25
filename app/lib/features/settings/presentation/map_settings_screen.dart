@@ -115,8 +115,9 @@ class _MapSettingsScreenState extends ConsumerState<MapSettingsScreen> {
                   ),
                 ),
             ],
-            footnote: '不填写 Key 也可以正常记录骑行、使用码表和历史记录，'
-                '路线规划会退化为直线，并会明确标注。',
+            footnote: '不填写也可以正常记录骑行、使用码表和历史记录，路线规划会退化为直线，'
+                '并会明确标注。这个 Key 属于 App 的运营方（自用时就是你自己）；'
+                '如果 App 是别人分发给你的，不需要填这里。',
           ),
 
           SettingsSection(

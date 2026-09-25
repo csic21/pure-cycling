@@ -74,11 +74,16 @@ flutter run
 
 ### 启用真实骑行路线（高德）
 
-1. 到 [高德开放平台](https://lbs.amap.com/) 申请一个 **Web 服务** 类型的 Key。
-   （不是 Android/iOS SDK Key —— 两者不通用，SDK Key 会被 REST 接口拒绝。）
-2. 在 App 内「设置 → 地图」中填入，或直接写进数据库键 `amap_key`。
+**自用 / 开发**：到 [高德开放平台](https://lbs.amap.com/) 申请一个 **Web 服务**
+类型的 Key（不是 Android/iOS SDK Key —— 两者不通用，SDK Key 会被 REST 接口拒绝），
+在 App 内「设置 → 地图」中填入，或直接写进数据库键 `amap_key`。
+填入后路线规划切换到 `/v5/direction/bicycling`，返回沿道路的骑行路线和转向指令。
 
-填入后路线规划会切换到 `/v5/direction/bicycling`，返回沿道路的骑行路线和转向指令。
+**分发给骑手时不要这么做**：不能让装上 App 的人自己去申请 Key；也不要把 Key
+打进构建——客户端发出去的东西，机器主人一定能读到（装个代理就能看到 URL 里的
+`key=`），打包等于公开，而 IP 白名单和数字签名都救不了移动端。分发的形态是
+**服务端薄代理持有 Key**，理由和最小实现见 [docs/map.md](docs/map.md) 的
+「Key 由谁持有」。
 
 ### 启用云同步（Supabase）
 
