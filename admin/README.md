@@ -83,3 +83,8 @@ scripts/verify-admin-flow.sh
   类型是手写在页面里的；出现第二个 RPC 时应该换掉。
 - 分页 UI（RPC 支持 `p_limit` / `p_offset`，页面写死 100）。
 - 改邮箱、重置密码：同样是 `auth.admin`，需要时按封禁那条路加。
+
+## 设计
+
+配色和排版 token 逐条抄自 App 的主题（纯黑、`#C8FF3D`、发丝线、等宽数字），
+两边必须一起改。规则和反模式见 [docs/design.md](../docs/design.md)。

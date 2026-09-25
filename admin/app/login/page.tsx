@@ -18,35 +18,43 @@ export default async function LoginPage({
   const { error } = await searchParams;
 
   return (
-    <main className="centered">
-      <form className="card" action={signIn}>
+    <main className="auth">
+      <div className="auth-panel">
         <h1>管理后台</h1>
-        <p className="muted small">
-          用管理员账号登录。账号要先在 Supabase 里存在，并被加进
-          <code> public.admins</code>。
-        </p>
-        {error ? <p className="error">{error}</p> : null}
-        <label>
-          邮箱
-          <input
-            name="email"
-            type="email"
-            required
-            autoComplete="username"
-            placeholder="admin@example.com"
-          />
-        </label>
-        <label>
-          密码
-          <input
-            name="password"
-            type="password"
-            required
-            autoComplete="current-password"
-          />
-        </label>
-        <button type="submit">登录</button>
-      </form>
+        <p className="muted small">只有名单里的账号能进来。</p>
+
+        {error ? (
+          <div className="notice" style={{ marginTop: 20 }}>
+            <strong>登录失败</strong>
+            <p>{error}</p>
+          </div>
+        ) : null}
+
+        <form action={signIn}>
+          <label>
+            邮箱
+            <input
+              name="email"
+              type="email"
+              required
+              autoComplete="username"
+              placeholder="admin@example.com"
+            />
+          </label>
+          <label>
+            密码
+            <input
+              name="password"
+              type="password"
+              required
+              autoComplete="current-password"
+            />
+          </label>
+          <button className="primary" type="submit">
+            登录
+          </button>
+        </form>
+      </div>
     </main>
   );
 }

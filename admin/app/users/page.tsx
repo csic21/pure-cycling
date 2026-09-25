@@ -1,7 +1,8 @@
-import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
+import { ConsoleShell } from '@/components/console-shell';
 import { createClient } from '@/lib/supabase/server';
+
 import { signOut } from '../login/actions';
 import { setUserDisabled } from './actions';
 
@@ -20,7 +21,7 @@ type AdminUser = {
   access_state: string;
 };
 
-function formatTime(value: string): string {
+function stamp(value: string): string {
   return new Date(value).toLocaleString('zh-CN', {
     dateStyle: 'short',
     timeStyle: 'short',
@@ -43,21 +44,25 @@ export default async function UsersPage({
     p_offset: 0,
   });
   const { error: pageError } = await searchParams;
+  const who = user.email ?? user.id.slice(0, 8);
 
   // A signed-in account that is not in `public.admins` gets a refusal from
   // the function itself, not an empty list — say so rather than showing a
   // zero-account table.
   if (error) {
     return (
-      <main className="centered">
-        <div className="card">
+      <main className="auth">
+        <div className="auth-panel">
           <h1>没有权限</h1>
-          <p className="muted">
-            当前账号（{user.email ?? user.id.slice(0, 8)}）不在管理员名单里。
+          <p className="muted small">
+            {who} 不在管理员名单里，读不到任何数据。
           </p>
-          <p className="muted small">{error.message}</p>
+          <div className="notice" style={{ marginTop: 20 }}>
+            <strong>数据库拒绝了这次读取</strong>
+            <p>{error.message}</p>
+          </div>
           <form action={signOut}>
-            <button type="submit" className="secondary">
+            <button className="primary" type="submit">
               退出登录
             </button>
           </form>
@@ -69,91 +74,100 @@ export default async function UsersPage({
   const users = (data ?? []) as AdminUser[];
 
   return (
-    <main className="page">
-      <header className="topbar">
-        <div>
+    <ConsoleShell active="users" email={who}>
+      <main className="page">
+        <div className="page-head">
           <h1>账号</h1>
-          <p className="muted small">
-            共 {users.length} 个账号 · 当前 {user.email ?? user.id.slice(0, 8)}
-          </p>
+          <span className="quiet small num">共 {users.length} 个</span>
         </div>
-        <nav>
-          <Link href="/audit">审计日志</Link>
-          <form action={signOut}>
-            <button type="submit" className="secondary">
-              退出
-            </button>
-          </form>
-        </nav>
-      </header>
 
-      {pageError ? <p className="error">{pageError}</p> : null}
+        {pageError ? (
+          <div className="notice">
+            <strong>操作没有完成</strong>
+            <p>{pageError}</p>
+          </div>
+        ) : null}
 
-      <table>
-        <thead>
-          <tr>
-            <th>账号</th>
-            <th>注册</th>
-            <th>最后登录</th>
-            <th>骑行</th>
-            <th>路线</th>
-            <th>角色</th>
-            <th>状态</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {users.map((row) => {
-            const disabled = row.access_state === 'disabled';
-            return (
-              <tr key={row.id}>
-                <td>
-                  <div>{row.email ?? '匿名账号'}</div>
-                  <div className="muted small">
-                    {row.id.slice(0, 8)}…
-                    {row.email && !row.email_confirmed ? ' · 邮箱未验证' : ''}
-                  </div>
-                </td>
-                <td className="muted small">{formatTime(row.created_at)}</td>
-                <td className="muted small">
-                  {row.last_sign_in_at ? formatTime(row.last_sign_in_at) : '—'}
-                </td>
-                <td>{row.ride_count}</td>
-                <td>{row.route_count}</td>
-                <td>{row.is_admin ? '管理员' : '骑手'}</td>
-                <td>
-                  <span className={disabled ? 'badge danger' : 'badge'}>
-                    {disabled ? '已封禁' : '正常'}
-                  </span>
-                </td>
-                <td>
-                  {row.is_admin ? null : (
-                    <form action={setUserDisabled}>
-                      <input type="hidden" name="userId" value={row.id} />
-                      <input
-                        type="hidden"
-                        name="disabled"
-                        value={disabled ? 'false' : 'true'}
-                      />
-                      <button
-                        type="submit"
-                        className={disabled ? 'secondary' : 'danger'}
-                      >
-                        {disabled ? '解封' : '封禁'}
-                      </button>
-                    </form>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+        {users.length === 0 ? (
+          <p className="empty">
+            还没有账号。先在 App 里注册一个，再把它加进管理员名单。
+          </p>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>账号</th>
+                  <th>注册</th>
+                  <th>最后登录</th>
+                  <th className="right">骑行</th>
+                  <th className="right">路线</th>
+                  <th>角色</th>
+                  <th>状态</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((row) => {
+                  const banned = row.access_state === 'disabled';
+                  return (
+                    <tr key={row.id}>
+                      <td className="wrap">
+                        <div className="cell-title">
+                          <span>{row.email ?? '匿名账号'}</span>
+                          {row.email && !row.email_confirmed ? (
+                            <span className="tag">未验证</span>
+                          ) : null}
+                        </div>
+                        <div className="cell-sub mono">{row.id.slice(0, 13)}</div>
+                      </td>
+                      <td className="muted small">{stamp(row.created_at)}</td>
+                      <td className="muted small">
+                        {row.last_sign_in_at ? stamp(row.last_sign_in_at) : '从未'}
+                      </td>
+                      <td className="right num">{row.ride_count}</td>
+                      <td className="right num">{row.route_count}</td>
+                      <td className="small muted">
+                        {row.is_admin ? '管理员' : '骑手'}
+                      </td>
+                      <td>
+                        <span className={banned ? 'status banned' : 'status'}>
+                          {banned ? '已封禁' : '正常'}
+                        </span>
+                      </td>
+                      <td className="right">
+                        {row.is_admin ? null : (
+                          <form action={setUserDisabled}>
+                            <input type="hidden" name="userId" value={row.id} />
+                            <input
+                              type="hidden"
+                              name="disabled"
+                              value={banned ? 'false' : 'true'}
+                            />
+                            <button
+                              type="submit"
+                              className={
+                                banned ? 'row-action restore' : 'row-action'
+                              }
+                            >
+                              {banned ? '解封' : '封禁'}
+                            </button>
+                          </form>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-      <p className="muted small" style={{ marginTop: 16 }}>
-        这里只有账号元数据。骑行内容、GPX 和位置轨迹不在列表里，也读不到 ——
-        这是产品承诺，不是权限配置的疏漏。
-      </p>
-    </main>
+        <p className="footnote">
+          这里只有账号元数据，读不到骑行内容、GPX 或位置轨迹。
+          这是产品承诺，不是权限配置疏漏。
+        </p>
+      </main>
+    </ConsoleShell>
   );
 }

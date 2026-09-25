@@ -427,7 +427,7 @@ class _AutoMapBadge extends StatelessWidget {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xCC000000),
+        color: AppColors.scrim,
         borderRadius: BorderRadius.circular(6),
         border: Border.all(color: AppColors.hairline),
       ),
@@ -447,7 +447,7 @@ class _DismissMapButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: const Color(0xCC000000),
+      color: AppColors.scrim,
       shape: const CircleBorder(
         side: BorderSide(color: AppColors.hairlineStrong),
       ),

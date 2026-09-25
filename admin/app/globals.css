@@ -1,12 +1,38 @@
+/* ---------------------------------------------------------------------------
+   Design tokens, copied from app/lib/app/theme.dart on purpose.
+
+   The console and the app are the same product seen from two seats: pure
+   black, hairline separation instead of elevated cards, one high-visibility
+   accent, tabular figures wherever a number can change. When the app's tokens
+   change, change these with them — a console that drifts from the product it
+   operates starts to look like a third-party tool.
+   --------------------------------------------------------------------------- */
+
 :root {
   color-scheme: dark;
-  --bg: #0b0c0e;
-  --panel: #14161a;
-  --border: #262a31;
-  --text: #e8eaed;
-  --muted: #9aa0a6;
-  --accent: #4f8cff;
-  --danger: #ff6b6b;
+
+  --bg: #000000;
+  --raised: #161616; /* transient surfaces only: inputs */
+
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-strong: rgba(255, 255, 255, 0.24);
+
+  --text: #ffffff;
+  --text-2: #a8adb4;
+  --text-3: #6b7075;
+
+  /* The accent is the app's, not a mood: it is the colour of a rider's
+     high-visibility jacket, and it means "live / primary action". It is the
+     only saturated colour on any screen apart from true status. */
+  --accent: #c8ff3d;
+  --danger: #ff453a;
+  --warning: #ffb020;
+  --success: #30d158;
+
+  --radius: 12px;
+  --sans: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', system-ui, 'Segoe UI', sans-serif;
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * {
@@ -17,151 +43,368 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI',
-    sans-serif;
+  font: 15px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
-  color: var(--accent);
+  color: inherit;
   text-decoration: none;
 }
 
-.centered {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+/* Numbers are read as measurements, not as prose. */
+.num {
+  font-variant-numeric: tabular-nums;
 }
 
-.card {
-  width: 100%;
-  max-width: 360px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 24px;
-  display: grid;
-  gap: 14px;
+/* Fixed-width only where the value is an identity string or a timestamp.
+   Kept at secondary contrast rather than tertiary: an operator scans these. */
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-2);
 }
 
-.card h1 {
-  margin: 0;
-  font-size: 20px;
+.muted {
+  color: var(--text-2);
 }
 
-.card label {
-  display: grid;
-  gap: 6px;
+.quiet {
+  color: var(--text-3);
+}
+
+.small {
   font-size: 13px;
-  color: var(--muted);
 }
 
-input {
-  background: #0e1013;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  color: var(--text);
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   Masthead. One hairline, no shadow, no logo block.
+   --------------------------------------------------------------------------- */
+
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.wordmark {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.wordmark span {
+  color: var(--text-3);
+  font-weight: 400;
+  margin-left: 8px;
+}
+
+.masthead nav {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.tab {
+  color: var(--text-3);
   font-size: 14px;
+  padding: 4px 0;
+  border-bottom: 2px solid transparent;
 }
 
-button {
-  background: var(--accent);
-  color: #fff;
-  border: 0;
-  border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 14px;
-  cursor: pointer;
+.tab:hover {
+  color: var(--text-2);
 }
 
-button.secondary {
-  background: transparent;
-  border: 1px solid var(--border);
+.tab[aria-current='page'] {
   color: var(--text);
+  border-bottom-color: var(--accent);
 }
 
-button.danger {
-  background: transparent;
-  border: 1px solid var(--danger);
-  color: var(--danger);
+.who {
+  color: var(--text-3);
+  font-size: 13px;
 }
+
+/* ---------------------------------------------------------------------------
+   Page frame
+   --------------------------------------------------------------------------- */
 
 .page {
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 32px 24px 64px;
+  padding: 36px 28px 72px;
 }
 
-.topbar {
+.page-head {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  align-items: center;
   gap: 16px;
-  margin-bottom: 24px;
+  margin-bottom: 18px;
 }
 
-.topbar h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
+.page-head h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
 }
 
-.topbar nav {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+/* ---------------------------------------------------------------------------
+   Table. The interface is the readout: full-bleed rows, hairline separators,
+   a sticky header, and no container card.
+   --------------------------------------------------------------------------- */
+
+.table-scroll {
+  overflow: auto;
+  /* The table is the readout, so it scrolls inside its own frame with a
+     header that stays put. `min()` keeps a short list from forcing a tall
+     empty box. */
+  max-height: min(72vh, 760px);
+  border-top: 1px solid var(--hairline-strong);
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
 }
 
 th {
-  color: var(--muted);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  text-align: left;
+  font-size: 12px;
   font-weight: 500;
-  font-size: 12px;
+  color: var(--text-2);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
 }
 
-tr:last-child td {
-  border-bottom: 0;
+th.right,
+td.right {
+  text-align: right;
 }
 
-.muted {
-  color: var(--muted);
+td {
+  padding: 14px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
-.small {
-  font-size: 12px;
+tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
 }
 
-.error {
+td.wrap {
+  white-space: normal;
+  min-width: 180px;
+}
+
+.cell-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cell-sub {
+  margin-top: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   Status. A dot and a word; a pill would shout as loudly as the action.
+   --------------------------------------------------------------------------- */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.status.banned {
   color: var(--danger);
-  margin: 0;
 }
 
-.badge {
-  display: inline-block;
-  border: 1px solid var(--border);
+.status.banned::before {
+  background: var(--danger);
+}
+
+.tag {
+  font-size: 11px;
+  color: var(--warning);
+  border: 1px solid rgba(255, 176, 32, 0.35);
   border-radius: 999px;
   padding: 1px 8px;
-  font-size: 12px;
-  color: var(--muted);
 }
 
-.badge.danger {
-  border-color: var(--danger);
+/* ---------------------------------------------------------------------------
+   Buttons. Quiet by default; the primary action is the only filled control.
+   --------------------------------------------------------------------------- */
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--radius);
+  border: 1px solid var(--hairline-strong);
+  background: transparent;
+  color: var(--text);
+  padding: 9px 14px;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+button:hover {
+  border-color: var(--text-3);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+  font-weight: 600;
+  width: 100%;
+  padding: 12px 14px;
+}
+
+button.primary:hover {
+  background: #d4ff5e;
+}
+
+button.row-action {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+button.row-action:hover {
   color: var(--danger);
+  border-color: var(--danger);
+}
+
+button.row-action.restore:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+button.quiet {
+  border-color: transparent;
+  color: var(--text-3);
+  padding: 6px 8px;
+}
+
+button.quiet:hover {
+  color: var(--text);
+  border-color: transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Auth. One deliberate gesture in the whole console: a chartreuse start
+   line across the top of the form, and nothing else that decorates.
+   --------------------------------------------------------------------------- */
+
+.auth {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+}
+
+.auth-panel {
+  width: 100%;
+  max-width: 360px;
+  border-top: 2px solid var(--accent);
+  padding-top: 28px;
+}
+
+.auth-panel h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.auth-panel form {
+  margin-top: 24px;
+  display: grid;
+  gap: 14px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+input {
+  font: inherit;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 11px 12px;
+}
+
+input:focus {
+  border-color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------------
+   Notices: errors and empty states explain what happened and what to do.
+   --------------------------------------------------------------------------- */
+
+.notice {
+  border-left: 2px solid var(--danger);
+  padding: 2px 0 2px 14px;
+  margin: 0 0 20px;
+}
+
+.notice strong {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.notice p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.empty {
+  border-top: 1px solid var(--hairline-strong);
+  padding-top: 18px;
+  color: var(--text-2);
+}
+
+.footnote {
+  margin-top: 22px;
+  max-width: 68ch;
+  color: var(--text-3);
+  font-size: 13px;
 }

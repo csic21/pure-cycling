@@ -249,7 +249,7 @@ class _PositionDot extends StatelessWidget {
           height: 30,
           decoration: const BoxDecoration(
             shape: BoxShape.circle,
-            color: Color(0x33C8FF3D),
+            color: AppColors.accentMuted,
           ),
         ),
         if (bearing != null)
@@ -289,7 +289,7 @@ class _Attribution extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(4),
         child: DecoratedBox(
-          decoration: const BoxDecoration(color: Color(0x99000000)),
+          decoration: const BoxDecoration(color: AppColors.scrimSoft),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
             child: Text(

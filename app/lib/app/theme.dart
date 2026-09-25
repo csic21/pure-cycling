@@ -21,6 +21,12 @@ abstract final class AppColors {
   static const Color hairline = Color(0x1FFFFFFF);
   static const Color hairlineStrong = Color(0x3DFFFFFF);
 
+  /// Translucent black laid over the map. Two strengths, because the two uses
+  /// have different jobs: a badge has to stay readable over bright road tiles,
+  /// an attribution line only has to be legible over the map's own fill.
+  static const Color scrim = Color(0xCC000000);
+  static const Color scrimSoft = Color(0x99000000);
+
   static const Color textPrimary = Color(0xFFFFFFFF);
   static const Color textSecondary = Color(0xFFA8ADB4);
   static const Color textTertiary = Color(0xFF6B7075);
@@ -145,6 +151,15 @@ abstract final class AppText {
   static const TextStyle button = TextStyle(
     fontSize: 18,
     fontWeight: FontWeight.w600,
+    letterSpacing: 0.5,
+  );
+
+  /// The start button's label — the one control the home screen exists for
+  /// (spec §4: find it within a second). Larger than [button] on purpose, but
+  /// still a token so it cannot drift into a one-off at the call site.
+  static const TextStyle cta = TextStyle(
+    fontSize: 24,
+    fontWeight: FontWeight.w700,
     letterSpacing: 0.5,
   );
 }

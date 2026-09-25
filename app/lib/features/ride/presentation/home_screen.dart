@@ -244,15 +244,9 @@ class _StartRideButton extends StatelessWidget {
           children: [
             Icon(Icons.play_arrow_rounded, size: 30, color: Colors.black),
             SizedBox(width: 8),
-            Text(
-              '开始骑行',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.w700,
-                color: Colors.black,
-                letterSpacing: 1,
-              ),
-            ),
+            // No colour here: the label inherits the button's foreground, so
+            // it follows the theme instead of repeating it.
+            Text('开始骑行', style: AppText.cta),
           ],
         ),
       ),
