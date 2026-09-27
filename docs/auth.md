@@ -148,7 +148,7 @@ Supabase 返回英文错误，骑手看不懂。`AuthRepository.describeAuthErro
 
 ```
 --dart-define=SUPABASE_URL=https://xxxx.supabase.co
---dart-define=SUPABASE_ANON_KEY=eyJhbGci...
+--dart-define=SUPABASE_ANON_KEY=sb_publishable_...
 ```
 
 | Key | 能不能进客户端 |

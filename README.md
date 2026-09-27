@@ -113,7 +113,7 @@ flutter run \
 ```sh
 flutter run \
   --dart-define=SUPABASE_URL=https://xxxx.supabase.co \
-  --dart-define=SUPABASE_ANON_KEY=eyJhbGci...
+  --dart-define=SUPABASE_ANON_KEY=sb_publishable_...
 ```
 
 **只用 publishable / anon key。**`service_role` key 会绕过全部 RLS，绝不能打进移动端二进制。
