@@ -194,7 +194,8 @@ App ── POST /route {origin, destination, waypoints} ──> 代理（持有�
 
 - **要求 Supabase 会话**（匿名账号也可以）：配额是按账号算的，开放的中转
   等于把 Key 借给整个互联网；
-- **每次调用先扣配额**（默认每账号每天 200 次，`ROUTE_DAILY_LIMIT` 可改）。
+- **每次调用先扣配额**（默认每账号每天 200 次、项目合计每天 500 次；
+  `ROUTE_DAILY_LIMIT` 和 `ROUTE_GLOBAL_DAILY_LIMIT` 可改）。总额度防止通过反复注册匿名账号耗尽高德额度。
   计数在 Postgres 里而不是函数内存里——边缘函数是机群，内存计数器冷启动
   就清零、多实例就翻倍；
 - **只接受两个坐标，只调用 `/v5/direction/bicycling`**：参数能指向别处，

@@ -33,6 +33,7 @@ export interface RelayEnv {
   amapKey: string;
   amapBase: string;
   dailyLimit: number;
+  globalDailyLimit: number;
 }
 
 /// `typeof fetch` cannot be written where a parameter is also called
@@ -95,6 +96,9 @@ export async function handleRoute(
   if (verdict === 'exhausted') {
     return refusal(429, `今日在线路线规划次数已用完（上限 ${env.dailyLimit} 次）`);
   }
+  if (verdict === 'global_exhausted') {
+    return refusal(429, '今日在线路线规划总额度已用完，请明天再试');
+  }
 
   const url = new URL(`${env.amapBase}/v5/direction/bicycling`);
   url.searchParams.set('origin', origin);
@@ -143,7 +147,7 @@ async function verifiedUserId(
   }
 }
 
-/// One unit of today's quota for this account.
+/// One unit of today's quota for this account and for the whole project.
 ///
 /// Three outcomes, not two: "allowed", "exhausted" and "the counter is
 /// unreachable". The last one fails closed — a broken counter must not become
@@ -153,9 +157,29 @@ async function consumeQuota(
   userId: string,
   fetchImpl: FetchLike,
   env: RelayEnv,
-): Promise<'allowed' | 'exhausted' | 'unavailable'> {
+): Promise<'allowed' | 'exhausted' | 'global_exhausted' | 'unavailable'> {
   if (env.serviceKey === '') return 'unavailable';
 
+  const userVerdict = await consumeRateLimit(userId, 'route', env.dailyLimit, fetchImpl, env);
+  if (userVerdict !== 'allowed') return userVerdict;
+
+  const globalVerdict = await consumeRateLimit(
+    '00000000-0000-0000-0000-000000000000',
+    'route-global',
+    env.globalDailyLimit,
+    fetchImpl,
+    env,
+  );
+  return globalVerdict === 'exhausted' ? 'global_exhausted' : globalVerdict;
+}
+
+async function consumeRateLimit(
+  userId: string,
+  bucket: string,
+  limit: number,
+  fetchImpl: FetchLike,
+  env: RelayEnv,
+): Promise<'allowed' | 'exhausted' | 'unavailable'> {
   try {
     const response = await fetchImpl(
       `${env.supabaseUrl}/rest/v1/rpc/consume_rate_limit`,
@@ -168,8 +192,8 @@ async function consumeQuota(
         },
         body: JSON.stringify({
           p_user_id: userId,
-          p_bucket: 'route',
-          p_limit: env.dailyLimit,
+          p_bucket: bucket,
+          p_limit: limit,
           p_window_seconds: 86400,
         }),
       },

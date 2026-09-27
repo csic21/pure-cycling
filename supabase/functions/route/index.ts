@@ -32,5 +32,8 @@ Deno.serve((req) =>
       // calls/month for route planning; this keeps one account from being the
       // reason it runs out.
       dailyLimit: Number(Deno.env.get('ROUTE_DAILY_LIMIT') ?? '200'),
+      // Anonymous accounts can be recreated, so an account-only limit does
+      // not cap the project's total AMap usage.
+      globalDailyLimit: Number(Deno.env.get('ROUTE_GLOBAL_DAILY_LIMIT') ?? '500'),
     },
   }));

@@ -28,7 +28,7 @@ function assertEquals(actual: unknown, expected: unknown, message: string): void
 type Stub = {
   env?: Partial<RelayEnv>;
   auth?: () => Response | Promise<Response>;
-  quota?: () => Response | Promise<Response>;
+  quota?: (body: { p_bucket: string; p_limit: number }) => Response | Promise<Response>;
   amap?: (url: URL) => Response | Promise<Response>;
   record?: { amapUrl?: URL; authorization?: string | null };
 };
@@ -48,6 +48,7 @@ function deps(stub: Stub = {}): RelayDeps {
     amapKey: 'server-key',
     amapBase: 'https://amap.test',
     dailyLimit: 200,
+    globalDailyLimit: 500,
     ...stub.env,
   };
 
@@ -72,7 +73,9 @@ function deps(stub: Stub = {}): RelayDeps {
       return stub.auth ? await stub.auth() : json({ id: 'user-1' });
     }
     if (url.pathname === '/rest/v1/rpc/consume_rate_limit') {
-      return stub.quota ? await stub.quota() : json(true);
+      return stub.quota
+        ? await stub.quota(JSON.parse(init?.body as string))
+        : json(true);
     }
 
     if (stub.record) stub.record.amapUrl = url;
@@ -164,6 +167,27 @@ Deno.test('an exhausted quota', async () => {
   assertEquals(response.status, 429, '配额用尽是 429');
   const body = await envelope(response);
   assertEquals(body.infocode, 'relay_429', '走 AMap 信封');
+});
+
+Deno.test('the project quota stops new anonymous accounts too', async () => {
+  const buckets: string[] = [];
+  let vendorCalled = false;
+  const response = await handleRoute(
+    relayRequest(),
+    deps({
+      quota: (body) => {
+        buckets.push(body.p_bucket);
+        return json(body.p_bucket !== 'route-global');
+      },
+      amap: () => {
+        vendorCalled = true;
+        return json({});
+      },
+    }),
+  );
+  assertEquals(response.status, 429, '项目额度耗尽应拒绝调用');
+  assertEquals(buckets, ['route', 'route-global'], '先检查用户，再检查项目总额度');
+  assertEquals(vendorCalled, false, '项目额度耗尽时不能请求高德');
 });
 
 Deno.test('without a session the vendor is never called', async () => {
