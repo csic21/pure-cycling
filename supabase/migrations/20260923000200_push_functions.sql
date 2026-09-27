@@ -53,8 +53,8 @@ as $$
       when p_ride->'route_geometry' is null
         or jsonb_typeof(p_ride->'route_geometry') <> 'object'
       then null
-      else st_setsrid(
-        st_geomfromgeojson(p_ride->'route_geometry'::text), 4326
+      else extensions.st_setsrid(
+        extensions.st_geomfromgeojson(p_ride->'route_geometry'::text), 4326
       )
     end,
     nullif(p_ride->>'gpx_path', ''),
@@ -117,8 +117,8 @@ as $$
       when p_route->'route_geometry' is null
         or jsonb_typeof(p_route->'route_geometry') <> 'object'
       then null
-      else st_setsrid(
-        st_geomfromgeojson(p_route->'route_geometry'::text), 4326
+      else extensions.st_setsrid(
+        extensions.st_geomfromgeojson(p_route->'route_geometry'::text), 4326
       )
     end,
     nullif(p_route->>'provider', ''),

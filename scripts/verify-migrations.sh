@@ -168,7 +168,7 @@ begin
     raise exception 'the upsert did not update the name: %', v_name;
   end if;
 
-  select geometrytype(route_geometry), st_length(route_geometry::geography)
+  select extensions.geometrytype(route_geometry), extensions.st_length(route_geometry::extensions.geography)
     into v_geom, v_length
     from public.rides where id = '22222222-2222-7222-8222-222222222222';
   if v_geom <> 'LINESTRING' then

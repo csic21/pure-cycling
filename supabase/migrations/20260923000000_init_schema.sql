@@ -7,7 +7,11 @@
 -- plus a PostGIS LineString, and the full-resolution trace lives in Storage as
 -- GPX.
 
-create extension if not exists "postgis";
+-- Keep PostGIS's spatial_ref_sys lookup table outside the public Data API.
+-- Supabase includes extensions in the database search_path, but the schema
+-- qualification below also makes this migration portable to local Postgres.
+create schema if not exists extensions;
+create extension if not exists "postgis" with schema extensions;
 
 -- ---------------------------------------------------------------------------
 -- profiles (spec §18)
@@ -57,7 +61,7 @@ create table if not exists public.rides (
   end_lat double precision,
   end_lng double precision,
 
-  route_geometry geometry(LineString, 4326),
+  route_geometry extensions.geometry(LineString, 4326),
 
   gpx_path text,
   fit_path text,
@@ -110,7 +114,7 @@ create table if not exists public.routes (
 
   elevation_gain_meters double precision,
 
-  route_geometry geometry(LineString, 4326),
+  route_geometry extensions.geometry(LineString, 4326),
 
   provider text,
   provider_route_id text,
