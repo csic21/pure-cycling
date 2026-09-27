@@ -3,7 +3,7 @@
 /// ```sh
 /// flutter run \
 ///   --dart-define=SUPABASE_URL=https://xxxx.supabase.co \
-///   --dart-define=SUPABASE_ANON_KEY=eyJhbGci...
+///   --dart-define=SUPABASE_ANON_KEY=sb_publishable_...
 /// ```
 ///
 /// The **publishable / anon key only**. The `service_role` key bypasses row
