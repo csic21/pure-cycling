@@ -38,7 +38,22 @@ async function requireActingAdmin(targetUserId: string, formData: FormData) {
   if (targetUserId === user.id) {
     redirect(backToList(formData, { error: '不能对自己执行这个操作' }));
   }
-  return user;
+
+  // Server Actions are callable without visiting the page. The page hides
+  // admin targets, but that UI check must also live at this boundary.
+  const admin = createAdminClient();
+  const { data: targetAdmin, error: membershipError } = await admin
+    .from('admins')
+    .select('user_id')
+    .eq('user_id', targetUserId)
+    .maybeSingle();
+  if (membershipError) {
+    redirect(backToList(formData, { error: '无法核实目标账号权限，请稍后重试' }));
+  }
+  if (targetAdmin) {
+    redirect(backToList(formData, { error: '不能对管理员账号执行这个操作' }));
+  }
+  return { user, admin };
 }
 
 /**
@@ -54,9 +69,7 @@ export async function setUserDisabled(formData: FormData) {
   const userId = String(formData.get('userId') ?? '');
   const disabled = formData.get('disabled') === 'true';
 
-  const user = await requireActingAdmin(userId, formData);
-
-  const admin = createAdminClient();
+  const { user, admin } = await requireActingAdmin(userId, formData);
   const { error } = await admin.auth.admin.updateUserById(userId, {
     // GoTrue takes a duration string; `none` lifts an existing ban.
     ban_duration: disabled ? '876000h' : 'none',
@@ -67,11 +80,14 @@ export async function setUserDisabled(formData: FormData) {
 
   // Appended after the action succeeded. The console's 「已封禁」 badge is
   // derived from the latest of these rows, so a failed ban must not appear.
-  await admin.from('admin_audit').insert({
+  const { error: auditError } = await admin.from('admin_audit').insert({
     admin_id: user.id,
     action: disabled ? 'disable_user' : 'enable_user',
     target_user_id: userId,
   });
+  if (auditError) {
+    redirect(backToList(formData, { error: '封禁状态已更改，但审计日志写入失败，请检查后台' }));
+  }
 
   revalidatePath('/users');
   revalidatePath('/audit');
@@ -93,30 +109,44 @@ export async function setUserDisabled(formData: FormData) {
  */
 export async function deleteUser(formData: FormData) {
   const userId = String(formData.get('userId') ?? '');
-  const user = await requireActingAdmin(userId, formData);
-
-  const admin = createAdminClient();
+  const { user, admin } = await requireActingAdmin(userId, formData);
 
   // 1. The object paths, read before the rows that index them disappear.
-  const { data: rides } = await admin
-    .from('rides')
-    .select('gpx_path')
-    .eq('user_id', userId)
-    .not('gpx_path', 'is', null);
-  const paths = (rides ?? [])
-    .map((row) => row.gpx_path as string | null)
-    .filter((path): path is string => typeof path === 'string');
+  const paths: string[] = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data: rides, error: listError } = await admin
+      .from('rides')
+      .select('id, gpx_path')
+      .eq('user_id', userId)
+      .not('gpx_path', 'is', null)
+      .order('id')
+      .range(offset, offset + 499);
+    if (listError) {
+      redirect(backToList(formData, { error: '读取轨迹文件失败，账号未删除，请稍后重试' }));
+    }
+    for (const ride of rides ?? []) {
+      // A rider can supply gpx_path through sync. Never let a forged ride row
+      // point the service-role delete at someone else's private object.
+      const expected = `rides/${userId}/${ride.id}/original.gpx`;
+      if (ride.gpx_path !== expected) {
+        redirect(backToList(formData, { error: '轨迹文件路径异常，账号未删除' }));
+      }
+      paths.push(expected);
+    }
+    if ((rides?.length ?? 0) < 500) break;
+  }
 
   // 2. Objects, in chunks — the Storage API takes a list per call.
   let removedFiles = 0;
   for (let i = 0; i < paths.length; i += 100) {
     const slice = paths.slice(i, i + 100);
-    try {
-      await admin.storage.from('rides').remove(slice);
-      removedFiles += slice.length;
-    } catch {
-      // A missing object is not a failure; the goal state is "absent".
+    const { data: removed, error: removeError } = await admin.storage
+      .from('rides')
+      .remove(slice);
+    if (removeError) {
+      redirect(backToList(formData, { error: '删除轨迹文件失败，账号未删除，请稍后重试' }));
     }
+    removedFiles += removed?.length ?? 0;
   }
 
   // 3. The account. Rows follow by cascade.
@@ -125,12 +155,15 @@ export async function deleteUser(formData: FormData) {
     redirect(backToList(formData, { error: error.message }));
   }
 
-  await admin.from('admin_audit').insert({
+  const { error: auditError } = await admin.from('admin_audit').insert({
     admin_id: user.id,
     action: 'delete_user',
     target_user_id: userId,
     detail: { files: removedFiles },
   });
+  if (auditError) {
+    redirect(backToList(formData, { error: '账号已删除，但审计日志写入失败，请检查后台' }));
+  }
 
   revalidatePath('/users');
   revalidatePath('/audit');

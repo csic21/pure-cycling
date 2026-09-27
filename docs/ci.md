@@ -78,6 +78,7 @@ flutter run --dart-define-from-file=dart_define.json
 |---|---|
 | `SUPABASE_URL` | 项目 URL。本身不是秘密，它就在每个 App 二进制里 |
 | `SUPABASE_FUNCTIONS_URL` | `route` 函数的 URL。同样不是秘密——它就在每个用到它的二进制里；函数自己用会话校验和每账号配额守住 |
+| `GITHUB_RELEASE_REPO` | 本地构建可选，默认 `csic21/pure-cycling`；CI 会自动使用当前仓库 |
 | `SUPPORT_EMAIL` | 可选。填入后「设置 → 关于」多一行联系方式；不填就不显示那一行（不用占位地址） |
 
 生成 keystore 的 base64：
@@ -148,8 +149,14 @@ node_modules 相对于 npm 省一半以上，而且全局 store 是内容寻址�
 ```
 verify    先跑一遍 CI 的全部检查（tag 不该绕过测试）
 android   签名 AAB
+          同时构建签名 APK，供 GitHub Release 下载
+publish   用 Actions 自带的 GITHUB_TOKEN 把 APK 发布到当前仓库的 Release
 ios       编译归档（不签名）
 ```
+
+发布时先把 `app/pubspec.yaml` 的版本升到例如 `0.2.0+2`，然后推送同版本 tag `v0.2.0`。源码和 Release 都位于公开的 `csic21/pure-cycling`，App 无需 GitHub token 即可检查更新。Android 签名四项 Secret 也必须齐全，发布任务才会生成可安装的 APK。首次发布前请备份签名 keystore；后续更新必须使用同一把签名密钥。
+
+App 启动时每天最多静默检查一次 GitHub 最新 Release，也可以在「设置 → 关于 → 检查更新」手动检查。检测到新版本后，Android 用户点击下载 APK 并由系统确认安装。iOS 会显示版本说明，安装更新仍由 TestFlight 或 App Store 完成。GitHub Release 的 APK 不会自动替换正在运行的 App。
 
 Apple 的部分**故意停在编译**。上架 TestFlight 还需要 App Store Connect API key、分发证书和 provisioning profile——三个额外的 secret，以及「要不要从 CI 发布」这个决定。现在的产物是编译检查和冒烟测试用的构建，不是可上架的构建。
 

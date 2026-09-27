@@ -25,7 +25,7 @@ function assertEquals(actual: unknown, expected: unknown, message: string): void
 type Stub = {
   env?: Partial<DeleteEnv>;
   auth?: () => Response | Promise<Response>;
-  rides?: () => Response | Promise<Response>;
+  rides?: (url: URL) => Response | Promise<Response>;
   objects?: () => Response | Promise<Response>;
   user?: () => Response | Promise<Response>;
   calls?: string[];
@@ -64,11 +64,10 @@ function deps(stub: Stub = {}): DeleteDeps {
     if (url.pathname === '/rest/v1/rides') {
       stub.calls?.push('list-objects');
       return stub.rides
-        ? await stub.rides()
-        : json([
-            { gpx_path: 'rides/user-1/ride-1/original.gpx' },
-            { gpx_path: null },
-            { gpx_path: 'rides/user-1/ride-2/original.gpx' },
+        ? await stub.rides(url)
+          : json([
+            { id: 'ride-1', gpx_path: 'rides/user-1/ride-1/original.gpx' },
+            { id: 'ride-2', gpx_path: 'rides/user-1/ride-2/original.gpx' },
           ]);
     }
     if (url.pathname === '/storage/v1/object/rides') {
@@ -167,27 +166,64 @@ Deno.test('a failed account deletion is reported as a failure', async () => {
   assertEquals(typeof body.error, 'string', '带上原因');
 });
 
-Deno.test('storage trouble does not stop the deletion the rider asked for', async () => {
+Deno.test('storage trouble keeps the account so deletion can be retried', async () => {
+  const calls: string[] = [];
   const response = await handleDeleteAccount(
     request(),
-    deps({ objects: () => json({ message: 'storage down' }, 500) }),
+    deps({ objects: () => json({ message: 'storage down' }, 500), calls }),
   );
-  // The account still goes: refusing to delete somebody's account because a
-  // bucket call failed would be the wrong trade. The count reports the truth.
-  assertEquals(response.status, 200, '账号仍然删除');
-  assertEquals(await response.json(), { deleted: true, files: 0 }, '文件数如实为 0');
+  assertEquals(response.status, 502, '文件未删完就不能报告成功');
+  assert(!calls.includes('delete-user:user-1'), '账号要保留，以便重试');
 });
 
-Deno.test('a rides query that fails leaves no paths to delete', async () => {
+Deno.test('a failed rides query keeps the account and its GPX index', async () => {
   const calls: string[] = [];
   const response = await handleDeleteAccount(
     request(),
     deps({ rides: () => json({ message: 'nope' }, 500), calls }),
   );
-  assertEquals(response.status, 200, '账号仍然删除');
-  assertEquals(await response.json(), { deleted: true, files: 0 }, '没有可删的文件');
+  assertEquals(response.status, 502, '查不到文件路径不能声称删除完成');
   assert(
-    calls.includes('delete-user:user-1'),
-    '查不到路径不是不删账号的理由',
+    !calls.includes('delete-user:user-1'),
+    '账号和骑行索引要保留，以便重试',
   );
+});
+
+Deno.test('a forged GPX path cannot delete another account\'s file', async () => {
+  const calls: string[] = [];
+  const response = await handleDeleteAccount(
+    request(),
+    deps({
+      rides: () => json([{
+        id: 'ride-1',
+        gpx_path: 'rides/victim/ride-1/original.gpx',
+      }]),
+      calls,
+    }),
+  );
+  assertEquals(response.status, 502, '路径与账号不符就拒绝');
+  assert(!calls.includes('delete-objects'), '不能用 service role 删除伪造的路径');
+  assert(!calls.includes('delete-user:user-1'), '账号仍然存在');
+});
+
+Deno.test('lists every GPX path beyond the first PostgREST page', async () => {
+  const calls: string[] = [];
+  const response = await handleDeleteAccount(
+    request(),
+    deps({
+      rides: (url) => {
+        const offset = Number(url.searchParams.get('offset'));
+        const count = offset === 0 ? 500 : 1;
+        return json(Array.from({ length: count }, (_, index) => {
+          const id = `ride-${offset + index}`;
+          return { id, gpx_path: `rides/user-1/${id}/original.gpx` };
+        }));
+      },
+      calls,
+    }),
+  );
+  assertEquals(response.status, 200, '所有路径删除后才删账号');
+  assertEquals(await response.json(), { deleted: true, files: 501 }, '不漏掉第二页');
+  assertEquals(calls.filter((call) => call === 'list-objects').length, 2, '读取两页');
+  assertEquals(calls.filter((call) => call === 'delete-objects').length, 6, '分批删除');
 });

@@ -1,5 +1,7 @@
 {
   "SUPABASE_URL": "https://your-project.supabase.co",
   "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.REPLACE_ME",
+  "SUPABASE_FUNCTIONS_URL": "https://your-project.supabase.co/functions/v1",
+  "GITHUB_RELEASE_REPO": "csic21/pure-cycling",
   "SUPPORT_EMAIL": "support@example.com"
 }
