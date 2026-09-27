@@ -27,11 +27,13 @@ class RouteMap extends StatelessWidget {
     this.routePoints = const [],
     this.trackPoints = const [],
     this.position,
+    this.destination,
     this.bearing,
     this.bounds,
     this.interactive = true,
     this.showAttribution = true,
     this.onTap,
+    this.onMapTap,
     this.padding = const EdgeInsets.all(24),
   });
 
@@ -49,6 +51,7 @@ class RouteMap extends StatelessWidget {
 
   /// The rider's current position.
   final GeoPoint? position;
+  final GeoPoint? destination;
   final double? bearing;
 
   /// Fit the view to these points instead of using [center] and [zoom].
@@ -57,6 +60,9 @@ class RouteMap extends StatelessWidget {
   final bool interactive;
   final bool showAttribution;
   final VoidCallback? onTap;
+
+  /// Coordinates selected on the map, converted back to stored WGS-84.
+  final ValueChanged<GeoPoint>? onMapTap;
   final EdgeInsets padding;
 
   @override
@@ -68,7 +74,7 @@ class RouteMap extends StatelessWidget {
       ...trackPoints.map(toDisplay),
     ];
 
-    final camera = _cameraFor(points);
+    final camera = _cameraFor(points, toDisplay);
 
     return ColoredBox(
       // A pure black map container. While tiles are loading — or entirely
@@ -80,6 +86,16 @@ class RouteMap extends StatelessWidget {
           options: MapOptions(
             initialCenter: camera.center,
             initialZoom: camera.zoom,
+            onTap: onMapTap == null
+                ? null
+                : (_, point) {
+                    final selected = GeoPoint(point.latitude, point.longitude);
+                    onMapTap!(
+                      tileSource.datum == MapDatum.gcj02
+                          ? CoordTransform.gcj02ToWgs84(selected)
+                          : selected,
+                    );
+                  },
             minZoom: tileSource.minZoom,
             maxZoom: tileSource.maxZoom,
             // Rotation is off: a bike computer mounted on handlebars has no
@@ -103,9 +119,7 @@ class RouteMap extends StatelessWidget {
               // darken AMap's light-only raster basemap, which matters on an
               // OLED screen at night. It is done with a colour matrix rather
               // than an overlay so the road detail stays legible.
-              tileBuilder: tileSource.darkAvailable
-                  ? null
-                  : _darkenTileBuilder,
+              tileBuilder: tileSource.darkAvailable ? null : _darkenTileBuilder,
             ),
             if (trackPoints.length >= 2)
               PolylineLayer(
@@ -142,6 +156,22 @@ class RouteMap extends StatelessWidget {
                   ),
                 ],
               ),
+            if (destination != null)
+              MarkerLayer(
+                markers: [
+                  Marker(
+                    point: toDisplay(destination!),
+                    width: 42,
+                    height: 42,
+                    child: const Icon(
+                      Icons.place,
+                      size: 38,
+                      color: AppColors.accent,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                    ),
+                  ),
+                ],
+              ),
             if (showAttribution && tileSource.attribution != null)
               _Attribution(text: tileSource.attribution!),
           ],
@@ -155,13 +185,16 @@ class RouteMap extends StatelessWidget {
   /// Fitting the bounds of everything relevant — route, track and the rider —
   /// is what a rider wants when the map opens. Zooming to the current position
   /// would hide the shape of the ride they are looking at.
-  ({LatLng center, double zoom}) _cameraFor(List<LatLng> points) {
-    final box = bounds ??
-        (points.isEmpty ? null : _boundsOfDisplayPoints(points));
+  ({LatLng center, double zoom}) _cameraFor(
+    List<LatLng> points,
+    LatLng Function(GeoPoint) toDisplay,
+  ) {
+    final box =
+        bounds ?? (points.isEmpty ? null : _boundsOfDisplayPoints(points));
 
     if (box == null) {
       final c = center ?? const GeoPoint(39.90923, 116.397428); // Tiananmen.
-      return (center: _toLatLng(c), zoom: zoom);
+      return (center: toDisplay(c), zoom: zoom);
     }
 
     return (
@@ -217,7 +250,11 @@ class RouteMap extends StatelessWidget {
   }
 
   /// Dims and desaturates raster tiles for night use.
-  static Widget _darkenTileBuilder(BuildContext context, Widget tile, TileImage _) {
+  static Widget _darkenTileBuilder(
+    BuildContext context,
+    Widget tile,
+    TileImage _,
+  ) {
     return ColorFiltered(
       colorFilter: const ColorFilter.matrix(<double>[
         // Luminance-preserving desaturation and a strong value cut. The
@@ -326,9 +363,7 @@ class StaticRouteMap extends StatelessWidget {
     if (points.length < 2) {
       return SizedBox(
         height: height,
-        child: const Center(
-          child: Text('暂无轨迹', style: AppText.caption),
-        ),
+        child: const Center(child: Text('暂无轨迹', style: AppText.caption)),
       );
     }
 

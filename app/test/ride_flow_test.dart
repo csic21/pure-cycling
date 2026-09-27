@@ -45,8 +45,9 @@ void main() {
   }
 
   group('starting a ride', () {
-    testWidgets('the ride screen opens, counts down, then records',
-        (tester) async {
+    testWidgets('the ride screen opens, counts down, then records', (
+      tester,
+    ) async {
       final location = await pumpApp(tester);
 
       await tester.tap(find.text('开始骑行'));
@@ -82,8 +83,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('the dashboard shows the live speed once fixes arrive',
-        (tester) async {
+    testWidgets('the dashboard shows the live speed once fixes arrive', (
+      tester,
+    ) async {
       final location = await pumpApp(tester);
 
       await tester.tap(find.text('开始骑行'));
@@ -101,8 +103,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('pausing freezes the readout and offers to resume',
-        (tester) async {
+    testWidgets('pausing freezes the readout and offers to resume', (
+      tester,
+    ) async {
       final location = await pumpApp(tester);
 
       await tester.tap(find.text('开始骑行'));
@@ -125,7 +128,6 @@ void main() {
 
       await shutdownApp(tester, database);
     });
-
   });
 
   group('location notices', () {
@@ -155,8 +157,9 @@ void main() {
     Future<String?> storedFlag(String key) =>
         SettingsRepository(database).getString(key);
 
-    testWidgets('the disclosure comes before the system dialog, and is kept',
-        (tester) async {
+    testWidgets('the disclosure comes before the system dialog, and is kept', (
+      tester,
+    ) async {
       await pumpFreshApp(
         tester,
         notifications: FakeNotificationPermission(granted: true),
@@ -271,8 +274,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('declining the notification does not block the ride',
-        (tester) async {
+    testWidgets('declining the notification does not block the ride', (
+      tester,
+    ) async {
       await markLocationDisclosureSeen(database);
       final notifications = FakeNotificationPermission();
       await pumpFreshApp(tester, notifications: notifications);
@@ -282,11 +286,7 @@ void main() {
       await tester.tap(find.text('不用通知'));
       await settle(tester);
 
-      expect(
-        notifications.requests,
-        0,
-        reason: '说不就不，不该再弹系统对话框',
-      );
+      expect(notifications.requests, 0, reason: '说不就不，不该再弹系统对话框');
       expect(find.text('准备开始'), findsOneWidget);
       expect(
         await storedFlag(LocationNoticeKeys.notificationAsked),
@@ -297,8 +297,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('an already-granted notification is not mentioned',
-        (tester) async {
+    testWidgets('an already-granted notification is not mentioned', (
+      tester,
+    ) async {
       await markLocationDisclosureSeen(database);
       await pumpFreshApp(
         tester,
@@ -316,8 +317,9 @@ void main() {
   });
 
   group('landscape', () {
-    testWidgets('the dashboard relayouts sideways instead of overflowing',
-        (tester) async {
+    testWidgets('the dashboard relayouts sideways instead of overflowing', (
+      tester,
+    ) async {
       final location = await pumpApp(tester);
 
       await tester.tap(find.text('开始骑行'));
@@ -360,7 +362,7 @@ void main() {
       await settle(tester);
       await tester.tap(find.text('测试路线'));
       await settle(tester);
-      await tester.tap(find.text('开始导航'));
+      await tester.tap(find.text('开始导航并记录'));
       await settle(tester);
       await tester.pump(const Duration(seconds: 4));
       location.emitRide(count: 20, speedMps: 5);
@@ -381,42 +383,45 @@ void main() {
   });
 
   group('permission handling', () {
-    testWidgets('a denied permission is explained before the ride screen opens',
-        (tester) async {
-      final location = FakeLocationService(
-        permission: LocationPermissionStatus.deniedForever,
-      );
-      // This case is about the refusal dialog, which comes after the notice.
-      await markFirstRunNoticesSeen(database);
-      useTallSurface(tester);
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: testOverrides(database: database, location: location),
-          child: const CyclingApp(),
-        ),
-      );
-      await settle(tester);
+    testWidgets(
+      'a denied permission is explained before the ride screen opens',
+      (tester) async {
+        final location = FakeLocationService(
+          permission: LocationPermissionStatus.deniedForever,
+        );
+        // This case is about the refusal dialog, which comes after the notice.
+        await markFirstRunNoticesSeen(database);
+        useTallSurface(tester);
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: testOverrides(database: database, location: location),
+            child: const CyclingApp(),
+          ),
+        );
+        await settle(tester);
 
-      await tester.tap(find.text('开始骑行'));
-      await settle(tester);
+        await tester.tap(find.text('开始骑行'));
+        await settle(tester);
 
-      // The rider is told why, and offered the one action that can fix it,
-      // rather than being left on a screen that looks inert.
-      expect(find.text('定位权限已被拒绝'), findsOneWidget);
-      expect(find.textContaining('系统设置'), findsOneWidget);
-      expect(find.text('打开设置'), findsOneWidget);
+        // The rider is told why, and offered the one action that can fix it,
+        // rather than being left on a screen that looks inert.
+        expect(find.text('定位权限已被拒绝'), findsOneWidget);
+        expect(find.textContaining('系统设置'), findsOneWidget);
+        expect(find.text('打开设置'), findsOneWidget);
 
-      // 打开设置 opens the system settings page, which is the only action
-      // that can fix a permanently denied permission.
-      await tester.tap(find.text('打开设置'));
-      await settle(tester);
-      expect(location.appSettingsOpened, isTrue);
+        // 打开设置 opens the system settings page, which is the only action
+        // that can fix a permanently denied permission.
+        await tester.tap(find.text('打开设置'));
+        await settle(tester);
+        expect(location.appSettingsOpened, isTrue);
 
-      await shutdownApp(tester, database);
-    });
+        await shutdownApp(tester, database);
+      },
+    );
 
-    testWidgets('a disabled location service points at the system toggle',
-        (tester) async {
+    testWidgets('a disabled location service points at the system toggle', (
+      tester,
+    ) async {
       final location = FakeLocationService(
         permission: LocationPermissionStatus.serviceDisabled,
       );
@@ -440,8 +445,9 @@ void main() {
   });
 
   group('leaving a ride in progress', () {
-    testWidgets('the system back gesture asks instead of leaving silently',
-        (tester) async {
+    testWidgets('the system back gesture asks instead of leaving silently', (
+      tester,
+    ) async {
       final location = await pumpApp(tester);
 
       await tester.tap(find.text('开始骑行'));
@@ -469,8 +475,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('the home screen shows the recording and offers the way back',
-        (tester) async {
+    testWidgets('the home screen shows the recording and offers the way back', (
+      tester,
+    ) async {
       final location = await pumpApp(tester);
 
       await tester.tap(find.text('开始骑行'));
@@ -509,8 +516,9 @@ void main() {
   });
 
   group('crash recovery', () {
-    testWidgets('an unfinished ride is offered on the next launch',
-        (tester) async {
+    testWidgets('an unfinished ride is offered on the next launch', (
+      tester,
+    ) async {
       // What a crash leaves behind: a checkpoint row and a partial trace.
       await seedCheckpoint(database);
       await seedRide(database, id: 'unfinished', trackPoints: 0);
@@ -527,8 +535,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('finishing an interrupted ride saves it and opens history',
-        (tester) async {
+    testWidgets('finishing an interrupted ride saves it and opens history', (
+      tester,
+    ) async {
       await seedCheckpoint(database);
       await seedRide(database, id: 'unfinished', trackPoints: 0);
 
@@ -563,7 +572,5 @@ void main() {
 
 /// Inserts the checkpoint a crash would leave behind.
 Future<void> seedCheckpoint(AppDatabase database) async {
-  await database.activeRideDao.save(
-    RideCheckpointFixture.build(),
-  );
+  await database.activeRideDao.save(RideCheckpointFixture.build());
 }

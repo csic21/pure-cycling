@@ -1,7 +1,8 @@
 import 'dart:async';
 
 import 'package:battery_plus/battery_plus.dart';
-import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 // `show` rather than a bare import: the Supabase SDK also exports a type
@@ -134,35 +135,35 @@ final elevationProviderProvider = Provider<ElevationProvider>((ref) {
 /// same mistake the GPS path was designed to avoid.
 final routeElevationProfileProvider =
     FutureProvider.family<RouteElevationProfile?, String>((ref, routeId) async {
-  final provider = ref.watch(elevationProviderProvider);
-  if (!provider.isConfigured) return null;
+      final provider = ref.watch(elevationProviderProvider);
+      if (!provider.isConfigured) return null;
 
-  final route = await ref.watch(routeRepositoryProvider).getRoute(routeId);
-  if (route == null || route.points.length < 2) return null;
+      final route = await ref.watch(routeRepositoryProvider).getRoute(routeId);
+      if (route == null || route.points.length < 2) return null;
 
-  final samples = sampleRoutePoints(route.points);
-  final heights = await provider.heights(samples);
-  // Nulls are where the terrain service had no data; the chart needs a
-  // contiguous series, and the axis is the route length rather than the sample
-  // count, so dropping them is honest.
-  final known = [for (final height in heights) ?height];
-  if (known.length < 2) return null;
+      final samples = sampleRoutePoints(route.points);
+      final heights = await provider.heights(samples);
+      // Nulls are where the terrain service had no data; the chart needs a
+      // contiguous series, and the axis is the route length rather than the sample
+      // count, so dropping them is honest.
+      final known = [for (final height in heights) ?height];
+      if (known.length < 2) return null;
 
-  final accumulator = ElevationAccumulator(thresholdMeters: 5);
-  for (final height in known) {
-    accumulator.add(height);
-  }
+      final accumulator = ElevationAccumulator(thresholdMeters: 5);
+      for (final height in known) {
+        accumulator.add(height);
+      }
 
-  return RouteElevationProfile(
-    // Even spacing is ElevationChart's contract; the chart plots whatever it
-    // is given, so the nulls are dropped here and the axis is the route length.
-    samples: known,
-    gainMeters: accumulator.gainMeters,
-    lossMeters: accumulator.lossMeters,
-    distanceMeters: route.distanceMeters,
-    source: provider.displayName,
-  );
-});
+      return RouteElevationProfile(
+        // Even spacing is ElevationChart's contract; the chart plots whatever it
+        // is given, so the nulls are dropped here and the axis is the route length.
+        samples: known,
+        gainMeters: accumulator.gainMeters,
+        lossMeters: accumulator.lossMeters,
+        distanceMeters: route.distanceMeters,
+        source: provider.displayName,
+      );
+    });
 
 /// A route's terrain profile, as the UI needs it.
 class RouteElevationProfile {
@@ -239,8 +240,9 @@ final settingsRepositoryProvider = Provider<SettingsRepository>(
 /// "still loading" as "defaults" by watching [currentSettingsProvider] instead
 /// of this one — there is no screen in this app that should show a spinner
 /// because a preference has not loaded yet.
-final settingsProvider =
-    AsyncNotifierProvider<SettingsNotifier, AppSettings>(SettingsNotifier.new);
+final settingsProvider = AsyncNotifierProvider<SettingsNotifier, AppSettings>(
+  SettingsNotifier.new,
+);
 
 class SettingsNotifier extends AsyncNotifier<AppSettings> {
   @override
@@ -324,6 +326,21 @@ final mapServicesProvider = Provider<MapServices>((ref) {
   // on the device at all. A rider who also happens to have their own key can
   // still be served by the relay — the quota is what matters, not the key.
   if (relayEndpoint != null) {
+    // The relay requires a session. Rebuild this bundle when sign-in changes
+    // so guests can plan a clearly labelled straight line right away.
+    final signedIn = ref.watch(authUserProvider).valueOrNull != null;
+    if (!signedIn) {
+      return MapServices(
+        places: const NullPlaceProvider(),
+        routes: const OfflineRouteProvider(),
+        trafficLights: const AmapTrafficLightProvider(),
+        tileSource:
+            tileOverride ??
+            (settings.mapStyle == MapStyle.dark
+                ? MapTileSource.cartoDark
+                : MapTileSource.osm),
+      );
+    }
     return MapServices(
       // Search is not relayed (only routing is), so it degrades to "no
       // results" rather than to a broken screen. A rider who wants search can
@@ -347,7 +364,8 @@ final mapServicesProvider = Provider<MapServices>((ref) {
       places: const NullPlaceProvider(),
       routes: const OfflineRouteProvider(),
       trafficLights: const AmapTrafficLightProvider(),
-      tileSource: tileOverride ??
+      tileSource:
+          tileOverride ??
           (settings.mapStyle == MapStyle.dark
               ? MapTileSource.cartoDark
               : MapTileSource.osm),
@@ -372,10 +390,7 @@ final mapServicesProvider = Provider<MapServices>((ref) {
 final routingAvailabilityProvider = Provider<({bool available, String reason})>(
   (ref) {
     final services = ref.watch(mapServicesProvider);
-    // `isDegraded`, not `isConfigured`: the offline provider is configured —
-    // it always answers — but its answers are straight lines, and the rider
-    // has to be told that rather than shown a line across a river as if it
-    // were a bike route.
+    // The offline provider answers, but only with straight lines.
     if (!services.routes.isDegraded) {
       return (available: true, reason: '');
     }
@@ -385,13 +400,15 @@ final routingAvailabilityProvider = Provider<({bool available, String reason})>(
       // way.
       return (
         available: false,
-        reason: '登录后可使用在线骑行路线（匿名账号也可以）；'
+        reason:
+            '登录后可使用在线骑行路线（匿名账号也可以）；'
             '未登录时使用直线路径。',
       );
     }
     return (
       available: false,
-      reason: '未配置高德 Key，当前只能使用直线路径。'
+      reason:
+          '未配置高德 Key，当前只能使用直线路径。'
           '在「设置 → 地图」中填入 Web 服务 Key 即可使用真实骑行路线。',
     );
   },
@@ -464,8 +481,8 @@ final accountDeletionClientProvider = Provider<AccountDeletionClient>((ref) {
 /// password is still the one on the account.
 final passwordRecoveryProvider =
     NotifierProvider<PasswordRecoveryNotifier, bool>(
-  PasswordRecoveryNotifier.new,
-);
+      PasswordRecoveryNotifier.new,
+    );
 
 class PasswordRecoveryNotifier extends Notifier<bool> {
   StreamSubscription<AuthChangeEvent>? _sub;
@@ -513,8 +530,8 @@ final rideSessionInstanceProvider = Provider<RideSession>((ref) {
 /// The ride in progress, including navigation if a route is loaded.
 final rideSessionProvider =
     NotifierProvider<RideSessionNotifier, RideSessionState>(
-  RideSessionNotifier.new,
-);
+      RideSessionNotifier.new,
+    );
 
 class RideSessionNotifier extends Notifier<RideSessionState> {
   StreamSubscription<RideSessionState>? _sub;
@@ -654,13 +671,14 @@ final trackPointsProvider = StreamProvider.family<List<TrackPoint>, String>(
 ///
 /// Derived rather than stored: the track itself is the source of truth and the
 /// projection is cheap, so there is no reason to keep a second copy in sync.
-final trackGeometryProvider = Provider.family<List<GeoPoint>, String>(
-  (ref, rideId) {
-    final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
-    if (points == null) return const [];
-    return points.map((p) => p.geo).toList(growable: false);
-  },
-);
+final trackGeometryProvider = Provider.family<List<GeoPoint>, String>((
+  ref,
+  rideId,
+) {
+  final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+  if (points == null) return const [];
+  return points.map((p) => p.geo).toList(growable: false);
+});
 
 /// How much the climb total for a recorded ride can be trusted.
 ///
@@ -671,68 +689,70 @@ final trackGeometryProvider = Provider.family<List<GeoPoint>, String>(
 ///
 /// The median rather than the mean: one optimistic fix in a tunnel should not
 /// make a whole ride look precise.
-final elevationQualityProvider = Provider.family<ElevationQuality, String>(
-  (ref, rideId) {
-    final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
-    if (points == null || points.isEmpty) return ElevationQuality.approximate;
+final elevationQualityProvider = Provider.family<ElevationQuality, String>((
+  ref,
+  rideId,
+) {
+  final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+  if (points == null || points.isEmpty) return ElevationQuality.approximate;
 
-    final accuracies = <double>[];
-    for (final point in points) {
-      final accuracy = point.verticalAccuracy;
-      // Zero and negative both mean the platform did not report one.
-      if (accuracy != null && accuracy > 0 && accuracy.isFinite) {
-        accuracies.add(accuracy);
-      }
+  final accuracies = <double>[];
+  for (final point in points) {
+    final accuracy = point.verticalAccuracy;
+    // Zero and negative both mean the platform did not report one.
+    if (accuracy != null && accuracy > 0 && accuracy.isFinite) {
+      accuracies.add(accuracy);
     }
+  }
 
-    // A ride where most fixes carried no vertical accuracy is an unknown, and
-    // unknown is treated as the pessimistic case.
-    if (accuracies.length < points.length ~/ 2) {
-      return ElevationQuality.approximate;
-    }
+  // A ride where most fixes carried no vertical accuracy is an unknown, and
+  // unknown is treated as the pessimistic case.
+  if (accuracies.length < points.length ~/ 2) {
+    return ElevationQuality.approximate;
+  }
 
-    accuracies.sort();
-    return ElevationTuning.forVerticalAccuracy(
-      accuracies[accuracies.length ~/ 2],
-    ).quality;
-  },
-);
+  accuracies.sort();
+  return ElevationTuning.forVerticalAccuracy(
+    accuracies[accuracies.length ~/ 2],
+  ).quality;
+});
 
 /// Elevation samples for the profile chart, bucketed for drawing.
 ///
 /// Averaged within each bucket rather than sampled at bucket boundaries: a
 /// point-sampled profile can miss a short steep ramp entirely, which is
 /// exactly the feature a rider is looking for.
-final elevationSamplesProvider = Provider.family<List<double>, String>(
-  (ref, rideId) {
-    final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
-    if (points == null) return const [];
+final elevationSamplesProvider = Provider.family<List<double>, String>((
+  ref,
+  rideId,
+) {
+  final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+  if (points == null) return const [];
 
-    final altitudes = <double>[];
-    for (final point in points) {
-      final altitude = point.altitude;
-      if (altitude != null && altitude.isFinite) altitudes.add(altitude);
+  final altitudes = <double>[];
+  for (final point in points) {
+    final altitude = point.altitude;
+    if (altitude != null && altitude.isFinite) altitudes.add(altitude);
+  }
+  if (altitudes.length < 2) return const [];
+
+  const buckets = 120;
+  if (altitudes.length <= buckets) return altitudes;
+
+  final out = <double>[];
+  final step = altitudes.length / buckets;
+  for (var i = 0; i < buckets; i++) {
+    final start = (i * step).floor();
+    final end = ((i + 1) * step).ceil().clamp(0, altitudes.length);
+    if (end <= start) continue;
+    var sum = 0.0;
+    for (var j = start; j < end; j++) {
+      sum += altitudes[j];
     }
-    if (altitudes.length < 2) return const [];
-
-    const buckets = 120;
-    if (altitudes.length <= buckets) return altitudes;
-
-    final out = <double>[];
-    final step = altitudes.length / buckets;
-    for (var i = 0; i < buckets; i++) {
-      final start = (i * step).floor();
-      final end = ((i + 1) * step).ceil().clamp(0, altitudes.length);
-      if (end <= start) continue;
-      var sum = 0.0;
-      for (var j = start; j < end; j++) {
-        sum += altitudes[j];
-      }
-      out.add(sum / (end - start));
-    }
-    return out;
-  },
-);
+    out.add(sum / (end - start));
+  }
+  return out;
+});
 
 // ---------------------------------------------------------------------------
 // Routes

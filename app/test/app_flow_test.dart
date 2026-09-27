@@ -7,6 +7,7 @@ import 'package:cycling_app/features/dashboard/presentation/dashboard_view.dart'
 import 'package:cycling_app/features/routes/domain/route.dart';
 import 'package:cycling_app/features/settings/data/settings_repository.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
+import 'package:cycling_app/shared/widgets/route_map.dart';
 import 'package:flutter/material.dart' hide Route;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -72,8 +73,9 @@ void main() {
   }
 
   group('startup', () {
-    testWidgets('the app boots and the home screen is the ride screen',
-        (tester) async {
+    testWidgets('the app boots and the home screen is the ride screen', (
+      tester,
+    ) async {
       await pumpApp(tester);
 
       // The whole point of the home screen: 开始骑行 findable within a second.
@@ -144,8 +146,9 @@ void main() {
   });
 
   group('history', () {
-    testWidgets('a recorded ride reaches the list and the month total',
-        (tester) async {
+    testWidgets('a recorded ride reaches the list and the month total', (
+      tester,
+    ) async {
       await seedRide(database);
       await pumpApp(tester);
 
@@ -160,8 +163,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('a ride with no trace yet still renders its statistics',
-        (tester) async {
+    testWidgets('a ride with no trace yet still renders its statistics', (
+      tester,
+    ) async {
       // A ride pulled down from the cloud arrives as a summary; its trace is
       // fetched lazily. The screen has to be usable in that state.
       await seedRide(database, name: '云端恢复', trackPoints: 0);
@@ -179,8 +183,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('opening a ride shows its statistics and its trace',
-        (tester) async {
+    testWidgets('opening a ride shows its statistics and its trace', (
+      tester,
+    ) async {
       await seedRide(database, name: '周末环湖');
       await pumpApp(tester);
 
@@ -201,8 +206,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('a note can be written, and it shows on the detail screen',
-        (tester) async {
+    testWidgets('a note can be written, and it shows on the detail screen', (
+      tester,
+    ) async {
       await seedRide(database, name: '周末环湖');
       await pumpApp(tester);
 
@@ -232,7 +238,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('an existing note is shown, and can be emptied', (tester) async {
+    testWidgets('an existing note is shown, and can be emptied', (
+      tester,
+    ) async {
       await seedRide(database, name: '通勤', notes: '链条有点响');
       await pumpApp(tester);
 
@@ -257,16 +265,13 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('a ride with no reported vertical accuracy says so',
-        (tester) async {
+    testWidgets('a ride with no reported vertical accuracy says so', (
+      tester,
+    ) async {
       // Which is what a phone without a barometer looks like. The climb figure
       // is still shown, but labelled — a rider comparing rides needs to know
       // which numbers are measurements and which are estimates.
-      await seedRide(
-        database,
-        name: '无气压计',
-        verticalAccuracy: null,
-      );
+      await seedRide(database, name: '无气压计', verticalAccuracy: null);
       await pumpApp(tester);
 
       await openTab(tester, '记录');
@@ -311,8 +316,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('the lock-screen permission state is visible in 骑行 settings',
-        (tester) async {
+    testWidgets('the lock-screen permission state is visible in 骑行 settings', (
+      tester,
+    ) async {
       final location = await pumpApp(tester);
       // The state that hurts: a working app that stops recording when the
       // phone goes into a pocket.
@@ -340,8 +346,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('the about screen carries the version, policy and licences',
-        (tester) async {
+    testWidgets('the about screen carries the version, policy and licences', (
+      tester,
+    ) async {
       await pumpApp(
         tester,
         extraOverrides: [
@@ -368,8 +375,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('a build with no version says so instead of inventing one',
-        (tester) async {
+    testWidgets('a build with no version says so instead of inventing one', (
+      tester,
+    ) async {
       await pumpApp(
         tester,
         extraOverrides: [appVersionProvider.overrideWith((ref) async => null)],
@@ -384,61 +392,65 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('a declined notification is visible and leads to the settings',
-        (tester) async {
-      final notifications = FakeNotificationPermission();
-      await pumpApp(tester, notifications: notifications);
+    testWidgets(
+      'a declined notification is visible and leads to the settings',
+      (tester) async {
+        final notifications = FakeNotificationPermission();
+        await pumpApp(tester, notifications: notifications);
 
-      await openTab(tester, '设置');
-      await tester.tap(find.text('自动暂停'));
-      await settle(tester);
+        await openTab(tester, '设置');
+        await tester.tap(find.text('自动暂停'));
+        await settle(tester);
 
-      // Android 13+ hides the foreground-service notification without this
-      // grant, and the system dialog can only be shown once — so the row is
-      // the way back.
-      expect(find.textContaining('未允许'), findsOneWidget);
-      await tester.tap(find.text('记录通知'));
-      await settle(tester);
-      expect(notifications.settingsOpened, isTrue);
+        // Android 13+ hides the foreground-service notification without this
+        // grant, and the system dialog can only be shown once — so the row is
+        // the way back.
+        expect(find.textContaining('未允许'), findsOneWidget);
+        await tester.tap(find.text('记录通知'));
+        await settle(tester);
+        expect(notifications.settingsOpened, isTrue);
 
-      await shutdownApp(tester, database);
-    });
+        await shutdownApp(tester, database);
+      },
+    );
 
-    testWidgets('the dashboard editor previews a page and offers three layouts',
-        (tester) async {
-      await pumpApp(tester);
-      await openTab(tester, '设置');
-      await tester.tap(find.text('页面布局'));
-      await settle(tester);
+    testWidgets(
+      'the dashboard editor previews a page and offers three layouts',
+      (tester) async {
+        await pumpApp(tester);
+        await openTab(tester, '设置');
+        await tester.tap(find.text('页面布局'));
+        await settle(tester);
 
-      expect(find.text('1 大 + 2 小'), findsOneWidget);
-      expect(find.text('1 大 + 4 小'), findsOneWidget);
-      expect(find.text('2 × 3'), findsOneWidget);
-      expect(find.text('数据字段'), findsOneWidget);
-      expect(find.text('页面 1'), findsOneWidget);
+        expect(find.text('1 大 + 2 小'), findsOneWidget);
+        expect(find.text('1 大 + 4 小'), findsOneWidget);
+        expect(find.text('2 × 3'), findsOneWidget);
+        expect(find.text('数据字段'), findsOneWidget);
+        expect(find.text('页面 1'), findsOneWidget);
 
-      // The preview pane is wide and short, but the phone it previews is not:
-      // the stacked portrait layout is what the rider will see on a mounted
-      // phone, so that is what the preview draws. (A ratio-based layout that
-      // trusted width alone would flip this pane to the landscape shape.)
-      //
-      // Scoped to the preview: 距离 also appears as a field-row label further
-      // down the same screen.
-      final preview = find.byType(DashboardView);
-      final hero = tester.getRect(
-        find.descendant(of: preview, matching: find.text('28.6')),
-      );
-      final label = tester.getRect(
-        find.descendant(of: preview, matching: find.text('距离')),
-      );
-      expect(
-        hero.center.dy,
-        lessThan(label.center.dy),
-        reason: '预览必须是竖屏排布：数字在上，说明在下',
-      );
+        // The preview pane is wide and short, but the phone it previews is not:
+        // the stacked portrait layout is what the rider will see on a mounted
+        // phone, so that is what the preview draws. (A ratio-based layout that
+        // trusted width alone would flip this pane to the landscape shape.)
+        //
+        // Scoped to the preview: 距离 also appears as a field-row label further
+        // down the same screen.
+        final preview = find.byType(DashboardView);
+        final hero = tester.getRect(
+          find.descendant(of: preview, matching: find.text('28.6')),
+        );
+        final label = tester.getRect(
+          find.descendant(of: preview, matching: find.text('距离')),
+        );
+        expect(
+          hero.center.dy,
+          lessThan(label.center.dy),
+          reason: '预览必须是竖屏排布：数字在上，说明在下',
+        );
 
-      await shutdownApp(tester, database);
-    });
+        await shutdownApp(tester, database);
+      },
+    );
 
     testWidgets('the OLED screen carries a live preview', (tester) async {
       await pumpApp(tester);
@@ -473,6 +485,27 @@ void main() {
       await shutdownApp(tester, database);
     });
 
+    testWidgets('can pick both endpoints without place search', (tester) async {
+      await pumpApp(tester);
+      await tester.tap(find.text('路线规划'));
+      await settle(tester);
+
+      expect(find.text('在地图上点选起点'), findsOneWidget);
+      final map = find.byType(RouteMap).first;
+      final center = tester.getCenter(map);
+      await tester.tapAt(center);
+      await settle(tester);
+      expect(find.text('在地图上点选终点，点击其他位置可重新选择'), findsOneWidget);
+
+      await tester.tapAt(center + const Offset(60, 0));
+      await settle(tester);
+      expect(find.text('开始导航并记录'), findsOneWidget);
+      expect(find.text('只保存路线'), findsOneWidget);
+      expect(find.textContaining('这是直线路径'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
     testWidgets('GPX import offers both ways in', (tester) async {
       await pumpApp(tester);
 
@@ -489,7 +522,8 @@ void main() {
   });
 
   group('route elevation', () {
-    Future<void> seedRoute(AppDatabase database) => database.routeDao.upsertRoute(
+    Future<void> seedRoute(AppDatabase database) =>
+        database.routeDao.upsertRoute(
           Route(
             id: 'route-elevation',
             name: '有坡的路线',
@@ -502,10 +536,12 @@ void main() {
           ),
         );
 
-    testWidgets('a profile appears when the rider has allowed it',
-        (tester) async {
-      await SettingsRepository(database)
-          .save(const AppSettings(routeElevation: true));
+    testWidgets('a profile appears when the rider has allowed it', (
+      tester,
+    ) async {
+      await SettingsRepository(
+        database,
+      ).save(const AppSettings(routeElevation: true));
       await seedRoute(database);
 
       await pumpApp(
@@ -527,8 +563,9 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('nothing is asked for while the setting is off',
-        (tester) async {
+    testWidgets('nothing is asked for while the setting is off', (
+      tester,
+    ) async {
       await seedRoute(database);
 
       // The real provider chain, with the setting at its default: the null
@@ -551,8 +588,9 @@ void main() {
   });
 
   group('sync', () {
-    testWidgets('reports that the cloud is not configured rather than failing',
-        (tester) async {
+    testWidgets('reports that the cloud is not configured rather than failing', (
+      tester,
+    ) async {
       await pumpApp(tester);
       await openTab(tester, '设置');
       await tester.tap(find.text('云同步'));
@@ -584,6 +622,6 @@ class FakeElevation implements ElevationProvider {
 
   @override
   Future<List<double?>> heights(List<GeoPoint> points) async => [
-        for (var i = 0; i < points.length; i++) 100.0 + i * 2.0,
-      ];
+    for (var i = 0; i < points.length; i++) 100.0 + i * 2.0,
+  ];
 }

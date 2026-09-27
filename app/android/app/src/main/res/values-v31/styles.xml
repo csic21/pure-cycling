@@ -6,10 +6,7 @@
          modern Android phone is the *system* default — which is a white card
          behind the launcher icon — no matter what `launch_background.xml` says.
 
-         The icon is deliberately a black square for now. The template icon is
-         on a white field, and putting it on a black splash would be worse than
-         showing nothing. Replace `@drawable/splash_icon` at the same time the
-         real launcher icon lands. -->
+         The logo mark is drawn on the same black as the app's first frame. -->
     <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
         <item name="android:windowBackground">@drawable/launch_background</item>
         <item name="android:windowSplashScreenBackground">@android:color/black</item>

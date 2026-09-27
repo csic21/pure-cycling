@@ -25,7 +25,9 @@ class RouteDetailScreen extends ConsumerWidget {
     final formatter = ref.watch(unitFormatterProvider);
     final tileSource = ref.watch(mapServicesProvider).tileSource;
     // Null unless the rider opted in (see `elevationProviderProvider`).
-    final profile = ref.watch(routeElevationProfileProvider(routeId)).valueOrNull;
+    final profile = ref
+        .watch(routeElevationProfileProvider(routeId))
+        .valueOrNull;
 
     return Scaffold(
       appBar: AppBar(
@@ -43,11 +45,14 @@ class RouteDetailScreen extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, stack) => ErrorNotice(
           title: '读取路线失败',
-          message: ref.read(failureReporterProvider).report(
+          message: ref
+              .read(failureReporterProvider)
+              .report(
                 'route_detail.read',
                 e,
                 stack: stack,
-                message: '本机数据库没有响应。重启应用通常可以恢复；'
+                message:
+                    '本机数据库没有响应。重启应用通常可以恢复；'
                     '如果反复出现，可以在「设置 → 诊断日志」中导出日志。',
               ),
           onRetry: () => ref.invalidate(routeProvider(routeId)),
@@ -88,11 +93,12 @@ class RouteDetailScreen extends ConsumerWidget {
                             value: profile != null
                                 ? formatter.elevation(profile.gainMeters)
                                 : route.elevationGainMeters == null
-                                    ? '—'
-                                    : formatter.elevation(
-                                        route.elevationGainMeters!,
-                                      ),
-                            unit: (profile != null ||
+                                ? '—'
+                                : formatter.elevation(
+                                    route.elevationGainMeters!,
+                                  ),
+                            unit:
+                                (profile != null ||
                                     route.elevationGainMeters != null)
                                 ? formatter.system.elevationSuffix
                                 : null,
@@ -139,7 +145,7 @@ class RouteDetailScreen extends ConsumerWidget {
                           ref.watch(currentSettingsProvider).routeElevation
                               ? '高德算路不返回海拔，高程查询没有拿到结果。'
                               : '该路线由高德规划，不包含海拔数据。'
-                                  '可在「设置 → 地图服务 → 路线海拔」中打开高程查询。',
+                                    '可在「设置 → 地图服务 → 路线海拔」中打开高程查询。',
                           style: AppText.caption,
                         ),
                       ),
@@ -161,7 +167,7 @@ class RouteDetailScreen extends ConsumerWidget {
                 child: FilledButton.icon(
                   onPressed: () => _navigate(context, ref, route),
                   icon: const Icon(Icons.navigation_outlined, size: 22),
-                  label: const Text('开始导航'),
+                  label: const Text('开始导航并记录'),
                 ),
               ),
             ],
@@ -171,25 +177,26 @@ class RouteDetailScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _navigate(BuildContext context, WidgetRef ref, Route route) async {
-    final started =
-        await ref.read(rideSessionProvider.notifier).start(route: route);
+  Future<void> _navigate(
+    BuildContext context,
+    WidgetRef ref,
+    Route route,
+  ) async {
+    final started = await ref
+        .read(rideSessionProvider.notifier)
+        .start(route: route);
     if (!context.mounted) return;
 
     if (!started) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('无法开始导航，请检查定位权限')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法开始导航，请检查定位权限')));
       return;
     }
     unawaited(context.push(AppRoutes.ride));
   }
 
-  Future<void> _rename(
-    BuildContext context,
-    WidgetRef ref,
-    Route route,
-  ) async {
+  Future<void> _rename(BuildContext context, WidgetRef ref, Route route) async {
     final controller = TextEditingController(text: route.name);
     final name = await showDialog<String>(
       context: context,

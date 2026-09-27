@@ -86,7 +86,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter_version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
@@ -157,7 +157,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter_version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 

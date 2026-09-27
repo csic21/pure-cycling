@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">纯粹骑行标记</title>
+  <g fill="#C8FF3D">
+    <path d="M 780 287 A 350 350 0 1 0 862 524" fill="none" stroke="#C8FF3D" stroke-width="84"/>
+    <path d="M 501 516 L 687 351 C 702 338 718 353 707 370 L 550 550 Z"/>
+    <circle cx="512" cy="512" r="67"/>
+  </g>
+</svg>

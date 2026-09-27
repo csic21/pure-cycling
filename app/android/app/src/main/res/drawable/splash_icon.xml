@@ -1,8 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The Android 12+ splash icon: a black square, i.e. nothing. See
-     values-v31/styles.xml. Replace this when the app gets a real launcher
-     icon whose artwork works on a black background. -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <solid android:color="@android:color/black" />
-</shape>
+<!-- Android 12+ splash uses the same mark as the adaptive launcher icon. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

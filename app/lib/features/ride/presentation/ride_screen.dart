@@ -72,9 +72,9 @@ class _RideScreenState extends ConsumerState<RideScreen> {
     if (!mounted) return;
     if (!ok) {
       final problem = ref.read(rideSessionProvider).permissionProblem;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(problem ?? '无法开始记录')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(problem ?? '无法开始记录')));
       context.pop();
     }
   }
@@ -124,7 +124,9 @@ class _RideScreenState extends ConsumerState<RideScreen> {
                     ? null
                     : () {
                         if (navigation.mode == NavigationMode.map) {
-                          ref.read(rideSessionProvider.notifier).requestMinimal();
+                          ref
+                              .read(rideSessionProvider.notifier)
+                              .requestMinimal();
                         } else {
                           ref.read(rideSessionProvider.notifier).requestMap();
                         }
@@ -231,7 +233,10 @@ class _RideScreenState extends ConsumerState<RideScreen> {
               onTap: () => Navigator.pop(context, _LeaveAction.save),
             ),
             ListTile(
-              leading: const Icon(Icons.delete_outline, color: AppColors.danger),
+              leading: const Icon(
+                Icons.delete_outline,
+                color: AppColors.danger,
+              ),
               title: const Text(
                 '放弃这次骑行',
                 style: TextStyle(color: AppColors.danger),
@@ -250,8 +255,14 @@ class _RideScreenState extends ConsumerState<RideScreen> {
       case _LeaveAction.stay:
         return;
       case _LeaveAction.save:
-        await ref.read(rideSessionProvider.notifier).stop();
-        if (mounted) context.go(AppRoutes.history);
+        final saved = await ref.read(rideSessionProvider.notifier).stop();
+        if (mounted) {
+          context.go(
+            saved == null
+                ? AppRoutes.history
+                : AppRoutes.rideDetailFor(saved.id),
+          );
+        }
       case _LeaveAction.discard:
         await ref.read(rideSessionProvider.notifier).discard();
         if (mounted) context.go(AppRoutes.home);
@@ -264,8 +275,8 @@ class _RideScreenState extends ConsumerState<RideScreen> {
     // A ride under a minute with almost no distance is almost always a
     // mis-tap. Asking costs nothing; silently saving a 20 m "ride" into the
     // history is a small, recurring annoyance.
-    final isAccidental = ride.stats.elapsed.inSeconds < 60 &&
-        ride.stats.distanceMeters < 200;
+    final isAccidental =
+        ride.stats.elapsed.inSeconds < 60 && ride.stats.distanceMeters < 200;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -300,21 +311,7 @@ class _RideScreenState extends ConsumerState<RideScreen> {
       return;
     }
 
-    // Saving a ride is a moment worth acknowledging: the rider has just
-    // finished and wants to know it worked.
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '已保存 · ${UnitFormatter.duration(saved.stats.moving)} · '
-          '${(saved.stats.distanceMeters / 1000).toStringAsFixed(2)} 公里',
-        ),
-        action: SnackBarAction(
-          label: '查看',
-          onPressed: () => context.go(AppRoutes.rideDetailFor(saved.id)),
-        ),
-      ),
-    );
-    context.go(AppRoutes.history);
+    context.go(AppRoutes.rideDetailFor(saved.id));
   }
 
   static String _summaryLine(RideState ride, WidgetRef ref) {
@@ -380,8 +377,8 @@ class _RidePager extends ConsumerWidget {
                   formatter: formatter,
                   onDismiss: nav.autoMapReason == MapAutoReason.userRequest
                       ? () => ref
-                          .read(rideSessionProvider.notifier)
-                          .requestMinimal()
+                            .read(rideSessionProvider.notifier)
+                            .requestMinimal()
                       : null,
                 );
               }
@@ -490,9 +487,7 @@ class _PageDots extends StatelessWidget {
               width: i == current ? 16 : 6,
               height: 6,
               decoration: BoxDecoration(
-                color: i == current
-                    ? AppColors.accent
-                    : AppColors.textTertiary,
+                color: i == current ? AppColors.accent : AppColors.textTertiary,
                 borderRadius: BorderRadius.circular(3),
               ),
             ),

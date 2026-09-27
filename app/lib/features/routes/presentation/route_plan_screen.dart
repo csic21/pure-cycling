@@ -8,6 +8,7 @@ import '../../../app/providers.dart';
 import '../../../app/router.dart';
 import '../../../app/theme.dart';
 import '../../../core/map/map_providers.dart';
+import '../../../core/sync/functions_config.dart';
 import '../../../core/utils/geo.dart';
 import '../../../core/utils/units.dart';
 import '../../../shared/widgets/route_map.dart';
@@ -58,15 +59,16 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
   /// Falls back to the last recorded fix when the live one is unavailable, so
   /// planning still works from indoors or immediately after opening the app.
   Future<void> _resolveOrigin() async {
-    final fix = await ref.read(locationServiceProvider).currentFix(
-          timeout: const Duration(seconds: 8),
-        );
+    final fix = await ref
+        .read(locationServiceProvider)
+        .currentFix(timeout: const Duration(seconds: 8));
     if (!mounted) return;
 
-    if (fix != null) {
+    if (fix != null && _origin == null) {
       setState(() => _origin = fix.geo);
       return;
     }
+    if (_origin != null) return;
 
     final recent = ref.read(mostRecentRideProvider).valueOrNull;
     if (recent?.startPoint != null) {
@@ -74,7 +76,30 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
       return;
     }
 
-    setState(() => _error = '无法获取当前位置，请到开阔处重试，或从记录中选择起点');
+    setState(() => _error = '无法获取当前位置。请到开阔处重试，或在地图上点选起点。');
+  }
+
+  void _selectMapPoint(GeoPoint point) {
+    if (_origin == null) {
+      setState(() {
+        _origin = point;
+        _error = null;
+      });
+      return;
+    }
+
+    final label =
+        '${point.lat.toStringAsFixed(5)}, '
+        '${point.lng.toStringAsFixed(5)}';
+    setState(() {
+      _destination = PlaceSuggestion(name: label, point: point);
+      _destinationController.text = label;
+      _suggestions = const [];
+      _planned = null;
+      _error = null;
+    });
+    FocusScope.of(context).unfocus();
+    _plan();
   }
 
   void _onQueryChanged(String value) {
@@ -119,7 +144,10 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
     });
 
     try {
-      final route = await ref.read(mapServicesProvider).routes.planRoute(
+      final route = await ref
+          .read(mapServicesProvider)
+          .routes
+          .planRoute(
             origin: origin,
             destination: destination.point,
             waypoints: _waypoints.map((w) => w.point).toList(),
@@ -140,11 +168,14 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
     } catch (e, stack) {
       if (!mounted) return;
       setState(() {
-        _error = ref.read(failureReporterProvider).report(
+        _error = ref
+            .read(failureReporterProvider)
+            .report(
               'route_plan.plan',
               e,
               stack: stack,
-              message: '规划没有完成。检查网络后重试；'
+              message:
+                  '规划没有完成。检查网络后重试；'
                   '如果一直失败，可以在「设置 → 诊断日志」中导出日志。',
             );
         _planning = false;
@@ -155,23 +186,22 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
   Future<void> _saveAndNavigate() async {
     final route = _planned;
     if (route == null) return;
-
-    final name = await _promptName(route);
-    if (name == null || !mounted) return;
-
-    final named = route.copyWith(name: name);
+    final defaultName = route.name == '骑行路线' || route.name == '直线路线';
+    final named = route.copyWith(
+      name: defaultName ? '前往 ${_destination?.name ?? '终点'}' : route.name,
+    );
     await ref.read(routeRepositoryProvider).saveRoute(named);
     if (!mounted) return;
 
-    final started = await ref.read(rideSessionProvider.notifier).start(
-          route: named,
-        );
+    final started = await ref
+        .read(rideSessionProvider.notifier)
+        .start(route: named);
     if (!mounted) return;
 
     if (!started) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('无法开始导航，请检查定位权限')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法开始导航，请检查定位权限')));
       return;
     }
 
@@ -180,12 +210,26 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
     unawaited(context.push(AppRoutes.ride));
   }
 
+  Future<void> _saveRoute() async {
+    final route = _planned;
+    if (route == null) return;
+    final name = await _promptName(route);
+    if (name == null || !mounted) return;
+    final named = route.copyWith(name: name);
+    await ref.read(routeRepositoryProvider).saveRoute(named);
+    if (!mounted) return;
+    setState(() => _planned = named);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('路线已保存，可在「路线」中查看')));
+  }
+
   Future<String?> _promptName(Route route) async {
     final controller = TextEditingController(text: route.name);
     return showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('保存并开始导航'),
+        title: const Text('保存路线'),
         content: TextField(
           controller: controller,
           autofocus: true,
@@ -198,7 +242,7 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('开始'),
+            child: const Text('保存'),
           ),
         ],
       ),
@@ -223,8 +267,10 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
                   _Notice(
                     icon: Icons.info_outline,
                     text: availability.reason,
-                    onTap: () => context.push(AppRoutes.settingsMap),
-                    actionLabel: '去设置',
+                    onTap: () => context.push(FunctionsConfig.isConfigured
+                        ? AppRoutes.login
+                        : AppRoutes.settingsMap),
+                    actionLabel: FunctionsConfig.isConfigured ? '去登录' : '去设置',
                   ),
 
                 _OriginRow(origin: _origin, onRefresh: _resolveOrigin),
@@ -250,6 +296,26 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
                     _destinationController.clear();
                     _planned = null;
                   }),
+                ),
+
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                  child: Text(
+                    _origin == null ? '在地图上点选起点' : '在地图上点选终点，点击其他位置可重新选择',
+                    style: AppText.caption,
+                  ),
+                ),
+                SizedBox(
+                  height: 260,
+                  child: RouteMap(
+                    key: ValueKey('planner-${_origin?.lat}-${_origin?.lng}'),
+                    tileSource: services.tileSource,
+                    center: _origin,
+                    zoom: 14,
+                    position: _origin,
+                    destination: _destination?.point,
+                    onMapTap: _selectMapPoint,
+                  ),
                 ),
 
                 if (_waypoints.isNotEmpty)
@@ -303,10 +369,20 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
           if (_planned != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-              child: FilledButton.icon(
-                onPressed: _saveAndNavigate,
-                icon: const Icon(Icons.navigation_outlined, size: 22),
-                label: const Text('开始导航'),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _saveAndNavigate,
+                    icon: const Icon(Icons.navigation_outlined, size: 22),
+                    label: const Text('开始导航并记录'),
+                  ),
+                  TextButton.icon(
+                    onPressed: _saveRoute,
+                    icon: const Icon(Icons.bookmark_add_outlined),
+                    label: const Text('只保存路线'),
+                  ),
+                ],
               ),
             ),
         ],
@@ -395,9 +471,11 @@ class _OriginRow extends StatelessWidget {
       contentPadding: const EdgeInsets.symmetric(horizontal: 20),
       leading: const Icon(Icons.my_location, color: AppColors.accent, size: 20),
       title: Text(
-        origin == null ? '正在获取当前位置…' : '当前位置',
+        origin == null ? '正在获取当前位置…' : '起点',
         style: AppText.body.copyWith(
-          color: origin == null ? AppColors.textTertiary : AppColors.textPrimary,
+          color: origin == null
+              ? AppColors.textTertiary
+              : AppColors.textPrimary,
         ),
       ),
       subtitle: origin == null
@@ -460,11 +538,11 @@ class _DestinationField extends StatelessWidget {
                       ),
                     )
                   : (selected != null
-                      ? IconButton(
-                          icon: const Icon(Icons.clear, size: 18),
-                          onPressed: onClear,
-                        )
-                      : null),
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: onClear,
+                          )
+                        : null),
             ),
           ),
         ),
@@ -554,8 +632,7 @@ class _RouteResult extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isStraightLine = route.provider == 'offline';
-    final elevationEnabled =
-        ref.watch(currentSettingsProvider).routeElevation;
+    final elevationEnabled = ref.watch(currentSettingsProvider).routeElevation;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -611,9 +688,9 @@ class _RouteResult extends ConsumerWidget {
               // it appear is more useful than saying it is impossible.
               elevationEnabled
                   ? '高德算路不返回海拔。保存这条路线后打开详情，即可看到高程查询给出的'
-                      '爬升与剖面。'
+                        '爬升与剖面。'
                   : '高德算路不返回海拔。可在「设置 → 地图服务 → 路线海拔」中打开'
-                      '高程查询（会把路线坐标发给第三方服务）。',
+                        '高程查询（会把路线坐标发给第三方服务）。',
               style: AppText.caption,
             ),
           ),
@@ -682,11 +759,7 @@ class _InstructionRow extends StatelessWidget {
 }
 
 class _ResultStat extends StatelessWidget {
-  const _ResultStat({
-    required this.value,
-    required this.label,
-    this.unit,
-  });
+  const _ResultStat({required this.value, required this.label, this.unit});
 
   final String value;
   final String? unit;
@@ -761,10 +834,7 @@ class _Notice extends StatelessWidget {
             child: Text(text, style: AppText.caption.copyWith(color: color)),
           ),
           if (onTap != null && actionLabel != null)
-            TextButton(
-              onPressed: onTap,
-              child: Text(actionLabel!),
-            ),
+            TextButton(onPressed: onTap, child: Text(actionLabel!)),
         ],
       ),
     );
