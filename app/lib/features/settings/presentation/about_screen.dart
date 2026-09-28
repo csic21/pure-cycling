@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../app/providers.dart';
 import '../../../app/theme.dart';
 import '../../../core/app_contact.dart';
+import '../../../core/updates/update_prompt.dart';
 import '../domain/privacy_policy.dart';
 
 /// What this app is, what it does with your data, and what it is built on.
@@ -49,6 +50,21 @@ class AboutScreen extends ConsumerWidget {
           ),
 
           const SizedBox(height: 24),
+          const Divider(height: 1),
+          ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+            leading: const Icon(
+              Icons.system_update_outlined,
+              color: AppColors.textSecondary,
+            ),
+            title: const Text('检查更新', style: AppText.body),
+            subtitle: const Text(
+              '通过 GitHub Release 查看新版本',
+              style: AppText.caption,
+            ),
+            onTap: () => checkForAppUpdate(context),
+          ),
+
           const Divider(height: 1),
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 20, 20, 4),
@@ -111,8 +127,7 @@ class AboutScreen extends ConsumerWidget {
               context: context,
               applicationName: '纯粹骑行',
               applicationVersion: version ?? '',
-              applicationLegalese:
-                  'Flutter 与各依赖组件的许可证见下。地图数据版权归各自提供方所有。',
+              applicationLegalese: 'Flutter 与各依赖组件的许可证见下。地图数据版权归各自提供方所有。',
             ),
           ),
 
@@ -125,13 +140,12 @@ class AboutScreen extends ConsumerWidget {
             ),
             ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-              leading: const Icon(Icons.mail_outline,
-                  color: AppColors.textSecondary),
-              title: Text(AppContact.supportEmail, style: AppText.body),
-              subtitle: const Text(
-                '问题、错误报告与隐私相关请求',
-                style: AppText.caption,
+              leading: const Icon(
+                Icons.mail_outline,
+                color: AppColors.textSecondary,
               ),
+              title: Text(AppContact.supportEmail, style: AppText.body),
+              subtitle: const Text('问题、错误报告与隐私相关请求', style: AppText.caption),
               onTap: () => launchUrl(
                 Uri(scheme: 'mailto', path: AppContact.supportEmail),
               ),
@@ -139,12 +153,7 @@ class AboutScreen extends ConsumerWidget {
           ],
 
           const SizedBox(height: 28),
-          const Center(
-            child: Text(
-              '没有社区，没有信息流',
-              style: AppText.caption,
-            ),
-          ),
+          const Center(child: Text('没有社区，没有信息流', style: AppText.caption)),
         ],
       ),
     );

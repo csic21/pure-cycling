@@ -41,9 +41,9 @@ defaults:
 #                       binary that uses it; each function guards itself with a
 #                       session check, and the relay also with a quota.
 #
-# The AMap key is deliberately absent. It is entered by the rider in the app's
-# own settings and stored in their device's database, so it never enters a
-# build. See docs/ci.md.
+# The AMap Web Service key lives only in Supabase Edge Function secrets.
+# The public source repository also hosts Release metadata and APKs. The
+# workflow uses its built-in GITHUB_TOKEN to publish there.
 # ---------------------------------------------------------------------------
 
 jobs:
@@ -66,6 +66,15 @@ jobs:
       - run: dart run build_runner build --delete-conflicting-outputs
       - run: flutter analyze
       - run: flutter test
+
+      - name: Check tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n -E 's/^version: ([^+]+).*/\1/p' pubspec.yaml)
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match pubspec.yaml version ${version}."
+            exit 1
+          fi
 
       - name: Verify the secret scanner still works
         working-directory: .
@@ -123,6 +132,7 @@ jobs:
             "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
             "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}",
             "SUPABASE_FUNCTIONS_URL": "${{ vars.SUPABASE_FUNCTIONS_URL }}",
+            "GITHUB_RELEASE_REPO": "${{ github.repository }}",
             "SUPPORT_EMAIL": "${{ vars.SUPPORT_EMAIL }}"
           }
           EOF
@@ -130,7 +140,9 @@ jobs:
       # An app bundle, not an APK: Play distributes per-device splits from it,
       # which is roughly a third the size of the universal APK.
       - name: Build
-        run: flutter build appbundle --release --dart-define-from-file=dart_define.json
+        run: |
+          flutter build appbundle --release --dart-define-from-file=dart_define.json
+          flutter build apk --release --dart-define-from-file=dart_define.json
 
       - name: Remove signing material
         if: always()
@@ -138,9 +150,44 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: android-appbundle
-          path: app/build/app/outputs/bundle/release/*.aab
+          name: android-release
+          path: |
+            app/build/app/outputs/bundle/release/*.aab
+            app/build/app/outputs/flutter-apk/*.apk
           retention-days: 30
+
+  publish:
+    name: Publish Android release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: android
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-release
+          path: release-artifacts
+
+      - name: Publish APK to GitHub Releases
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility=$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq '.visibility')
+          if [ "$visibility" != 'PUBLIC' ]; then
+            echo '::error::The repository must be public so installed apps can check for updates.'
+            exit 1
+          fi
+          apk=$(find release-artifacts -name '*.apk' -type f -print -quit)
+          if [ -z "$apk" ]; then
+            echo '::error::The signed APK was not produced.'
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" "$apk#pure-cycling-android.apk" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "纯粹骑行 $GITHUB_REF_NAME。Android 用户可下载 APK 更新；iOS 请通过原安装渠道更新。"
 
   # -------------------------------------------------------------------------
   # iOS is built but not uploaded. Shipping to TestFlight needs an App Store
@@ -171,6 +218,7 @@ jobs:
             "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
             "SUPABASE_ANON_KEY": "${{ secrets.SUPABASE_ANON_KEY }}",
             "SUPABASE_FUNCTIONS_URL": "${{ vars.SUPABASE_FUNCTIONS_URL }}",
+            "GITHUB_RELEASE_REPO": "${{ github.repository }}",
             "SUPPORT_EMAIL": "${{ vars.SUPPORT_EMAIL }}"
           }
           EOF

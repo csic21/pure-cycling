@@ -98,6 +98,9 @@ scan() {
 # to tell a harmless publishable key from a catastrophic one.
 SUPABASE_JWT='eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}'
 
+# Supabase's newer elevated API key is no longer a JWT.
+SUPABASE_SECRET='sb_secret_[A-Za-z0-9_-]{16,}'
+
 # An AMap Web Service key is 32 hex characters, but only when the line also
 # names it. A bare 32-hex string is equally likely to be a commit hash or a
 # colour value, and a scanner that cries wolf gets switched off.
@@ -140,6 +143,8 @@ if [ "${1:-}" = "--self-test" ]; then
   printf 'k = "%s.%s.%s"\n' "$_jwt_head" "$_jwt_payload" "$_jwt_sig" >"$DECOYS/jwt.dart"
   printf 'SUPABASE_SERVICE_ROLE_KEY=%s.%s.%s\n' \
     "$_jwt_head" "$_jwt_payload" "$_jwt_sig" >"$DECOYS/role.env"
+  printf 'SUPABASE_SECRET_KEY=%s%s\n' 'sb_secret_' \
+    'abcdefghijklmnopqrstuvwxyz' >"$DECOYS/secret.env"
   printf 'url = "https://%s.supabase.co"\n' "$_host" >"$DECOYS/url.dart"
 
   echo "==> self-test"
@@ -161,6 +166,7 @@ if [ "${1:-}" = "--self-test" ]; then
   check_pattern "AMap Web Service key" "$AMAP_KEY" "amap.dart"
   check_pattern "Supabase JWT" "$SUPABASE_JWT" "jwt.dart"
   check_pattern "service_role key" "$SERVICE_ROLE_KEY" "role.env"
+  check_pattern "Supabase secret key" "$SUPABASE_SECRET" "secret.env"
   check_pattern "Supabase project URL" "$SUPABASE_URL" "url.dart"
 
   # And a negative case: a line that mentions AMap but carries no key must not
@@ -201,6 +207,11 @@ scan "$SERVICE_ROLE_KEY" \
   "service_role key" \
   "This bypasses every RLS policy: whoever holds it can read and delete every \
 user's data. Never in a client build. Rotate it and clean history."
+
+scan "$SUPABASE_SECRET" \
+  "CRITICAL" \
+  "Supabase secret key" \
+  "This bypasses every RLS policy. Rotate it and remove it from the repository."
 
 scan "$SUPABASE_URL" \
   "INFO" \

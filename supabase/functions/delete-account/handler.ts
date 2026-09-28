@@ -58,8 +58,15 @@ export async function handleDeleteAccount(
   }
 
   // 1. The GPX paths, read before the rows that index them are gone.
-  const paths = await listGpxPaths(userId, fetch, env);
-  const files = await deleteObjects(paths, fetch, env);
+  let files: number;
+  try {
+    const paths = await listGpxPaths(userId, fetch, env);
+    files = await deleteObjects(paths, fetch, env);
+  } catch {
+    // Keep the account (and its ride rows, which index the objects) so the
+    // rider can retry once Storage or PostgREST is healthy again.
+    return failure(502, '清理云端轨迹失败，账号尚未删除，请稍后重试');
+  }
 
   // 2. The account. Rows follow by cascade; the objects are already gone.
   if (!(await deleteUser(userId, fetch, env))) {
@@ -106,25 +113,37 @@ async function listGpxPaths(
   env: DeleteEnv,
 ): Promise<string[]> {
   try {
-    const url = new URL(`${env.supabaseUrl}/rest/v1/rides`);
-    url.searchParams.set('select', 'gpx_path');
-    url.searchParams.set('user_id', `eq.${userId}`);
-    url.searchParams.set('gpx_path', 'not.is.null');
+    const paths: string[] = [];
+    for (let offset = 0; ; offset += 500) {
+      const url = new URL(`${env.supabaseUrl}/rest/v1/rides`);
+      url.searchParams.set('select', 'id,gpx_path');
+      url.searchParams.set('user_id', `eq.${userId}`);
+      url.searchParams.set('gpx_path', 'not.is.null');
+      url.searchParams.set('order', 'id.asc');
+      url.searchParams.set('limit', '500');
+      url.searchParams.set('offset', String(offset));
 
-    const response = await fetch(url, { headers: serviceHeaders(env) });
-    if (!response.ok) return [];
-    const rows = await response.json();
-    if (!Array.isArray(rows)) return [];
-    return rows
-      .map((row) => row?.gpx_path)
-      .filter((path): path is string => typeof path === 'string');
+      const response = await fetch(url, { headers: serviceHeaders(env) });
+      if (!response.ok) throw new Error('cannot list GPX paths');
+      const rows = await response.json();
+      if (!Array.isArray(rows)) throw new Error('invalid GPX path response');
+      for (const row of rows) {
+        const expected = `rides/${userId}/${row?.id}/original.gpx`;
+        if (row?.gpx_path !== expected) {
+          throw new Error('GPX path does not belong to this ride');
+        }
+        paths.push(expected);
+      }
+      if (rows.length < 500) break;
+    }
+    return paths;
   } catch {
-    return [];
+    throw new Error('cannot list GPX paths');
   }
 }
 
-/// Removes objects, in chunks. A missing object is not a failure — the goal
-/// state is "absent" — but a chunk that errors is counted as not removed.
+/// Removes objects in chunks. A missing object is already in the desired
+/// state, but a failed request must keep the account for a later retry.
 async function deleteObjects(
   paths: string[],
   fetch: FetchLike,
@@ -135,22 +154,19 @@ async function deleteObjects(
 
   for (let i = 0; i < paths.length; i += chunk) {
     const slice = paths.slice(i, i + chunk);
-    try {
-      const response = await fetch(
-        `${env.supabaseUrl}/storage/v1/object/rides`,
-        {
-          method: 'DELETE',
-          headers: {
-            ...serviceHeaders(env),
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ prefixes: slice }),
+    const response = await fetch(
+      `${env.supabaseUrl}/storage/v1/object/rides`,
+      {
+        method: 'DELETE',
+        headers: {
+          ...serviceHeaders(env),
+          'Content-Type': 'application/json',
         },
-      );
-      if (response.ok) removed += slice.length;
-    } catch {
-      // Keep going; the rest of the list still has to go.
-    }
+        body: JSON.stringify({ prefixes: slice }),
+      },
+    );
+    if (!response.ok) throw new Error('cannot delete GPX objects');
+    removed += slice.length;
   }
 
   return removed;

@@ -39,6 +39,7 @@
 | 云端只有本人能读写 | `supabase/migrations/20260923000100_rls_and_grants.sql`，`scripts/verify-migrations.sh` / `verify-auth-flow.sh` 断言跨账号读不到 |
 | 后台看不到轨迹、GPX、位置 | `20260924000100_admins.sql` 的 `admin_list_users`，`scripts/verify-migrations.sh` 断言管理员读 `rides` 得到 0 行 |
 | 删除云端数据 / 删除账号真的删 | `supabase/functions/delete-account`，`scripts/verify-account-deletion.sh` |
-| 不开云同步就一个字节都不上传 | `test/sync_gate_test.dart` |
+| 不开云同步就不上传骑行数据 | `test/sync_gate_test.dart`；地图和版本检查的网络请求另见应用内隐私政策 |
+| 版本检查不发送骑行数据 | `core/updates/github_release_checker.dart` 只请求 GitHub Release 元数据 |
 | 诊断日志不上传、只有异常 | `core/diagnostics/diagnostic_log.dart`，`test/diagnostic_log_test.dart` |
 | 位置只在记录时采集 | `core/location/location_service.dart` 的流只在骑行期间订阅（`RideRecorder` 建立、拆解时取消） |

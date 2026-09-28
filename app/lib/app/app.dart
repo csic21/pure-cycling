@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'providers.dart';
 import 'router.dart';
 import 'theme.dart';
+import '../core/updates/update_prompt.dart';
 
 class CyclingApp extends ConsumerStatefulWidget {
   const CyclingApp({super.key});
@@ -18,15 +19,32 @@ class CyclingApp extends ConsumerStatefulWidget {
 class _CyclingAppState extends ConsumerState<CyclingApp>
     with WidgetsBindingObserver {
   late final GoRouter _router = buildRouter();
+  Timer? _updateTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _updateTimer = Timer(const Duration(seconds: 3), () {
+        unawaited(_checkForUpdates());
+      });
+    });
+  }
+
+  Future<void> _checkForUpdates() async {
+    // Let the ride-recovery sheet take priority over an optional update.
+    if (!mounted || ref.read(rideSessionProvider).ride.isRecording) return;
+    final navigatorContext = appNavigatorContext;
+    if (navigatorContext != null && navigatorContext.mounted) {
+      await checkForAppUpdate(navigatorContext, automatic: true);
+    }
   }
 
   @override
   void dispose() {
+    _updateTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

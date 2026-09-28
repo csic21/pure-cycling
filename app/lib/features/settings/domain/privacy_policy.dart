@@ -19,7 +19,7 @@ class PrivacySection {
 }
 
 abstract final class PrivacyPolicy {
-  static const String lastUpdated = '2026-09-25';
+  static const String lastUpdated = '2026-09-28';
 
   static const List<PrivacySection> sections = [
     PrivacySection(
@@ -72,6 +72,12 @@ abstract final class PrivacyPolicy {
           'OpenTopoData（SRTM 30m）用于计算爬升与海拔剖面 ——'
           '这是本 App 唯一一处会把坐标发给非地图供应商的地方，因此由你决定，'
           '也随时可以关掉。',
+    ),
+    PrivacySection(
+      heading: '版本检查',
+      body: '配置公开发布源后，App 启动时每天最多向 GitHub 查询一次最新版本；'
+          '你也可以在「关于」里手动检查。请求会让 GitHub 看到你的网络 IP 和常规请求信息，'
+          '但不包含账号、骑行记录或位置轨迹。离线时检查失败不影响骑行。',
     ),
     PrivacySection(
       heading: '诊断日志',

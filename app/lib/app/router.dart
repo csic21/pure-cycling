@@ -63,8 +63,11 @@ abstract final class AppRoutes {
   static String rideDetailFor(String id) => '/history/$id';
 }
 
-final GlobalKey<NavigatorState> _rootNavigatorKey =
-    GlobalKey<NavigatorState>(debugLabel: 'root');
+final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>(
+  debugLabel: 'root',
+);
+
+BuildContext? get appNavigatorContext => _rootNavigatorKey.currentContext;
 
 GoRouter buildRouter() {
   return GoRouter(
@@ -106,9 +109,8 @@ GoRouter buildRouter() {
                   GoRoute(
                     path: ':id',
                     name: 'routeDetail',
-                    builder: (context, state) => RouteDetailScreen(
-                      routeId: state.pathParameters['id']!,
-                    ),
+                    builder: (context, state) =>
+                        RouteDetailScreen(routeId: state.pathParameters['id']!),
                   ),
                 ],
               ),
@@ -124,9 +126,8 @@ GoRouter buildRouter() {
                   GoRoute(
                     path: ':id',
                     name: 'rideDetail',
-                    builder: (context, state) => RideDetailScreen(
-                      rideId: state.pathParameters['id']!,
-                    ),
+                    builder: (context, state) =>
+                        RideDetailScreen(rideId: state.pathParameters['id']!),
                   ),
                 ],
               ),
