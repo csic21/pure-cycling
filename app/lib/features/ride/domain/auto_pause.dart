@@ -8,11 +8,25 @@
 ///
 /// With hysteresis the pause happens once, at the red light, and the resume
 /// happens once, when the rider pulls away.
+///
+/// ## What the motion sensor is allowed to do here
+///
+/// One thing, in one direction: when the phone's accelerometer confirms the
+/// bike is **still**, the pause no longer has to wait out the full [pauseDelay]
+/// — GPS speed at a standstill is the noisiest number the receiver produces,
+/// and the accelerometer has no such trouble. The seconds saved are seconds
+/// that would otherwise be billed to moving time, which is the denominator of
+/// the average-speed figure.
+///
+/// It may not start, continue or resume a ride. A phone can vibrate in a bag
+/// on a parked bike, so "moving" is weak evidence and is ignored; "still" is
+/// strong evidence, and that is the only one used.
 class AutoPauseController {
   AutoPauseController({
     this.pauseSpeedMps = 2.0 / 3.6,
     this.resumeSpeedMps = 3.0 / 3.6,
     this.pauseDelay = const Duration(seconds: 5),
+    this.motionPauseDelay = const Duration(seconds: 2),
     this.resumeDelay = const Duration(seconds: 2),
     this.enabled = true,
   });
@@ -25,6 +39,14 @@ class AutoPauseController {
   final double resumeSpeedMps;
 
   final Duration pauseDelay;
+
+  /// How long a stop has to last when the accelerometer agrees it is a stop.
+  ///
+  /// Shorter than [pauseDelay] because the confirmation is worth something:
+  /// the speed reading and the sensor are two independent answers, and the
+  /// sensor's is the reliable one at a standstill.
+  final Duration motionPauseDelay;
+
   final Duration resumeDelay;
 
   bool enabled;
@@ -44,7 +66,11 @@ class AutoPauseController {
   ///
   /// [speedMps] is the engine's smoothed speed, not a raw GPS value — a
   /// single bad sample must not be able to pause the ride.
-  bool update(double speedMps, DateTime now) {
+  ///
+  /// [motionDetected] is the accelerometer's verdict, or null when there is
+  /// none. Only `false` changes anything, and it only shortens the wait — see
+  /// the class comment for why the asymmetry is deliberate.
+  bool update(double speedMps, DateTime now, {bool? motionDetected}) {
     if (!enabled) {
       _reset();
       return false;
@@ -63,7 +89,9 @@ class AutoPauseController {
     } else {
       if (speedMps < pauseSpeedMps) {
         _belowSince ??= now;
-        if (now.difference(_belowSince!) >= pauseDelay) {
+        final delay =
+            motionDetected == false ? motionPauseDelay : pauseDelay;
+        if (now.difference(_belowSince!) >= delay) {
           _paused = true;
           _belowSince = null;
         }

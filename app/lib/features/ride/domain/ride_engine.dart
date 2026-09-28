@@ -4,6 +4,7 @@ import '../../../core/location/distance_calculator.dart';
 import '../../../core/location/elevation_tuning.dart';
 import '../../../core/location/gps_filter.dart';
 import '../../../core/location/location_fix.dart';
+import '../../../core/location/motion_detector.dart';
 import '../../../core/utils/geo.dart';
 import '../../../core/utils/ids.dart';
 import '../../sensors/domain/sensor.dart';
@@ -66,6 +67,7 @@ class RideState {
     this.gpsSignalLost = false,
     this.gpsPoor = false,
     this.acceptedPointCount = 0,
+    this.motionDetected,
     this.autoPaused = false,
     this.bearing,
     this.lastPoint,
@@ -87,6 +89,15 @@ class RideState {
   final bool gpsPoor;
 
   final int acceptedPointCount;
+
+  /// Whether the phone's accelerometer reports the bike moving.
+  ///
+  /// Null when there is no motion sensor, when its stream has gone quiet, or
+  /// before it has said anything — and every consumer then falls back to GPS
+  /// speed, which is what they used before this existed. That null state is
+  /// the whole reason this is a `bool?` and not a `bool`: "I do not know" and
+  /// "I know it is not moving" lead to different decisions.
+  final bool? motionDetected;
 
   /// Paused by the auto-pause rule rather than by the rider. The UI
   /// distinguishes the two — one is a notification, the other is a command.
@@ -114,6 +125,7 @@ class RideState {
     bool? gpsSignalLost,
     bool? gpsPoor,
     int? acceptedPointCount,
+    bool? motionDetected,
     bool? autoPaused,
     double? bearing,
     GeoPoint? lastPoint,
@@ -129,6 +141,7 @@ class RideState {
       gpsSignalLost: gpsSignalLost ?? this.gpsSignalLost,
       gpsPoor: gpsPoor ?? this.gpsPoor,
       acceptedPointCount: acceptedPointCount ?? this.acceptedPointCount,
+      motionDetected: motionDetected ?? this.motionDetected,
       autoPaused: autoPaused ?? this.autoPaused,
       bearing: bearing ?? this.bearing,
       lastPoint: lastPoint ?? this.lastPoint,
@@ -307,6 +320,8 @@ class RideEngine {
 
   late AutoPauseController _autoPause;
   final _filter = GpsFilter();
+  final _motion = MotionDetector();
+  DateTime? _motionAt;
   final _distance = DistanceCalculator();
   final _elevation = ElevationAccumulator();
 
@@ -330,7 +345,33 @@ class RideEngine {
   double? _grade;
 
   double _gpsAccuracy = 0;
+  /// The timestamp the *platform* put on the last fix.
+  ///
+  /// The right clock for anything about continuity of position: the gap between
+  /// two fixes, the distance anchor's time, the long-gap bridge. See
+  /// [_lastFixArrivedAt] for why there is a second one.
   DateTime? _lastFixAt;
+
+  /// When the last fix *reached the app*, by the process clock.
+  ///
+  /// Deliberately not the same thing as [_lastFixAt], and the difference is the
+  /// whole reason both exist. "Has the signal gone?" is a question about
+  /// whether updates are still arriving, and the platform's own timestamp
+  /// answers a different one: how old the fix is. The two normally agree, and
+  /// when they do not it is the platform's timestamp that lies —
+  ///
+  /// * **iOS hands over its cached location** the moment a stream opens, and a
+  ///   re-subscription after a background spell therefore delivers a fix
+  ///   stamped minutes ago. Judged by timestamp, that is indistinguishable from
+  ///   silence, and the GPS indicator turns red seconds after the app started
+  ///   listening again.
+  /// * **A provider may replay a fix**, and some ROMs report GNSS time on a
+  ///   clock that does not match the system one. Neither affects whether
+  ///   updates are arriving.
+  ///
+  /// So the rider-facing signal indicator and the speed decay use this clock,
+  /// and everything about position uses the other.
+  DateTime? _lastFixArrivedAt;
   bool _gpsPoor = false;
   LocationFix? _lastAcceptedFix;
 
@@ -453,6 +494,7 @@ class RideEngine {
     if (!_status.isActive) return;
 
     _lastFixAt = fix.timestamp;
+    _lastFixArrivedAt = _now();
     if (fix.hasAccuracy) _gpsAccuracy = fix.accuracy;
 
     final processing = _filter.process(
@@ -474,19 +516,10 @@ class RideEngine {
     // slowly, and the resume rule needs a current speed to fire on.
     final speed = processing.speedMps ?? 0;
 
-    final wasAutoPaused = _autoPause.isAutoPaused;
-    final autoPaused = _autoPause.update(speed, _now());
-    final isAutoPausing = autoPaused && !wasAutoPaused;
-    final isAutoResuming = !autoPaused && wasAutoPaused;
-
-    if (isAutoResuming) {
-      // Same reasoning as manual resume: do not draw a line across the pause.
-      _distance.seed(
-        totalMeters: _distance.totalMeters,
-        anchor: _lastPoint,
-        anchorTime: _lastFixAt,
-      );
-    }
+    final transition = _applyAutoPause(speed, _now());
+    final isAutoPausing = transition.pausing;
+    final isAutoResuming = transition.resuming;
+    final autoPaused = _autoPause.isAutoPaused;
 
     _currentSpeed = speed;
     if (speed > _maxSpeed) _maxSpeed = speed;
@@ -604,6 +637,123 @@ class RideEngine {
     }
   }
 
+  /// How far the compass must move the bearing before it is worth publishing.
+  ///
+  /// The compass reports several times a second and [RideState] is the only
+  /// channel the UI has (spec §30) — re-publishing the whole ride on every
+  /// reading would be a state stream at several hertz to serve one widget.
+  /// Four degrees is finer than the arrow can show and far finer than a
+  /// handlebar-mounted phone can be read to.
+  static const double _compassPublishDegrees = 4.0;
+
+  /// Advances the auto-pause rule and applies the consequences of a change.
+  ///
+  /// Extracted from [onLocation] because two inputs move this now — a fix and
+  /// a motion reading — and the consequence that matters, re-anchoring the
+  /// distance so a pause is not drawn as a straight line, has to happen
+  /// identically for both.
+  ({bool pausing, bool resuming}) _applyAutoPause(
+    double speedMps,
+    DateTime now,
+  ) {
+    final wasAutoPaused = _autoPause.isAutoPaused;
+    final autoPaused = _autoPause.update(
+      speedMps,
+      now,
+      motionDetected: motionDetected,
+    );
+    final pausing = autoPaused && !wasAutoPaused;
+    final resuming = !autoPaused && wasAutoPaused;
+
+    if (resuming) {
+      // Same reasoning as manual resume: do not draw a line across the pause.
+      _distance.seed(
+        totalMeters: _distance.totalMeters,
+        anchor: _lastPoint,
+        anchorTime: _lastFixAt,
+      );
+    }
+
+    return (pausing: pausing, resuming: resuming);
+  }
+
+  /// How long after the last reading the motion sensor's answer stops counting.
+  ///
+  /// Past this the engine says "I do not know" rather than repeating a verdict
+  /// that described a moment several seconds ago — a stopped stream would
+  /// otherwise freeze auto-pause in whatever state it was in when the sensor
+  /// died.
+  static const Duration _motionStaleAfter = Duration(seconds: 3);
+
+  /// The accelerometer's verdict, or null when there is nothing current to go
+  /// on. See [RideState.motionDetected] for what null means downstream.
+  bool? get motionDetected {
+    final at = _motionAt;
+    if (at == null) return null;
+    if (_now().difference(at).abs() > _motionStaleAfter) return null;
+    if (!_motion.hasReading) return null;
+    return _motion.moving;
+  }
+
+  /// Feeds an accelerometer magnitude, in g.
+  ///
+  /// The verdict is deliberately weak, and consumers are expected to treat it
+  /// that way: it may only ever *shorten a stop*, never start, continue or
+  /// resume a ride. A phone can vibrate in a bag on a parked bike — an engine
+  /// idling, a rack rattling — so "moving" is not evidence that the rider is
+  /// riding. "Still" is much stronger evidence, and that is the direction the
+  /// two consumers lean.
+  void onMotionSample(double magnitudeG, {DateTime? at}) {
+    if (!_status.isActive) return;
+    if (!magnitudeG.isFinite) return;
+
+    final stamp = at ?? _now();
+    final wasMoving = _motion.moving;
+    _motion.add(magnitudeG, stamp);
+    _motionAt = stamp;
+
+    // A motion reading can end a stop on its own, which is the point of
+    // feeding it to the rule rather than only to the display.
+    final transition = _applyAutoPause(_currentSpeed, stamp);
+    if (transition.pausing || transition.resuming || _motion.moving != wasMoving) {
+      _publish(force: transition.pausing || transition.resuming);
+    }
+  }
+
+  /// Feeds the phone's compass, in degrees clockwise from north.
+  ///
+  /// Folded in immediately rather than on the next fix, because the case this
+  /// exists for is a rider who has stopped and is turning the bars: at the
+  /// frugal sampling profile the next fix is five seconds away, and when
+  /// auto-paused the receiver has no course to give at all. See
+  /// [GpsFilter.onCompassHeading] for why the reading is anchored to the GPS
+  /// course rather than trusted on its own.
+  void onCompassHeading(
+    double degrees, {
+    DateTime? at,
+    double? accuracyDegrees,
+  }) {
+    if (!_status.isActive) return;
+    if (!degrees.isFinite) return;
+
+    final stamp = at ?? _now();
+    _filter.onCompassHeading(
+      degrees,
+      at: stamp,
+      accuracyDegrees: accuracyDegrees,
+    );
+
+    final previous = _bearing;
+    final heading = _filter.advanceBearingFromCompass(stamp);
+    if (heading == null || heading == previous) return;
+
+    _bearing = heading;
+    if (previous == null ||
+        bearingDelta(previous, heading) >= _compassPublishDegrees) {
+      _publish();
+    }
+  }
+
   /// Feeds a normalized sensor value.
   void onSensorReading(SensorReading reading) {
     if (!_status.isActive) return;
@@ -633,7 +783,7 @@ class RideEngine {
         // mis-calibrated wheel radius cannot corrupt a normal ride.
         final v = reading.speedMps;
         if (v != null && v >= 0 && v < _config.filter.maxSpeedMps) {
-          if (_gpsPoor || _lastFixAt == null) {
+          if (_gpsPoor || _lastFixArrivedAt == null) {
             _currentSpeed = v;
             if (v > _maxSpeed) _maxSpeed = v;
           }
@@ -791,7 +941,11 @@ class RideEngine {
       _moving += dt;
     }
 
-    final fixAge = _lastFixAt == null ? null : now.difference(_lastFixAt!);
+    // The arrival clock, not the platform's: a replayed or cached fix is not
+    // evidence that updates are arriving, and one is not evidence that the
+    // receiver has gone quiet either.
+    final fixAge =
+        _lastFixArrivedAt == null ? null : now.difference(_lastFixArrivedAt!);
     if (fixAge != null && fixAge > _config.gpsSignalLostAfter) {
       // No fix for a while: decay the displayed speed to zero rather than
       // freezing it at the last value, which would look like the app had hung.
@@ -873,10 +1027,12 @@ class RideEngine {
       stats: _buildStats(),
       gpsAccuracyMeters: _gpsAccuracy,
       gpsSignalLost: _status.isActive &&
-          _lastFixAt != null &&
-          _now().difference(_lastFixAt!) > _config.gpsSignalLostAfter,
+          _lastFixArrivedAt != null &&
+          _now().difference(_lastFixArrivedAt!) >
+              _config.gpsSignalLostAfter,
       gpsPoor: _gpsPoor,
       acceptedPointCount: _sequence,
+      motionDetected: motionDetected,
       autoPaused: _autoPause.isAutoPaused,
       bearing: _bearing,
       lastPoint: _lastPoint,
@@ -910,6 +1066,7 @@ class RideEngine {
     _grade = null;
     _gpsAccuracy = 0;
     _lastFixAt = null;
+    _lastFixArrivedAt = null;
     _gpsPoor = false;
     _lastAcceptedFix = null;
     _heartRate = null;
@@ -918,6 +1075,8 @@ class RideEngine {
     _lastPoint = null;
     _firstPoint = null;
     _bearing = null;
+    _motionAt = null;
+    _motion.reset();
     _autoPause.reset();
   }
 

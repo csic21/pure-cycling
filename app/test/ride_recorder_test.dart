@@ -10,6 +10,7 @@ import 'package:cycling_app/features/sensors/domain/sensor.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/fake_diagnostic_log.dart';
 import 'support/test_harness.dart';
 
 /// What happens to a ride after the rider presses 结束.
@@ -245,6 +246,208 @@ void main() {
         location.requestedModes,
         [GpsAccuracyMode.high, GpsAccuracyMode.balanced],
         reason: '档位属于订阅本身，只能重新订阅',
+      );
+
+      await recorder.dispose();
+      await location.dispose();
+    });
+  });
+
+  /// A locked screen must not end the ride.
+  ///
+  /// Worth its own group because the failure it guards against is invisible
+  /// when it happens: the ride screen keeps counting, the engine keeps
+  /// checkpointing, and the only symptom is a trace that quietly stops growing.
+  /// Both halves are about the one operation that is unsafe in the background —
+  /// rebuilding the platform location subscription, which on Android has to
+  /// promote a foreground service, and Android 12+ refuses to do that from the
+  /// background (`stopForeground` resets the app's allowance, so the next
+  /// `startForeground` re-checks the process state).
+  group('a locked screen', () {
+    RideRecorder buildWatched(
+      FakeLocationService location, {
+      FakeDiagnosticLog? diagnostics,
+      Duration staleAfter = const Duration(milliseconds: 40),
+    }) =>
+        RideRecorder(
+          db: database,
+          repository: RideRepository(database),
+          locationService: location,
+          diagnostics: diagnostics,
+          // Seconds in a real ride, milliseconds here: the watchdog is a timer
+          // and waiting a real minute would make this suite unusable.
+          watchdogInterval: const Duration(milliseconds: 20),
+          fixStaleAfter: staleAfter,
+        );
+
+    test('the sampling profile waits for the foreground instead of re-subscribing',
+        () async {
+      final location = FakeLocationService();
+      final policy = SamplingPolicy(chosen: GpsAccuracyMode.high);
+
+      // Parked: the policy had already relaxed when the ride began.
+      final start = DateTime.utc(2026, 9, 25, 6);
+      policy.update(speedMps: 0, at: start);
+      policy.update(speedMps: 0, at: start.add(const Duration(seconds: 31)));
+      expect(policy.isRelaxed, isTrue);
+
+      final recorder = RideRecorder(
+        db: database,
+        repository: RideRepository(database),
+        locationService: location,
+        samplingPolicy: policy,
+        // Not what this test is about, so it cannot fire.
+        watchdogInterval: const Duration(hours: 1),
+        fixStaleAfter: const Duration(hours: 1),
+      );
+
+      await recorder.startRide(const AppSettings());
+      expect(location.requestedModes, [GpsAccuracyMode.batterySaver]);
+
+      // The phone goes in a pocket and the rider sets off. The policy wants the
+      // rider's own profile back — which is a re-subscription.
+      recorder.setForeground(false);
+      recorder.applySettings(
+        const AppSettings(gpsAccuracy: GpsAccuracyMode.balanced),
+      );
+
+      expect(
+        location.requestedModes,
+        [GpsAccuracyMode.batterySaver],
+        reason: '锁屏后重新订阅会降级前台服务，而 Android 12+ 不允许在后台再提升它',
+      );
+
+      recorder.setForeground(true);
+
+      expect(
+        location.requestedModes,
+        [GpsAccuracyMode.batterySaver, GpsAccuracyMode.balanced],
+        reason: '回到前台必须把推迟的档位补上，而不是一直用省电档',
+      );
+
+      await recorder.dispose();
+      await location.dispose();
+    });
+
+    test('a stream that goes quiet in the foreground rebuilds itself', () async {
+      final location = FakeLocationService();
+
+      // The timer is real; the *decision* runs off a clock this test drives.
+      // That is what makes the backoff below assertable — otherwise it would
+      // be a race between a 20 ms timer and the test's own delays.
+      var now = DateTime.utc(2026, 9, 25, 6);
+      final recorder = RideRecorder(
+        db: database,
+        repository: RideRepository(database),
+        locationService: location,
+        now: () => now,
+        watchdogInterval: const Duration(milliseconds: 1),
+        fixStaleAfter: const Duration(seconds: 60),
+      );
+
+      await recorder.startRide(const AppSettings());
+      expect(location.requestedModes.length, 1);
+
+      // The platform stops delivering: an OEM ROM reclaimed the service, the
+      // receiver never came back from a tunnel, a promotion was refused.
+      now = now.add(const Duration(seconds: 60));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      expect(
+        location.requestedModes.length,
+        2,
+        reason: '断流必须自愈，否则骑行会安静地不再记录任何点',
+      );
+
+      // Silence has two causes — a dead stream and a blocked sky — and the
+      // watchdog cannot tell them apart. Rebuilding throws away a live
+      // subscription and restarts the receiver, so the next attempt waits
+      // twice as long. A tunnel must not be punished with a rebuild every
+      // minute.
+      now = now.add(const Duration(seconds: 60));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      expect(
+        location.requestedModes.length,
+        2,
+        reason: '第一次重建没用上，下一次就要等更久',
+      );
+
+      now = now.add(const Duration(seconds: 60));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      expect(
+        location.requestedModes.length,
+        3,
+        reason: '退避翻倍之后应当再试一次，而不是放弃',
+      );
+
+      await recorder.dispose();
+      await location.dispose();
+    });
+
+    test('a live stream is never rebuilt, however slow it is', () async {
+      final location = FakeLocationService();
+
+      var now = DateTime.utc(2026, 9, 25, 6);
+      final recorder = RideRecorder(
+        db: database,
+        repository: RideRepository(database),
+        locationService: location,
+        now: () => now,
+        watchdogInterval: const Duration(milliseconds: 1),
+        fixStaleAfter: const Duration(seconds: 60),
+      );
+
+      await recorder.startRide(const AppSettings());
+      await recorder.beginRecording();
+
+      // Fixes well inside the tolerance: the stationary profile's five-second
+      // interval is the slowest one that ships, and it must never look like a
+      // dead stream.
+      for (var i = 0; i < 4; i++) {
+        now = now.add(const Duration(seconds: 5));
+        location.emitRide(count: 1, speedMps: 0, start: now);
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+
+      expect(
+        location.requestedModes,
+        [GpsAccuracyMode.high],
+        reason: '只要还在收到定位就不能重建，否则会打断一条正常的订阅',
+      );
+
+      await recorder.dispose();
+      await location.dispose();
+    });
+
+    test('a stream that dies while locked is left alone until unlock', () async {
+      final location = FakeLocationService();
+      final log = FakeDiagnosticLog();
+      final recorder = buildWatched(location, diagnostics: log);
+
+      await recorder.startRide(const AppSettings());
+      recorder.setForeground(false);
+
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(
+        location.requestedModes,
+        [GpsAccuracyMode.high],
+        reason: '后台重建订阅正是会失败的那个操作，宁可不做',
+      );
+      expect(
+        log.content,
+        contains('location_stream_stalled'),
+        reason: '后台断流必须留下记录，否则事后没有任何线索',
+      );
+
+      recorder.setForeground(true);
+
+      expect(
+        location.requestedModes.length,
+        greaterThan(1),
+        reason: '解锁后应当立刻自愈，让剩下的骑行继续记录',
       );
 
       await recorder.dispose();

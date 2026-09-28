@@ -77,7 +77,7 @@
 
 - token 只有一处定义。想在页面上写死一个颜色，必须先在主题里加一个语义化名字——
   这个摩擦是有意的。
-- `flutter analyze` + 343 个测试管住 App；`pnpm run typecheck && pnpm run build`
+- `flutter analyze` + 398 个测试管住 App；`pnpm run typecheck && pnpm run build`
   管住后台；两者都在 CI 里。
 - 设计审查的失败项很简单：出现 `#` 开头的颜色字面量（主题文件之外）、阴影、
   渐变、第二种强调色、或者上面第 4 条里的任何一种模板特征。

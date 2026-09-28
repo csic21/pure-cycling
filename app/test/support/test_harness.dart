@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/location/barometer_source.dart';
+import 'package:cycling_app/core/location/compass_source.dart';
+import 'package:cycling_app/core/location/motion_source.dart';
 import 'package:cycling_app/core/location/location_fix.dart';
 import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/core/permissions/notification_permission.dart';
@@ -185,6 +187,8 @@ List<Override> testOverrides({
   AuthRepository? auth,
   NotificationPermission? notifications,
   BarometerSource? barometer,
+  CompassSource? compass,
+  MotionSource? motion,
 }) {
   return [
     databaseProvider.overrideWithValue(database),
@@ -194,6 +198,19 @@ List<Override> testOverrides({
     // unless a test says otherwise.
     barometerSourceProvider.overrideWithValue(
       barometer ?? const NullBarometerSource(),
+    ),
+    // Same for the compass, for the same reason. Note that a channel failure
+    // here is exactly the shape of the locked-screen bug: `onListen` failing
+    // reaches `FlutterError.onError`, never the stream. The test binding
+    // catching it is the harness's own version of the diagnostic log.
+    compassSourceProvider.overrideWithValue(
+      compass ?? const NullCompassSource(),
+    ),
+    // And the accelerometer. Rides in tests have no motion sensor, so every
+    // consumer falls back to the speed rule — which is also the path a phone
+    // without one takes in the field.
+    motionSourceProvider.overrideWithValue(
+      motion ?? const NullMotionSource(),
     ),
     if (location != null) locationServiceProvider.overrideWithValue(location),
     if (auth != null) authRepositoryProvider.overrideWithValue(auth),

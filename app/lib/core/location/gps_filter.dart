@@ -167,6 +167,19 @@ class GpsFilter {
   double? _lastGpsVerticalAccuracy;
   double? _bearing;
 
+  double? _compassHeading;
+  DateTime? _compassAt;
+  double? _compassAccuracy;
+
+  /// `gpsCourse − compass`, sampled while the GPS course was trustworthy.
+  ///
+  /// The whole point is that it is a *difference*: it converts the compass's
+  /// frame into the frame the GPS and the map already use, so the compass can
+  /// stand in for a missing course without either platform having to model
+  /// magnetic declination or the angle the phone is mounted at. See
+  /// [onCompassHeading].
+  double? _compassAnchor;
+
   /// Rolling window of (cumulative distance, altitude) for gradient.
   final ListQueue<({double distance, double altitude})> _gradeWindow =
       ListQueue();
@@ -236,6 +249,64 @@ class GpsFilter {
     }
 
     _verticalAccuracyEstimate = ElevationTuning.barometerAccuracyMeters;
+  }
+
+  /// Feeds a compass reading, in degrees clockwise from north.
+  ///
+  /// ## What this is for
+  ///
+  /// The bearing this filter produces has one hole in it, and it is a large
+  /// one. A derived course needs three metres of travel between two accepted
+  /// fixes — at 1 Hz that is 10.8 km/h — so below that speed, and at every
+  /// junction, and for the first seconds of a ride, there is no new direction
+  /// to report and the last one is carried forward. That is exactly the range
+  /// a bicycle spends its slowest and most navigation-dependent moments in.
+  /// A magnetometer has no such floor: it knows which way the phone points
+  /// while the bike is completely stopped.
+  ///
+  /// ## What it is not for
+  ///
+  /// It never overrides a working GPS course. A compass reads the direction
+  /// the **phone** points; the phone is only the bike when it is mounted the
+  /// way the bike faces, and in a jersey pocket it is noise. So the GPS course
+  /// stays authoritative whenever it exists, and the compass only fills in
+  /// when it does not.
+  ///
+  /// ## Why the reading is anchored rather than trusted
+  ///
+  /// What gets used as a stand-in is `compass + anchor`, where the anchor is
+  /// `last good GPS course − compass at that moment`. Two properties fall out
+  /// of that, and they are the reason for the design rather than a side
+  /// effect:
+  ///
+  /// * **A constant frame offset cancels.** Magnetic declination (several
+  ///   degrees, and it varies by region) and the angle the phone happens to be
+  ///   mounted at are both fixed for the length of a ride, and both are
+  ///   absorbed. Neither platform has to model either one.
+  /// * **The absolute frame stays the GPS one.** The stand-in inherits the
+  ///   frame the GPS established instead of adopting the phone's own idea of
+  ///   where north is.
+  ///
+  /// Before a trustworthy GPS course has been seen there is no anchor, so
+  /// readings are ignored rather than invented — a ride that starts at a
+  /// standstill behaves exactly as it did before a compass existed.
+  ///
+  /// [at] comes from the caller rather than from `DateTime.now()`, for the
+  /// reason [onBarometricAltitude] gives: staleness has to be judged against
+  /// the clock the fixes use.
+  void onCompassHeading(
+    double degrees, {
+    required DateTime at,
+    double? accuracyDegrees,
+  }) {
+    if (!degrees.isFinite) return;
+
+    // A negative accuracy is the platform saying "I cannot quantify this",
+    // which is not the same statement as zero error.
+    _compassAccuracy =
+        (accuracyDegrees != null && accuracyDegrees >= 0) ? accuracyDegrees : null;
+    _compassHeading = normalizeBearing(degrees);
+    _compassAt = at;
   }
 
   /// Validates and smooths one sample.
@@ -395,6 +466,7 @@ class GpsFilter {
       last.longitude,
       fix.latitude,
       fix.longitude,
+      fix.timestamp,
     );
 
     final speed = _smoothSpeed(
@@ -464,6 +536,7 @@ class GpsFilter {
         ? fix.speed
         : 0.0;
     _bearing = fix.heading;
+    _lastFixHadCourse = fix.heading != null;
     _gradeWindow.clear();
     _gradeWindowDistance = 0;
     final altitude = smoothedAltitude;
@@ -657,26 +730,147 @@ class GpsFilter {
   ElevationTuning get tuning =>
       ElevationTuning.forVerticalAccuracy(_verticalAccuracyEstimate);
 
+  /// How old a compass reading may be before it stops standing in for the GPS
+  /// course.
+  ///
+  /// Generous, for the same reason the barometer's window is: a platform
+  /// timestamp is not always the moment the reading was taken, and the compass
+  /// arrives at several hertz, so seconds of slack costs nothing.
+  static const Duration _compassStaleAfter = Duration(seconds: 5);
+
+  /// How far out a reading may be and still be used, in degrees.
+  ///
+  /// Generous, because Android reports a quality band rather than a number and
+  /// maps its `LOW` state to 30. Past this the magnetometer is next to
+  /// something that has taken it over — a steel frame, a magnetic mount, a
+  /// speaker — and it is worth less than the stale GPS course it would
+  /// replace.
+  static const double _maxCompassAccuracyDegrees = 40;
+
+  /// Relates the compass frame to the GPS one, from a course that has just
+  /// arrived.
+  ///
+  /// **Only ever called from a fix that carried a course, and that is
+  /// load-bearing.** The obvious generalisation — also updating it whenever a
+  /// compass reading arrives, using the last course seen — is wrong in a way
+  /// that is easy to miss: while the rider is stopped the last course stays
+  /// recent for seconds, so every reading taken while they turn the bars would
+  /// look like the *frame* had moved and would be folded into the anchor,
+  /// cancelling the very turn the compass exists to show. The anchor describes
+  /// how the phone is mounted, which is a property of the ride, not of the
+  /// moment.
+  ///
+  /// The window on `seenAt` is why the anchor needs a compass that is already
+  /// reporting when the first course arrives — which it is, because both
+  /// streams are subscribed when the ride starts and a course needs a metre or
+  /// two of travel. A compass that appears mid-ride simply anchors at the next
+  /// course.
+  ///
+  /// The result is smoothed, because the GPS course is derived from positions
+  /// and so lags the true heading through a corner. An anchor that chased it
+  /// frame by frame would swing with every turn.
+  void _anchorCompass(double gpsCourse, DateTime at) {
+    final heading = _compassHeading;
+    final seenAt = _compassAt;
+    if (heading == null || seenAt == null) return;
+    if (!_compassTrustworthy) return;
+    if (at.difference(seenAt).abs() > _compassStaleAfter) return;
+
+    final delta = signedTurnAngle(heading, gpsCourse);
+    final previous = _compassAnchor;
+    _compassAnchor = previous == null
+        ? delta
+        : previous + signedTurnAngle(previous, delta) * 0.2;
+  }
+
+  /// The compass expressed as a heading, or null when it cannot be.
+  double? _compassStandIn(DateTime at) {
+    final heading = _compassHeading;
+    final seenAt = _compassAt;
+    final anchor = _compassAnchor;
+    if (heading == null || seenAt == null || anchor == null) return null;
+    if (!_compassTrustworthy) return null;
+    if (at.difference(seenAt).abs() > _compassStaleAfter) return null;
+    return normalizeBearing(heading + anchor);
+  }
+
+  /// Whether the last compass reading was one the platform stood behind.
+  ///
+  /// Null accuracy means the platform declined to quantify it, which is not
+  /// the same as a bad reading and is treated as usable.
+  bool get _compassTrustworthy {
+    final accuracy = _compassAccuracy;
+    return accuracy == null || accuracy <= _maxCompassAccuracyDegrees;
+  }
+
+  /// Whether the last accepted fix carried a usable course of its own.
+  ///
+  /// Both platforms follow `Location.hasBearing()`: the field is simply absent
+  /// when the receiver cannot say, which is the stationary case. So this is
+  /// the platform's own answer to "is there a course right now", not a guess
+  /// reconstructed from speed.
+  bool _lastFixHadCourse = false;
+
   double? _smoothBearing(
     double? reported,
     double fromLat,
     double fromLng,
     double toLat,
     double toLng,
+    DateTime at,
   ) {
     final moved = haversineMeters(fromLat, fromLng, toLat, toLng);
-    final heading = (moved >= 3.0 && reported == null)
+    final gpsCourse = (moved >= 3.0 && reported == null)
         ? initialBearingDegrees(fromLat, fromLng, toLat, toLng)
         : reported;
+    _lastFixHadCourse = gpsCourse != null;
 
-    if (heading == null) return _bearing;
+    if (gpsCourse == null) {
+      // Nothing the receiver can say about direction right now. That is not a
+      // rare state: a derived course needs three metres of travel between
+      // fixes, which at 1 Hz is 10.8 km/h — so on a climb at 8 km/h, at every
+      // junction, and for the first seconds of a ride, the receiver's answer
+      // is stale. The compass is the only real direction available here, and
+      // this is the entire reason it is wired in.
+      final standIn = _compassStandIn(at);
+      if (standIn == null) return _bearing;
+      return _foldBearing(standIn);
+    }
+
+    // The GPS course is the direction of travel, which is what a bike computer
+    // is asked for — so it stays the authority for as long as it exists, and
+    // the compass is only ever a stand-in for its absence.
+    _anchorCompass(gpsCourse, at);
+    return _foldBearing(gpsCourse);
+  }
+
+  /// Smooths [heading] into the published bearing.
+  ///
+  /// Circular, because interpolating naively across 359°/1° would swing the
+  /// arrow the long way round.
+  double _foldBearing(double heading) {
     final previous = _bearing;
     if (previous == null) return _bearing = normalizeBearing(heading);
 
-    // Bearing is circular: interpolating naively across 359°/1° would swing
-    // the arrow the long way round.
     final delta = signedTurnAngle(previous, heading);
     return _bearing = normalizeBearing(previous + delta * 0.3);
+  }
+
+  /// Folds in a compass reading immediately, with no fix to carry it.
+  ///
+  /// The reason this exists as well as [_smoothBearing]: a reading that can
+  /// only take effect on the next fix is a reading that arrives up to five
+  /// seconds late at the frugal profile — and the case the compass is for is
+  /// the rider stopped at a junction, turning the bars, waiting for a direction
+  /// the receiver has no intention of giving.
+  ///
+  /// Does nothing while the receiver is producing a course. At speed the
+  /// compass has nothing to add and would only put noise on a good answer.
+  double? advanceBearingFromCompass(DateTime at) {
+    if (_lastFixHadCourse) return _bearing;
+    final standIn = _compassStandIn(at);
+    if (standIn == null) return _bearing;
+    return _foldBearing(standIn);
   }
 
   /// Resets all state, e.g. after a long pause or a crash resume.
@@ -695,6 +889,15 @@ class GpsFilter {
     // its own first sample.
     _smoothedBaroAltitude = null;
     _lastBaroAt = null;
+
+    // Likewise the compass: the anchor describes how this phone was mounted on
+    // that ride, and carrying it into the next one would apply one mounting
+    // angle to another.
+    _compassHeading = null;
+    _compassAt = null;
+    _compassAccuracy = null;
+    _compassAnchor = null;
+    _lastFixHadCourse = false;
 
     // The accuracy estimate is deliberately *not* cleared: it describes the
     // receiver, which has not changed, and discarding it would re-tighten the

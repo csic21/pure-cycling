@@ -225,6 +225,13 @@ class RideSession {
   /// Persists a checkpoint immediately — called when the app is backgrounded.
   Future<void> checkpointNow() => _recorder.saveCheckpointNow();
 
+  /// Reports whether the app is in the foreground.
+  ///
+  /// Passed through to the recorder, which is the only thing that needs it:
+  /// rebuilding the platform location subscription has to promote Android's
+  /// foreground service, and that is not allowed from the background.
+  void setForeground(bool value) => _recorder.setForeground(value);
+
   void requestMap() => _navigation?.requestMap();
 
   void requestMinimal() => _navigation?.requestMinimal();

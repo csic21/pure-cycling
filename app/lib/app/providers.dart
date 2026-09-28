@@ -15,6 +15,8 @@ import '../core/diagnostics/diagnostic_log.dart';
 import '../core/elevation/elevation_provider.dart';
 import '../core/diagnostics/failure_reporter.dart';
 import '../core/location/barometer_source.dart';
+import '../core/location/compass_source.dart';
+import '../core/location/motion_source.dart';
 import '../core/location/elevation_tuning.dart';
 import '../core/location/location_service.dart';
 import '../core/map/amap/amap_client.dart';
@@ -88,6 +90,42 @@ final barometerSourceProvider = Provider<BarometerSource>((ref) {
 /// probe costs a brief listen on the sensor.
 final barometerAvailabilityProvider = FutureProvider<bool>(
   (ref) => ref.watch(barometerSourceProvider).isAvailable(),
+);
+
+/// The phone's own compass.
+///
+/// Same shape and same reasoning as the barometer above: it is not a paired
+/// device, so the only reason to replace it is a test or a platform without an
+/// implementation.
+final compassSourceProvider = Provider<CompassSource>((ref) {
+  final platform = defaultTargetPlatform;
+  if (platform != TargetPlatform.android && platform != TargetPlatform.iOS) {
+    return const NullCompassSource();
+  }
+  return const PlatformCompassSource();
+});
+
+/// Whether this phone has a compass, for the sensors screen.
+final compassAvailabilityProvider = FutureProvider<bool>(
+  (ref) => ref.watch(compassSourceProvider).isAvailable(),
+);
+
+/// The phone's own accelerometer.
+///
+/// Not a speed sensor and not a substitute for one: it answers "is the bike
+/// moving at all", which is the question GPS speed is worst at and which
+/// auto-pause and the sampling policy both need.
+final motionSourceProvider = Provider<MotionSource>((ref) {
+  final platform = defaultTargetPlatform;
+  if (platform != TargetPlatform.android && platform != TargetPlatform.iOS) {
+    return const NullMotionSource();
+  }
+  return const PlatformMotionSource();
+});
+
+/// Whether this phone has an accelerometer, for the sensors screen.
+final motionAvailabilityProvider = FutureProvider<bool>(
+  (ref) => ref.watch(motionSourceProvider).isAvailable(),
 );
 
 /// The Android 13+ grant behind the recording notification.
@@ -445,6 +483,9 @@ final rideRecorderProvider = Provider<RideRecorder>((ref) {
     db: ref.watch(databaseProvider),
     repository: ref.watch(rideRepositoryProvider),
     locationService: ref.watch(locationServiceProvider),
+    // A stream that dies mid-ride is recorded here rather than vanishing. The
+    // value never changes, so watching it costs nothing.
+    diagnostics: ref.watch(diagnosticLogProvider),
     // The reading half of the sensor feature. Without this the manager pairs
     // devices, shows live values on its own screen, and sends nothing to the
     // ride — which is exactly what the code did before anyone checked.
@@ -452,6 +493,12 @@ final rideRecorderProvider = Provider<RideRecorder>((ref) {
     // The barometer is not a paired device; it is part of the phone, and when
     // it exists the climb stops being an estimate.
     barometer: ref.watch(barometerSourceProvider),
+    // Same reasoning for the compass: it is what gives the direction a real
+    // value below the speed where a derived GPS course exists at all.
+    compass: ref.watch(compassSourceProvider),
+    // And for the accelerometer, which answers the one question GPS speed is
+    // worst at: whether the bike is moving at all.
+    motion: ref.watch(motionSourceProvider),
   );
   ref.onDispose(recorder.dispose);
   return recorder;
@@ -595,6 +642,9 @@ class RideSessionNotifier extends Notifier<RideSessionState> {
   void applySettings(AppSettings settings) => _session.applySettings(settings);
 
   Future<void> checkpointNow() => _session.checkpointNow();
+
+  /// Reports the app's foreground state, for the recorder's benefit.
+  void setForeground(bool value) => _session.setForeground(value);
 }
 
 /// The raw engine state, for widgets that want only the numbers.
@@ -611,6 +661,7 @@ final dashboardDataProvider = Provider<DashboardData>((ref) {
   return DashboardData(
     stats: ride.stats,
     navigation: session.navigation,
+    headingDegrees: ride.bearing,
     gpsAccuracyMeters: ride.gpsAccuracyMeters,
     gpsSignalLost: ride.gpsSignalLost,
     batteryPercent: ref.watch(batteryPercentProvider).valueOrNull,

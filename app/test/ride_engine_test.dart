@@ -684,6 +684,36 @@ void main() {
       });
     });
 
+    test('a fix the receiver stamped long ago is not silence', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(
+          clock: clock,
+          config: const RideEngineConfig(
+            gpsSignalLostAfter: Duration(seconds: 5),
+          ),
+        );
+        ride(advance, clock, engine, 5, 10);
+        expect(engine.state.gpsSignalLost, isFalse);
+
+        // iOS hands its cached location over the moment a stream opens, so a
+        // re-subscription after a background spell delivers a fix stamped
+        // minutes ago. Judged by that stamp the app looks silent; judged by
+        // whether updates are arriving, which is the question a rider is
+        // asking, it plainly is not.
+        engine.onLocation(
+          fixAt(origin, 50, clock().subtract(const Duration(minutes: 5))),
+        );
+
+        expect(
+          engine.state.gpsSignalLost,
+          isFalse,
+          reason: '判据是「还有没有收到定位」，不是「平台认为这个定位有多旧」',
+        );
+
+        engine.dispose();
+      });
+    });
+
     test('reports signal lost when fixes stop, and keeps the clock running',
         () {
       withRide((advance, clock, starve) {

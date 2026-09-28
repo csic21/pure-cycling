@@ -50,8 +50,10 @@ class _DiagnosticsScreenState extends ConsumerState<DiagnosticsScreen> {
             title: '记录了什么',
             rows: const [
               SettingsTile(
-                title: '只记录异常和堆栈',
+                title: '只记录异常和关键事件',
                 subtitle: '应用出错时写下错误信息和调用栈，并标明来源。'
+                    '记录定位中断、以及记录器重建定位订阅这类事件（只有时长，没有坐标），'
+                    '这样「轨迹为什么断了一截」事后有据可查。'
                     '不记录位置、轨迹或任何骑行数据，也不会自动上传到任何地方。',
                 leading: Icon(Icons.description_outlined),
               ),

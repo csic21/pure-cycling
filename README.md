@@ -11,7 +11,7 @@
 V1 功能已经完整实现并通过测试，可以构建运行。
 
 ```text
-343 个测试通过          flutter test
+398 个测试通过          flutter test
 静态分析零问题          flutter analyze
 Android release 构建通过 flutter build apk --release   （R8 开着）
 macOS debug 构建通过    flutter build macos --debug
@@ -33,6 +33,12 @@ V1.5 的语音播报已经实现：转向、偏航、重算和到达会用系统
 V2 的 FIT 导出也已经实现：骑行详情页可以导出 Garmin / Strava 通用的 FIT 文件，
 编码器用手写实现、用独立解析器验证，见 [docs/export.md](docs/export.md)。
 
+码表不再只依赖 GPS。手机自带的三个传感器各补一块 GPS 补不上的空缺 ——
+气压计给爬升的**值**，指南针给低速和停车时的**方向**（GPS 航向在约 11 km/h 以下
+根本不更新），加速度计回答**「车还在动吗」**（自动暂停和采样策略最需要的那个问题）。
+三者都不需要新权限，任何一个缺席都退回改动前的行为，见
+[docs/phone-sensors.md](docs/phone-sensors.md)。码表因此多了一个「方向」字段。
+
 管理后台（Next.js）也搭起来了：账号列表（可按邮箱搜索、分页）、封禁 / 解封、审计日志。
 它**看不到任何骑行内容**——这是产品承诺，有测试锁着。要不要独立后端、
 管理员边界在哪，见 [docs/backend.md](docs/backend.md)。
@@ -46,16 +52,24 @@ V2 的 FIT 导出也已经实现：骑行详情页可以导出 Garmin / Strava �
 
 需求是：**锁屏时继续记录，只有骑手按「结束」或进程被杀才停止。**
 
-三层保障：
+四层保障：
 
 | 层 | 机制 |
 |---|---|
 | 平台保活 | Android `location` 类型前台服务；iOS `UIBackgroundModes: location` |
 | 引擎不依赖前台 | 生命周期事件只写检查点，不改变状态机；时间从墙上时钟差值推算，定时器被系统合并也不丢时间 |
 | 进程被杀 | 5 秒检查点把损失限制在秒级；下次启动提供恢复 |
+| 不去动保活 | 后台绝不重建定位订阅：采样档位切换推迟到回到前台，断流看门狗只在前台重建 |
 
-逻辑层已经用测试锁定（`ride_engine_test.dart` 的 `a locked screen must not interrupt the ride` 分组，
-包括「墙上时钟前进 30 分钟而定时器完全不动」这种最坏情况）。
+第四层是必须的，因为**重建订阅会拆掉前两层**：取消最后一个监听会让 Android 的前台服务
+退出前台并丢掉 wake lock，而后台不允许再把它提升回来（Android 12+ 抛
+`ForegroundServiceStartNotAllowedException`）。后果是骑手锁屏后在红绿灯前停 30 秒，
+骑行就再也记不到一个点 —— 而码表上的数字还在往前走。详见
+[docs/gps.md](docs/gps.md) 的「为什么后台不重新订阅」。
+
+逻辑层已经用测试锁定（`ride_engine_test.dart` 的 `a locked screen must not interrupt the ride`
+分组，包括「墙上时钟前进 30 分钟而定时器完全不动」这种最坏情况；
+`ride_recorder_test.dart` 的 `a locked screen` 分组盯着上面的第四层）。
 平台层需要在真机上验证，清单在 [docs/gps.md](docs/gps.md)。
 
 ---
@@ -161,7 +175,7 @@ cycling-app/
 │   │   ├── features/         ride / dashboard / navigation / routes /
 │   │   │                     history / sensors / settings / auth
 │   │   └── shared/           跨功能组件
-│   └── test/                 343 个测试（单元 + 界面）
+│   └── test/                 398 个测试（单元 + 界面）
 ├── admin/                    管理后台（Next.js，直连 Supabase）
 ├── supabase/                 迁移 + 本地整栈配置（config.toml）
 ├── docs/                     文档
@@ -368,7 +382,7 @@ Authentication → URL Configuration → Redirect URLs 里加上同一个地址�
 然后真实用户规划路线会失败。Supabase 的 `service_role` 泄露更严重——它绕过全部 RLS。
 而且 git 历史是永久的，事后删文件没用。
 
-**而且这个项目不需要。** 343 个测试没有一个需要 key；高德的解析用录制响应测；
+**而且这个项目不需要。** 398 个测试没有一个需要 key；高德的解析用录制响应测；
 没配置 key 时 App 完整可用，只有路线规划退化成直线。
 **高德 Key 根本不进流水线**——它是运行时填在 App 设置里、存在用户手机上的。
 

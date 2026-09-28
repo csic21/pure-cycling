@@ -2,7 +2,8 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
-/// A small append-only record of the things that went wrong.
+/// A small append-only record of the things that went wrong, and of what the
+/// app did about them.
 ///
 /// The app has no crash reporting on purpose — a location trace is the most
 /// sensitive data it holds, and an SDK that ships stack traces to a third
@@ -10,14 +11,20 @@ import 'package:path_provider/path_provider.dart';
 /// rider can hand it over when something misbehaves, and nothing leaves the
 /// device until they do.
 ///
+/// Recoveries belong here as much as failures do. A location stream that dies
+/// mid-ride is *invisible* from the Dart side — see `RideRecorder`'s watchdog —
+/// so the only account of it is the line that says the stream was rebuilt and
+/// how long it had been quiet. Without it, a trace with a hole in it has no
+/// explanation.
+///
 /// Two rules shape every method:
 ///
 /// * **It never throws.** A log that can take down the thing it is describing
 ///   is worse than no log. Every failure — no plugin, no space, a read-only
 ///   volume — degrades to doing nothing.
-/// * **It writes only what it is given.** Exception text and stack traces,
-///   tagged with a source. No positions, no ride data, nothing sampled from
-///   the app's own state.
+/// * **It writes only what it is given.** Exception text, and events reduced
+///   to durations and sources. No positions, no ride data, nothing sampled
+///   from the app's own state.
 class DiagnosticLog {
   DiagnosticLog({this.maxBytes = 256 * 1024, Directory? directory})
       : _directory = directory;

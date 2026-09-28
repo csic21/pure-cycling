@@ -175,7 +175,7 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
                 'ANT+ 设备需要额外的硬件，暂不支持。',
           ),
 
-          const _BarometerSection(),
+          const _PhoneSensorsSection(),
         ],
       ),
     );
@@ -195,42 +195,105 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
   }
 }
 
-/// Whether this phone has a barometer, which decides what the climb figure is
-/// worth.
+/// What the phone itself contributes, which decides what two figures on the
+/// dashboard are worth.
 ///
-/// Not a BLE device and not pairable — it is part of the phone — so it gets its
-/// own section rather than a row under 「支持的设备」. The rider-facing question
-/// it answers is why one phone reports 300 m of climbing on a pass and another
-/// reports 「≈」.
-class _BarometerSection extends ConsumerWidget {
-  const _BarometerSection();
+/// Neither is a BLE device and neither is pairable — they are part of the
+/// phone — so they get their own section rather than a row under
+/// 「支持的设备」. The rider-facing question they answer is why one phone
+/// reports 300 m of climbing on a pass and another reports 「≈」, or why the
+/// direction figure sits still on one phone and follows the bars on another.
+class _PhoneSensorsSection extends ConsumerWidget {
+  const _PhoneSensorsSection();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final availability = ref.watch(barometerAvailabilityProvider);
-    final has = availability.valueOrNull;
+    final hasBarometer = ref.watch(barometerAvailabilityProvider).valueOrNull;
+    final hasCompass = ref.watch(compassAvailabilityProvider).valueOrNull;
+    final hasMotion = ref.watch(motionAvailabilityProvider).valueOrNull;
 
     return SettingsSection(
       title: '手机自带',
       rows: [
         SettingsTile(
           title: '气压计',
-          subtitle: switch (has) {
+          subtitle: switch (hasBarometer) {
             null => '正在检查…',
             true => '有此设备。爬升和坡度按气压变化测量，不会标注为估算',
             false => '这台手机没有气压计。爬升来自 GPS 高度，是估算值 —— '
                 '平路可能虚报十几米，长爬坡几乎无损',
           },
           leading: Icon(
-            has == false ? Icons.speed_outlined : Icons.terrain_outlined,
+            hasBarometer == false
+                ? Icons.speed_outlined
+                : Icons.terrain_outlined,
+          ),
+        ),
+        SettingsTile(
+          title: '指南针',
+          subtitle: switch (hasCompass) {
+            null => '正在检查…',
+            true => '有此设备。GPS 航向在约 11 km/h 以下不会更新，'
+                '此时方向由指南针给出',
+            false => '这台手机没有指南针（或没有磁力计）。'
+                '低速和停车时方向会停在最后一次 GPS 航向',
+          },
+          leading: Icon(
+            hasCompass == false
+                ? Icons.explore_off_outlined
+                : Icons.explore_outlined,
+          ),
+        ),
+        SettingsTile(
+          title: '运动检测',
+          subtitle: switch (hasMotion) {
+            null => '正在检查…',
+            true => '有此设备。停车时用加速度判断车是否真的停下了，'
+                '自动暂停因此更快，采样也更省电',
+            false => '这台手机没有加速度计。自动暂停只按速度判断，'
+                '和以前一样可用',
+          },
+          leading: Icon(
+            hasMotion == false
+                ? Icons.vibration
+                : Icons.directions_bike_outlined,
           ),
         ),
       ],
-      footnote: has == false
-          ? '要拿到测量值需要手机自带气压计（大多数中高端机型有，'
-              '少数没有）。这是硬件差异，不是设置问题。'
-          : null,
+      footnote: _footnote(
+        hasBarometer: hasBarometer,
+        hasCompass: hasCompass,
+        hasMotion: hasMotion,
+      ),
     );
+  }
+
+  /// The section's trailing note, which has to carry three unrelated things.
+  ///
+  /// The compass one is only shown to a rider who actually has one: it is not
+  /// a hardware explanation but a limitation, and finding it out on a ride —
+  /// after trusting the number at a junction — is worse than reading it here.
+  /// No such warning belongs on motion detection, which can only ever make a
+  /// decision the rider already trusts slightly earlier.
+  static String? _footnote({
+    required bool? hasBarometer,
+    required bool? hasCompass,
+    required bool? hasMotion,
+  }) {
+    final notes = <String>[
+      if (hasBarometer == false)
+        '要拿到测量值需要手机自带气压计（大多数中高端机型有，少数没有）。'
+            '这是硬件差异，不是设置问题。',
+      if (hasCompass == true)
+        '指南针读的是手机的朝向：只有手机和车头同向固定时，它才等于行进方向。'
+            '放在口袋里会跟着身体转，这时方向数值不可信；'
+            '钢架、磁吸支架和扬声器也会干扰磁力计。'
+            'GPS 航向可用时一律以 GPS 为准，所以影响只出现在低速和停车时。',
+      if (hasMotion == true)
+        '运动检测只用来确认「车停下来了」。振动不能证明骑手在骑，'
+            '所以它不会让一次暂停提前结束 —— 恢复照旧看速度。',
+    ];
+    return notes.isEmpty ? null : notes.join('\n\n');
   }
 }
 

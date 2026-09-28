@@ -11,6 +11,7 @@ class DashboardData {
   const DashboardData({
     this.stats = RideStats.empty,
     this.navigation,
+    this.headingDegrees,
     this.gpsAccuracyMeters = 0,
     this.gpsSignalLost = false,
     this.batteryPercent,
@@ -19,6 +20,15 @@ class DashboardData {
 
   final RideStats stats;
   final NavigationSnapshot? navigation;
+
+  /// The direction of travel in degrees clockwise from north, when there is
+  /// one to report.
+  ///
+  /// Carried separately from [RideStats] because the compass can move it
+  /// between fixes — at a standstill there may be no fix to derive a course
+  /// from, and that is exactly when a rider looks at it. Null before any
+  /// direction has been established.
+  final double? headingDegrees;
 
   /// Horizontal accuracy of the most recent fix, in meters.
   final double gpsAccuracyMeters;
@@ -33,6 +43,7 @@ class DashboardData {
   DashboardData copyWith({
     RideStats? stats,
     NavigationSnapshot? navigation,
+    double? headingDegrees,
     double? gpsAccuracyMeters,
     bool? gpsSignalLost,
     double? batteryPercent,
@@ -41,6 +52,7 @@ class DashboardData {
     return DashboardData(
       stats: stats ?? this.stats,
       navigation: navigation ?? this.navigation,
+      headingDegrees: headingDegrees ?? this.headingDegrees,
       gpsAccuracyMeters: gpsAccuracyMeters ?? this.gpsAccuracyMeters,
       gpsSignalLost: gpsSignalLost ?? this.gpsSignalLost,
       batteryPercent: batteryPercent ?? this.batteryPercent,
@@ -65,6 +77,7 @@ enum DashboardField {
   elevationGain('elevation_gain', '爬升', heroCapable: true),
   elevationLoss('elevation_loss', '下降'),
   grade('grade', '坡度'),
+  heading('heading', '方向'),
   heartRate('heart_rate', '心率', heroCapable: true, requiresSensor: true),
   avgHeartRate('avg_heart_rate', '平均心率', requiresSensor: true),
   cadence('cadence', '踏频', requiresSensor: true),
@@ -125,6 +138,7 @@ enum DashboardField {
         u.elevation(s.elevationGainMeters, withSign: true),
       DashboardField.elevationLoss => u.elevation(s.elevationLossMeters),
       DashboardField.grade => u.grade(s.gradePercent),
+      DashboardField.heading => _degreesOrDash(d.headingDegrees),
       DashboardField.heartRate => _intOrDash(s.heartRate),
       DashboardField.avgHeartRate => _intOrDash(s.avgHeartRate),
       DashboardField.cadence => _intOrDash(s.cadence),
@@ -150,6 +164,16 @@ enum DashboardField {
           u,
         ),
     };
+  }
+
+  /// Degrees clockwise from north, always three digits.
+  ///
+  /// Zero-padded so the tile keeps its width across the whole circle — the
+  /// same reason every other field has a fixed shape, and the reason the
+  /// rounding wraps before it can print `360`.
+  static String _degreesOrDash(double? degrees) {
+    if (degrees == null || !degrees.isFinite) return '--';
+    return (degrees.round() % 360).toString().padLeft(3, '0');
   }
 
   /// Under a kilometre the rider needs meters; above it, a single decimal is
@@ -183,6 +207,7 @@ enum DashboardField {
       DashboardField.elevationLoss =>
         u.system.elevationSuffix,
       DashboardField.grade => '',
+      DashboardField.heading => '°',
       DashboardField.heartRate || DashboardField.avgHeartRate => 'bpm',
       DashboardField.cadence || DashboardField.avgCadence => 'rpm',
       DashboardField.power || DashboardField.avgPower => 'W',
@@ -215,6 +240,9 @@ enum DashboardField {
     }
     if (requiresRoute && d.navigation == null) return false;
     if (this == DashboardField.battery && d.batteryPercent == null) return false;
+    // No direction has been established yet — the usual case in the first
+    // seconds of a ride, before any fix has said which way the bike is going.
+    if (this == DashboardField.heading && d.headingDegrees == null) return false;
     return true;
   }
 

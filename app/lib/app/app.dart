@@ -65,8 +65,11 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
   /// * **iOS** declares `UIBackgroundModes: location`, so CoreLocation keeps
   ///   delivering fixes with the screen off.
   ///
-  /// This method's only job is to make the ride *recoverable* at the moments
-  /// where the OS might take the process away.
+  /// So this method has two jobs: make the ride *recoverable* at the moments
+  /// where the OS might take the process away, and tell the recorder which side
+  /// of the foreground it is on — because the platform configuration above can
+  /// only be *re-established* while the app is visible. See
+  /// [RideRecorder.setForeground].
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
@@ -86,12 +89,14 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
         // `inactive` is included deliberately: on iOS it fires on a phone
         // call or a pull-down of Control Centre, and a checkpoint there costs
         // one small write.
+        ref.read(rideSessionProvider.notifier).setForeground(false);
         unawaited(ref.read(rideSessionProvider.notifier).checkpointNow());
       case AppLifecycleState.detached:
         // The engine is being detached from the view — on Android this is the
         // last callback before the process may be torn down. One final
         // checkpoint, best effort: whatever does not make it to disk is at
         // most five seconds of trace.
+        ref.read(rideSessionProvider.notifier).setForeground(false);
         unawaited(ref.read(rideSessionProvider.notifier).checkpointNow());
       case AppLifecycleState.resumed:
         // A ride that was interrupted by a phone call should not need the
@@ -99,6 +104,11 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
         // is nothing to restart — but a sync attempt is worth making, since
         // the network may have changed while the app was away, and the
         // recorder will have been writing checkpoints the whole time.
+        //
+        // `setForeground` is what lets the recorder apply the sampling profile
+        // it had to defer, and rebuild a location stream that died while the
+        // screen was off.
+        ref.read(rideSessionProvider.notifier).setForeground(true);
         unawaited(ref.read(syncServiceProvider).syncNow());
     }
   }

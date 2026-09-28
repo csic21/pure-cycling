@@ -36,6 +36,14 @@ class SamplingPolicy {
   /// How long stillness must last before the profile is relaxed.
   static const Duration stationaryFor = Duration(seconds: 30);
 
+  /// How long stillness must last when the accelerometer agrees it is still.
+  ///
+  /// Much shorter, because the two answers are independent and the sensor's is
+  /// the one that does not get confused by a bad fix. Thirty seconds is a
+  /// deliberate wait for evidence that GPS alone cannot give; with the
+  /// evidence in hand there is nothing left to wait for.
+  static const Duration stationaryForWithMotion = Duration(seconds: 10);
+
   /// How long movement must last before it is restored.
   static const Duration movingFor = Duration(seconds: 5);
 
@@ -73,28 +81,54 @@ class SamplingPolicy {
   }
 
   /// Feeds the current smoothed speed. Returns true when the profile changed.
-  bool update({required double speedMps, required DateTime at}) {
+  ///
+  /// [motionDetected] is the accelerometer's verdict, or null when there is
+  /// none — and null leaves the speed rule exactly as it was, which is what
+  /// every device without a motion sensor sees.
+  ///
+  /// When it is present it decides the band the speed deliberately refuses to
+  /// decide, and it decides stillness outright: speed at two kilometres an
+  /// hour is the receiver's least trustworthy number, and "the phone is not
+  /// being shaken at all" is a much better answer to "has the rider stopped".
+  ///
+  /// It still cannot upgrade past what the rider chose, still needs
+  /// [minimumDwell] between changes, and still upgrades fast and downgrades
+  /// slowly — the sensor changes *what* counts as evidence, never the shape of
+  /// the rule.
+  bool update({
+    required double speedMps,
+    required DateTime at,
+    bool? motionDetected,
+  }) {
     final kph = speedMps * 3.6;
 
-    if (kph < stationaryBelowKph) {
+    if (motionDetected == false) {
+      _stationarySince ??= at;
+      _movingSince = null;
+    } else if (motionDetected == true) {
+      _movingSince ??= at;
+      _stationarySince = null;
+    } else if (kph < stationaryBelowKph) {
       _stationarySince ??= at;
       _movingSince = null;
     } else if (kph > movingAboveKph) {
       _movingSince ??= at;
       _stationarySince = null;
     }
-    // Between the two thresholds nothing is decided: that band is a slow
-    // crawl, and treating it as either state would flip the answer at a red
-    // light.
+    // Between the two thresholds nothing is decided by speed: that band is a
+    // slow crawl, and treating it as either state would flip the answer at a
+    // red light. The motion sensor is the one input that can settle it.
 
     final dwellPassed = _lastChangeAt == null ||
         at.difference(_lastChangeAt!) >= minimumDwell;
 
     if (!_relaxed) {
       final stillSince = _stationarySince;
+      final stillFor =
+          motionDetected == false ? stationaryForWithMotion : stationaryFor;
       if (dwellPassed &&
           stillSince != null &&
-          at.difference(stillSince) >= stationaryFor) {
+          at.difference(stillSince) >= stillFor) {
         _relaxed = true;
         _lastChangeAt = at;
         return true;
