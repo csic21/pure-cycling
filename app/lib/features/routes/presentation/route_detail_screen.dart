@@ -11,6 +11,7 @@ import '../../../core/utils/units.dart';
 import '../../../shared/widgets/elevation_chart.dart';
 import '../../../shared/widgets/error_notice.dart';
 import '../../../shared/widgets/route_map.dart';
+import '../../ride/presentation/widgets/location_notice.dart';
 import '../domain/route.dart';
 
 /// A saved route (spec §38).
@@ -182,6 +183,7 @@ class RouteDetailScreen extends ConsumerWidget {
     WidgetRef ref,
     Route route,
   ) async {
+    if (!await prepareRideLocation(context, ref)) return;
     final started = await ref
         .read(rideSessionProvider.notifier)
         .start(route: route);

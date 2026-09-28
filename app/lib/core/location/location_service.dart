@@ -1,7 +1,9 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart' as permissions;
 
 import '../../features/settings/domain/app_settings.dart';
 import 'location_fix.dart';
@@ -15,8 +17,7 @@ enum LocationPermissionStatus {
   serviceDisabled,
   granted;
 
-  bool get isUsable =>
-      this == LocationPermissionStatus.granted;
+  bool get isUsable => this == LocationPermissionStatus.granted;
 
   /// Whether asking again could plausibly change the answer.
   bool get canPrompt =>
@@ -33,10 +34,9 @@ enum LocationPermissionStatus {
 class LocationService {
   /// Checks and, if necessary, requests permission.
   ///
-  /// Requests the *always* (background) grant, and accepts `whileInUse` as a
-  /// working state: a ride recorded with the screen on is still a ride, and
-  /// refusing to start because background access was withheld would be worse
-  /// than starting with a warning.
+  /// Requests foreground access first. When [requestBackground] is true,
+  /// also offers an Always grant after foreground access exists. A ride can
+  /// still start with a foreground-only grant.
   Future<LocationPermissionStatus> ensurePermission({
     bool requestBackground = true,
   }) async {
@@ -46,7 +46,8 @@ class LocationService {
 
     var permission = await Geolocator.checkPermission();
 
-    if (permission == LocationPermission.denied) {
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.unableToDetermine) {
       permission = await Geolocator.requestPermission();
     }
 
@@ -56,14 +57,24 @@ class LocationService {
     if (permission == LocationPermission.deniedForever) {
       return LocationPermissionStatus.deniedForever;
     }
+    if (permission == LocationPermission.unableToDetermine) {
+      return LocationPermissionStatus.notDetermined;
+    }
 
-    // Android 10+ and iOS 13+ split foreground from background. Asking for
-    // the upgrade only after foreground is granted is the sequence both
-    // platforms expect.
+    // Android 10+ and iOS split foreground from background. The second step
+    // must request only background access on Android; Geolocator includes the
+    // foreground permissions again. On iOS, Geolocator returns immediately
+    // once When In Use is granted. Permission Handler covers both cases.
     if (requestBackground && permission == LocationPermission.whileInUse) {
-      final upgraded = await Geolocator.requestPermission();
-      if (upgraded == LocationPermission.always) {
-        return LocationPermissionStatus.granted;
+      try {
+        if (defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.android) {
+          await permissions.Permission.locationAlways.request();
+        } else {
+          await Geolocator.requestPermission();
+        }
+      } catch (_) {
+        // Background access is optional; foreground recording can proceed.
       }
     }
 
@@ -76,8 +87,7 @@ class LocationService {
     }
     return switch (await Geolocator.checkPermission()) {
       LocationPermission.always ||
-      LocationPermission.whileInUse =>
-        LocationPermissionStatus.granted,
+      LocationPermission.whileInUse => LocationPermissionStatus.granted,
       LocationPermission.deniedForever =>
         LocationPermissionStatus.deniedForever,
       LocationPermission.denied => LocationPermissionStatus.denied,
@@ -222,29 +232,29 @@ class LocationService {
       TargetPlatform.android => android,
       TargetPlatform.iOS || TargetPlatform.macOS => apple,
       _ => LocationSettings(
-          accuracy: switch (mode) {
-            GpsAccuracyMode.high => LocationAccuracy.best,
-            GpsAccuracyMode.balanced => LocationAccuracy.high,
-            GpsAccuracyMode.batterySaver => LocationAccuracy.medium,
-          },
-          distanceFilter: 0,
-        ),
+        accuracy: switch (mode) {
+          GpsAccuracyMode.high => LocationAccuracy.best,
+          GpsAccuracyMode.balanced => LocationAccuracy.high,
+          GpsAccuracyMode.batterySaver => LocationAccuracy.medium,
+        },
+        distanceFilter: 0,
+      ),
     };
   }
 
   static LocationFix _toFix(Position p) => LocationFix(
-        latitude: p.latitude,
-        longitude: p.longitude,
-        timestamp: p.timestamp.toUtc(),
-        altitude: p.altitude,
-        altitudeAccuracy: p.altitudeAccuracy,
-        accuracy: p.accuracy,
-        speed: p.speed,
-        speedAccuracy: p.speedAccuracy,
-        heading: p.heading,
-        headingAccuracy: p.headingAccuracy,
-        isMocked: p.isMocked,
-      );
+    latitude: p.latitude,
+    longitude: p.longitude,
+    timestamp: p.timestamp.toUtc(),
+    altitude: p.altitude,
+    altitudeAccuracy: p.altitudeAccuracy,
+    accuracy: p.accuracy,
+    speed: p.speed,
+    speedAccuracy: p.speedAccuracy,
+    heading: p.heading,
+    headingAccuracy: p.headingAccuracy,
+    isMocked: p.isMocked,
+  );
 
   /// Distance between two fixes, for the pre-ride sanity check.
   static double distanceBetween(LocationFix a, LocationFix b) =>

@@ -54,6 +54,7 @@ class FakeLocationService extends LocationService {
   final _controller = StreamController<LocationFix>.broadcast();
   bool streamOpened = false;
   bool appSettingsOpened = false;
+  final List<bool> permissionRequests = [];
 
   /// Every sampling profile the app has asked for, oldest first.
   ///
@@ -103,8 +104,10 @@ class FakeLocationService extends LocationService {
   @override
   Future<LocationPermissionStatus> ensurePermission({
     bool requestBackground = true,
-  }) async =>
-      permission;
+  }) async {
+    permissionRequests.add(requestBackground);
+    return permission;
+  }
 
   @override
   Future<LocationPermissionStatus> checkPermission() async => permission;
@@ -116,8 +119,7 @@ class FakeLocationService extends LocationService {
   Future<LocationFix?> currentFix({
     Duration timeout = const Duration(seconds: 12),
     GpsAccuracyMode mode = GpsAccuracyMode.high,
-  }) async =>
-      null;
+  }) async => null;
 
   @override
   Stream<LocationFix> fixes({
@@ -209,16 +211,12 @@ List<Override> testOverrides({
     // And the accelerometer. Rides in tests have no motion sensor, so every
     // consumer falls back to the speed rule — which is also the path a phone
     // without one takes in the field.
-    motionSourceProvider.overrideWithValue(
-      motion ?? const NullMotionSource(),
-    ),
+    motionSourceProvider.overrideWithValue(motion ?? const NullMotionSource()),
     if (location != null) locationServiceProvider.overrideWithValue(location),
     if (auth != null) authRepositoryProvider.overrideWithValue(auth),
     if (notifications != null)
       notificationPermissionProvider.overrideWithValue(notifications),
-    syncReportProvider.overrideWith(
-      (ref) => const Stream<SyncReport>.empty(),
-    ),
+    syncReportProvider.overrideWith((ref) => const Stream<SyncReport>.empty()),
   ];
 }
 
@@ -269,7 +267,8 @@ void useTallSurface(WidgetTester tester) {
 }
 
 /// A fresh in-memory database. The caller owns closing it.
-AppDatabase openTestDatabase() => AppDatabase.forTesting(NativeDatabase.memory());
+AppDatabase openTestDatabase() =>
+    AppDatabase.forTesting(NativeDatabase.memory());
 
 /// Marks the one-time notices as already shown on this device.
 ///
@@ -279,19 +278,17 @@ AppDatabase openTestDatabase() => AppDatabase.forTesting(NativeDatabase.memory()
 /// those notices say so here, instead of tapping through them in every case.
 Future<void> markFirstRunNoticesSeen(AppDatabase database) async {
   await markLocationDisclosureSeen(database);
-  await SettingsRepository(database).setString(
-    LocationNoticeKeys.notificationAsked,
-    LocationNoticeKeys.seen,
-  );
+  await SettingsRepository(
+    database,
+  ).setString(LocationNoticeKeys.notificationAsked, LocationNoticeKeys.seen);
 }
 
 /// Marks only the location disclosure — for tests that are about one of the
 /// other first-run notices and need the disclosure out of the way.
 Future<void> markLocationDisclosureSeen(AppDatabase database) =>
-    SettingsRepository(database).setString(
-      LocationNoticeKeys.disclosureSeen,
-      LocationNoticeKeys.seen,
-    );
+    SettingsRepository(
+      database,
+    ).setString(LocationNoticeKeys.disclosureSeen, LocationNoticeKeys.seen);
 
 /// Tears a widget test down in the order the binding requires.
 ///

@@ -76,21 +76,22 @@ class RideRecorder {
     NowProvider? now,
     Duration watchdogInterval = _defaultWatchdogInterval,
     Duration fixStaleAfter = _defaultFixStaleAfter,
-  })  : _db = db,
-        _repository = repository,
-        _location = locationService,
-        _activeRideDao = activeRideDao ?? db.activeRideDao,
-        _sensorReadings = sensorReadings,
-        _barometer = barometer,
-        _compass = compass,
-        _motion = motion,
-        _sampling = samplingPolicy ??
-            SamplingPolicy(chosen: const AppSettings().gpsAccuracy),
-        _diagnostics = diagnostics,
-        _now = now ?? (() => DateTime.now().toUtc()),
-        _watchdogInterval = watchdogInterval,
-        _fixStaleAfter = fixStaleAfter,
-        _stallTolerance = fixStaleAfter;
+  }) : _db = db,
+       _repository = repository,
+       _location = locationService,
+       _activeRideDao = activeRideDao ?? db.activeRideDao,
+       _sensorReadings = sensorReadings,
+       _barometer = barometer,
+       _compass = compass,
+       _motion = motion,
+       _sampling =
+           samplingPolicy ??
+           SamplingPolicy(chosen: const AppSettings().gpsAccuracy),
+       _diagnostics = diagnostics,
+       _now = now ?? (() => DateTime.now().toUtc()),
+       _watchdogInterval = watchdogInterval,
+       _fixStaleAfter = fixStaleAfter,
+       _stallTolerance = fixStaleAfter;
 
   final AppDatabase _db;
   final RideRepository _repository;
@@ -224,7 +225,9 @@ class RideRecorder {
   Future<bool> startRide(AppSettings settings) async {
     _sampling.setChosen(settings.gpsAccuracy);
 
-    final permission = await _location.ensurePermission();
+    final permission = await _location.ensurePermission(
+      requestBackground: false,
+    );
     lastPermissionStatus = permission;
     if (!permission.isUsable) return false;
 
@@ -267,10 +270,15 @@ class RideRecorder {
   }
 
   /// Restores an interrupted ride from its checkpoint (spec §42).
-  Future<bool> resumeRide(RideCheckpoint checkpoint, AppSettings settings) async {
+  Future<bool> resumeRide(
+    RideCheckpoint checkpoint,
+    AppSettings settings,
+  ) async {
     _sampling.setChosen(settings.gpsAccuracy);
 
-    final permission = await _location.ensurePermission();
+    final permission = await _location.ensurePermission(
+      requestBackground: false,
+    );
     lastPermissionStatus = permission;
     if (!permission.isUsable) return false;
 
@@ -580,9 +588,7 @@ class RideRecorder {
     unawaited(
       _diagnostics?.error(
         'location_stream_rebuilt',
-        Exception(
-          '${_stallTolerance.inSeconds} 秒没有收到定位，重建定位订阅',
-        ),
+        Exception('${_stallTolerance.inSeconds} 秒没有收到定位，重建定位订阅'),
         null,
       ),
     );
@@ -691,10 +697,8 @@ class RideRecorder {
 
     _motionSub?.cancel();
     _motionSub = source.samples().listen(
-      (sample) => _engine?.onMotionSample(
-        sample.magnitudeG,
-        at: sample.timestamp,
-      ),
+      (sample) =>
+          _engine?.onMotionSample(sample.magnitudeG, at: sample.timestamp),
       onError: (_) {},
       cancelOnError: false,
     );
@@ -780,16 +784,16 @@ class RideRecorder {
   }
 
   RideEngineConfig _engineConfig(AppSettings settings) => RideEngineConfig(
-        filter: GpsFilterConfig(
-          maxAccuracyMeters: settings.maxAcceptableAccuracyMeters,
-          longGapSeconds: 120,
-          gradeWindowMeters: 150,
-        ),
-        autoPauseEnabled: settings.autoPause,
-        autoPauseSpeedKph: settings.autoPauseSpeedThresholdKph,
-        autoPauseDelay: Duration(seconds: settings.autoPauseDelaySeconds),
-        autoResumeSpeedKph: settings.autoResumeSpeedThresholdKph,
-        autoResumeDelay: Duration(seconds: settings.autoResumeDelaySeconds),
-        gpsSignalLostAfter: Duration(seconds: settings.gpsSignalLostSeconds),
-      );
+    filter: GpsFilterConfig(
+      maxAccuracyMeters: settings.maxAcceptableAccuracyMeters,
+      longGapSeconds: 120,
+      gradeWindowMeters: 150,
+    ),
+    autoPauseEnabled: settings.autoPause,
+    autoPauseSpeedKph: settings.autoPauseSpeedThresholdKph,
+    autoPauseDelay: Duration(seconds: settings.autoPauseDelaySeconds),
+    autoResumeSpeedKph: settings.autoResumeSpeedThresholdKph,
+    autoResumeDelay: Duration(seconds: settings.autoResumeDelaySeconds),
+    gpsSignalLostAfter: Duration(seconds: settings.gpsSignalLostSeconds),
+  );
 }

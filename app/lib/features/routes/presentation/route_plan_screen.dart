@@ -12,6 +12,7 @@ import '../../../core/sync/functions_config.dart';
 import '../../../core/utils/geo.dart';
 import '../../../core/utils/units.dart';
 import '../../../shared/widgets/route_map.dart';
+import '../../ride/presentation/widgets/location_notice.dart';
 import '../domain/route.dart';
 
 /// Route planning (spec §9).
@@ -67,9 +68,21 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
   Future<void> _resolveOrigin({bool force = false}) async {
     final epoch = ++_originEpoch;
     setState(() => _resolvingOrigin = true);
-    final fix = await ref
-        .read(locationServiceProvider)
-        .currentFix(timeout: const Duration(seconds: 8));
+    final location = ref.read(locationServiceProvider);
+    // Opening route planning never triggers a system prompt. The explicit
+    // "更新当前位置" action does, when the rider actually asks for a fix.
+    final permission = force
+        ? await location.ensurePermission(requestBackground: false)
+        : await location.checkPermission();
+    if (!mounted || epoch != _originEpoch) return;
+    if (!permission.isUsable && force) {
+      setState(() => _resolvingOrigin = false);
+      await showLocationPermissionProblem(context, location, permission);
+      return;
+    }
+    final fix = permission.isUsable
+        ? await location.currentFix(timeout: const Duration(seconds: 8))
+        : null;
     if (!mounted || epoch != _originEpoch) return;
 
     if (fix != null) {
@@ -254,6 +267,7 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
     final named = route.copyWith(
       name: defaultName ? '前往 ${_destination?.name ?? '终点'}' : route.name,
     );
+    if (!await prepareRideLocation(context, ref)) return;
     await ref.read(routeRepositoryProvider).saveRoute(named);
     if (!mounted) return;
 

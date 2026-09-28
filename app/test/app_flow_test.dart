@@ -2,6 +2,7 @@ import 'package:cycling_app/app/app.dart';
 import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/elevation/elevation_provider.dart';
+import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/core/utils/geo.dart';
 import 'package:cycling_app/features/dashboard/presentation/dashboard_view.dart';
 import 'package:cycling_app/features/routes/domain/route.dart';
@@ -613,6 +614,24 @@ void main() {
   });
 
   group('route planning', () {
+    testWidgets('opening the planner does not prompt; current location does', (
+      tester,
+    ) async {
+      final location = await pumpApp(tester);
+      location.permission = LocationPermissionStatus.denied;
+
+      await tester.tap(find.text('路线规划'));
+      await settle(tester);
+      expect(location.permissionRequests, isEmpty);
+
+      await tester.tap(find.byTooltip('更新当前位置'));
+      await settle(tester);
+      expect(location.permissionRequests, [false]);
+      expect(find.text('需要定位权限'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+
     testWidgets('the planner fits a phone-height viewport', (tester) async {
       await pumpApp(tester);
       tester.view.physicalSize = const Size(1200, 2550);

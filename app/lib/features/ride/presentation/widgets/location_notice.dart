@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/theme.dart';
+import '../../../../app/providers.dart';
+import '../../../../core/location/location_service.dart';
 
 /// Device-local flags for the two permission notices.
 ///
@@ -49,19 +52,22 @@ Future<bool> showLocationDisclosure(BuildContext context) async {
             const SizedBox(height: 14),
             const _Point(
               icon: Icons.lock_clock,
-              text: '锁屏后还要继续记录。骑行时手机在口袋里，'
+              text:
+                  '锁屏后还要继续记录。骑行时手机在口袋里，'
                   '系统只允许「始终允许」的应用在后台持续获取位置。',
             ),
             const SizedBox(height: 12),
             const _Point(
               icon: Icons.phone_android,
-              text: '只在使用这个 App 记录骑行时获取位置，'
+              text:
+                  '只在使用这个 App 记录骑行时获取位置，'
                   '不会在其它时间读取。',
             ),
             const SizedBox(height: 12),
             const _Point(
               icon: Icons.shield_outlined,
-              text: '轨迹默认只保存在本机。打开云同步后才会上传到你的账号，'
+              text:
+                  '轨迹默认只保存在本机。打开云同步后才会上传到你的账号，'
                   '没有任何人能公开看到。',
             ),
             const SizedBox(height: 12),
@@ -93,8 +99,8 @@ Future<bool> showLocationDisclosure(BuildContext context) async {
 ///
 /// Shown once, and never as a blocker — the rider can keep riding with the
 /// screen on, which is a legitimate way to use the app.
-Future<void> showBackgroundLocationHint(BuildContext context) async {
-  await showModalBottomSheet<void>(
+Future<bool> showBackgroundLocationHint(BuildContext context) async {
+  final request = await showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
     builder: (sheetContext) => SafeArea(
@@ -109,17 +115,112 @@ Future<void> showBackgroundLocationHint(BuildContext context) async {
             const Text(
               '这台手机目前只允许「使用 App 期间」定位。屏幕熄灭后系统可能不再'
               '提供位置，记录会停止 —— 而骑手通常是骑完才发现的。\n\n'
-              '在系统设置里把定位权限改成「始终允许」，锁屏记录就不再受影响。',
+              '开启「始终允许」定位，锁屏时才能继续记录轨迹。你也可以暂时只在屏幕亮着时骑行。',
               style: AppText.caption,
             ),
             const SizedBox(height: 20),
             FilledButton(
-              onPressed: () => Navigator.pop(sheetContext),
-              child: const Text('知道了'),
+              onPressed: () => Navigator.pop(sheetContext, true),
+              child: const Text('开启始终允许'),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: () => Navigator.pop(sheetContext, false),
+              child: const Text('暂时继续'),
             ),
           ],
         ),
       ),
+    ),
+  );
+  return request ?? false;
+}
+
+/// Requests location at the point where the rider starts recording. Route
+/// navigation and a free ride use the same flow, before creating a session.
+Future<bool> prepareRideLocation(BuildContext context, WidgetRef ref) async {
+  final store = ref.read(settingsRepositoryProvider);
+  final location = ref.read(locationServiceProvider);
+
+  if (await store.getString(LocationNoticeKeys.disclosureSeen) !=
+      LocationNoticeKeys.seen) {
+    if (!context.mounted) return false;
+    if (!await showLocationDisclosure(context) || !context.mounted) {
+      return false;
+    }
+    await store.setString(
+      LocationNoticeKeys.disclosureSeen,
+      LocationNoticeKeys.seen,
+    );
+  }
+
+  // The first system prompt asks for foreground access only. In particular,
+  // Android requires this grant before background location can be requested.
+  final permission = await location.ensurePermission(requestBackground: false);
+  if (!context.mounted) return false;
+  if (!permission.isUsable) {
+    await showLocationPermissionProblem(context, location, permission);
+    return false;
+  }
+
+  if (!await location.hasBackgroundAccess() &&
+      await store.getString(LocationNoticeKeys.backgroundHintSeen) !=
+          LocationNoticeKeys.seen) {
+    if (!context.mounted) return false;
+    final request = await showBackgroundLocationHint(context);
+    await store.setString(
+      LocationNoticeKeys.backgroundHintSeen,
+      LocationNoticeKeys.seen,
+    );
+    if (request) {
+      // A foreground-only choice is still enough to start a ride. The hint
+      // explains the screen-off limitation before the rider makes that choice.
+      await location.ensurePermission(requestBackground: true);
+    }
+  }
+
+  return context.mounted;
+}
+
+Future<void> showLocationPermissionProblem(
+  BuildContext context,
+  LocationService location,
+  LocationPermissionStatus permission,
+) async {
+  final (title, message, actionLabel, action) = switch (permission) {
+    LocationPermissionStatus.serviceDisabled => (
+      '系统定位服务未开启',
+      '请打开系统设置中的「定位服务」后重试。',
+      '打开设置',
+      location.openLocationSettings,
+    ),
+    LocationPermissionStatus.deniedForever => (
+      '定位权限已被拒绝',
+      '请在系统设置中允许「纯粹骑行」使用定位，然后重试。',
+      '打开设置',
+      location.openAppSettings,
+    ),
+    _ => ('需要定位权限', '记录轨迹或使用当前位置需要定位权限。请允许定位后重试。', '知道了', null),
+  };
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        if (action != null)
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('稍后'),
+          ),
+        FilledButton(
+          onPressed: () {
+            Navigator.of(dialogContext).pop();
+            if (action != null) action();
+          },
+          child: Text(actionLabel),
+        ),
+      ],
     ),
   );
 }
@@ -148,13 +249,15 @@ Future<bool> showNotificationNotice(BuildContext context) async {
             const SizedBox(height: 14),
             const _Point(
               icon: Icons.notifications_none,
-              text: '骑行过程中通知栏会常驻一条「正在记录骑行」。'
+              text:
+                  '骑行过程中通知栏会常驻一条「正在记录骑行」。'
                   '锁屏之后，它是你确认记录还在继续的唯一方式。',
             ),
             const SizedBox(height: 12),
             const _Point(
               icon: Icons.battery_charging_full,
-              text: '不影响记录本身。即使不允许，骑行照常保存，'
+              text:
+                  '不影响记录本身。即使不允许，骑行照常保存，'
                   '只是锁屏后看不到这条状态。',
             ),
             const SizedBox(height: 22),

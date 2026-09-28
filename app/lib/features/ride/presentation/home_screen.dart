@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../app/router.dart';
 import '../../../app/theme.dart';
-import '../../../core/location/location_service.dart';
 import '../../../core/utils/units.dart';
 import '../../history/presentation/widgets/ride_summary_row.dart';
 import '../../settings/data/settings_repository.dart';
@@ -68,9 +67,7 @@ class HomeScreen extends ConsumerWidget {
               ),
               const Spacer(flex: 3),
               if (recording) ...[
-                _RecordingBanner(
-                  onTap: () => context.push(AppRoutes.ride),
-                ),
+                _RecordingBanner(onTap: () => context.push(AppRoutes.ride)),
                 const SizedBox(height: 14),
               ],
               _StartRideButton(
@@ -121,66 +118,10 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
-  /// Starts a ride, checking location before leaving the screen.
-  ///
-  /// The permission check happens here rather than on the ride screen so a
-  /// refusal is explained *before* the rider has mounted their phone and is
-  /// waiting for something to happen.
-  ///
-  /// It also runs the disclosure that has to come before the system dialog —
-  /// see [showLocationDisclosure] — and, once, the warning that a
-  /// foreground-only grant will not survive the screen going off.
+  /// Requests location before opening the recording screen.
   Future<void> _startRide(BuildContext context, WidgetRef ref) async {
     final store = ref.read(settingsRepositoryProvider);
-
-    if (await store.getString(LocationNoticeKeys.disclosureSeen) !=
-        LocationNoticeKeys.seen) {
-      if (!context.mounted) return;
-      final agreed = await showLocationDisclosure(context);
-      if (!agreed || !context.mounted) return;
-      await store.setString(
-        LocationNoticeKeys.disclosureSeen,
-        LocationNoticeKeys.seen,
-      );
-    }
-
-    final permission = await ref.read(locationServiceProvider).checkPermission();
-
-    if (permission == LocationPermissionStatus.serviceDisabled) {
-      if (!context.mounted) return;
-      await _showLocationProblem(
-        context,
-        title: '系统定位服务未开启',
-        message: '骑行记录需要定位权限。请打开系统设置中的「定位服务」后重试。',
-        actionLabel: '打开设置',
-        onAction: () => ref.read(locationServiceProvider).openLocationSettings(),
-      );
-      return;
-    }
-
-    if (permission == LocationPermissionStatus.deniedForever) {
-      if (!context.mounted) return;
-      await _showLocationProblem(
-        context,
-        title: '定位权限已被拒绝',
-        message: '请在系统设置中允许「纯粹骑行」使用定位，然后回到这里重新开始。',
-        actionLabel: '打开设置',
-        onAction: () => ref.read(locationServiceProvider).openAppSettings(),
-      );
-      return;
-    }
-
-    if (await ref.read(locationServiceProvider).hasBackgroundAccess() == false &&
-        await store.getString(LocationNoticeKeys.backgroundHintSeen) !=
-            LocationNoticeKeys.seen) {
-      if (!context.mounted) return;
-      await showBackgroundLocationHint(context);
-      await store.setString(
-        LocationNoticeKeys.backgroundHintSeen,
-        LocationNoticeKeys.seen,
-      );
-      if (!context.mounted) return;
-    }
+    if (!await prepareRideLocation(context, ref)) return;
 
     if (!context.mounted) return;
     await _askAboutNotifications(context, ref, store);
@@ -217,35 +158,6 @@ class HomeScreen extends ConsumerWidget {
       LocationNoticeKeys.seen,
     );
     if (agreed) await notifications.request();
-  }
-
-  static Future<void> _showLocationProblem(
-    BuildContext context, {
-    required String title,
-    required String message,
-    required String actionLabel,
-    required Future<bool> Function() onAction,
-  }) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('稍后'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              onAction();
-            },
-            child: Text(actionLabel),
-          ),
-        ],
-      ),
-    );
   }
 }
 
@@ -323,11 +235,13 @@ class _RecordingBanner extends StatelessWidget {
           ),
           child: const Row(
             children: [
-              Icon(Icons.fiber_manual_record, size: 14, color: AppColors.accent),
-              SizedBox(width: 10),
-              Expanded(
-                child: Text('正在记录', style: AppText.body),
+              Icon(
+                Icons.fiber_manual_record,
+                size: 14,
+                color: AppColors.accent,
               ),
+              SizedBox(width: 10),
+              Expanded(child: Text('正在记录', style: AppText.body)),
               Text('回到码表', style: AppText.caption),
             ],
           ),
@@ -362,7 +276,9 @@ class _StartRideButton extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              recording ? Icons.arrow_forward_rounded : Icons.play_arrow_rounded,
+              recording
+                  ? Icons.arrow_forward_rounded
+                  : Icons.play_arrow_rounded,
               size: 30,
               color: Colors.black,
             ),

@@ -52,6 +52,10 @@ post_install do |installer|
     # is deliberate: that helper may write the same key.
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+      if target.name == 'permission_handler_apple'
+        definitions = config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] || ['$(inherited)']
+        config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = Array(definitions) + ['PERMISSION_LOCATION=1']
+      end
     end
   end
 end

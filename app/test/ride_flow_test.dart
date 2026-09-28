@@ -160,7 +160,7 @@ void main() {
     testWidgets('the disclosure comes before the system dialog, and is kept', (
       tester,
     ) async {
-      await pumpFreshApp(
+      final location = await pumpFreshApp(
         tester,
         notifications: FakeNotificationPermission(granted: true),
       );
@@ -178,6 +178,7 @@ void main() {
       await settle(tester);
 
       expect(find.text('准备开始'), findsOneWidget);
+      expect(location.permissionRequests, [false, false]);
       expect(
         await storedFlag(LocationNoticeKeys.disclosureSeen),
         LocationNoticeKeys.seen,
@@ -209,7 +210,7 @@ void main() {
 
     testWidgets('a foreground-only grant is called out once', (tester) async {
       await markLocationDisclosureSeen(database);
-      await pumpFreshApp(
+      final location = await pumpFreshApp(
         tester,
         backgroundAccess: false,
         notifications: FakeNotificationPermission(granted: true),
@@ -223,10 +224,12 @@ void main() {
       expect(find.text('锁屏后记录可能中断'), findsOneWidget);
       expect(find.textContaining('始终允许'), findsWidgets);
 
-      await tester.tap(find.text('知道了'));
+      expect(location.permissionRequests, [false]);
+      await tester.tap(find.text('暂时继续'));
       await settle(tester);
 
       expect(find.text('准备开始'), findsOneWidget);
+      expect(location.permissionRequests, [false, false]);
       expect(
         await storedFlag(LocationNoticeKeys.backgroundHintSeen),
         LocationNoticeKeys.seen,
@@ -234,6 +237,29 @@ void main() {
 
       await shutdownApp(tester, database);
     });
+
+    testWidgets(
+      'background access is requested only after the rider chooses it',
+      (tester) async {
+        await markLocationDisclosureSeen(database);
+        final location = await pumpFreshApp(
+          tester,
+          backgroundAccess: false,
+          notifications: FakeNotificationPermission(granted: true),
+        );
+
+        await tester.tap(find.text('开始骑行'));
+        await settle(tester);
+        expect(location.permissionRequests, [false]);
+
+        await tester.tap(find.text('开启始终允许'));
+        await settle(tester);
+        expect(location.permissionRequests, [false, true, false]);
+        expect(find.text('准备开始'), findsOneWidget);
+
+        await shutdownApp(tester, database);
+      },
+    );
 
     testWidgets('a full grant is not nagged about', (tester) async {
       await markLocationDisclosureSeen(database);
@@ -383,6 +409,48 @@ void main() {
   });
 
   group('permission handling', () {
+    testWidgets('saved-route navigation asks before starting a session', (
+      tester,
+    ) async {
+      await database.routeDao.upsertRoute(
+        Route(
+          id: 'permission-route',
+          name: '权限路线',
+          points: const [
+            GeoPoint(39.9042, 116.4074),
+            GeoPoint(39.9142, 116.4274),
+          ],
+          distanceMeters: 1400,
+          estimatedDuration: const Duration(minutes: 5),
+        ),
+      );
+      final location = FakeLocationService(
+        permission: LocationPermissionStatus.denied,
+      );
+      await markFirstRunNoticesSeen(database);
+      useTallSurface(tester);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: testOverrides(database: database, location: location),
+          child: const CyclingApp(),
+        ),
+      );
+      await settle(tester);
+
+      await tester.tap(find.text('路线').last);
+      await settle(tester);
+      await tester.tap(find.text('权限路线'));
+      await settle(tester);
+      await tester.tap(find.text('开始导航并记录'));
+      await settle(tester);
+
+      expect(location.permissionRequests, [false]);
+      expect(find.text('需要定位权限'), findsOneWidget);
+      expect(find.text('准备开始'), findsNothing);
+
+      await shutdownApp(tester, database);
+    });
+
     testWidgets(
       'a denied permission is explained before the ride screen opens',
       (tester) async {
