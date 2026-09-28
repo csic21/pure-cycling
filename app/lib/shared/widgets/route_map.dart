@@ -26,7 +26,9 @@ class RouteMap extends StatelessWidget {
     this.zoom = 15,
     this.routePoints = const [],
     this.trackPoints = const [],
+    this.fitPoints = const [],
     this.position,
+    this.waypoints = const [],
     this.destination,
     this.bearing,
     this.bounds,
@@ -49,8 +51,12 @@ class RouteMap extends StatelessWidget {
   /// The recorded track line.
   final List<GeoPoint> trackPoints;
 
+  /// Additional points used for the initial camera without drawing a route.
+  final List<GeoPoint> fitPoints;
+
   /// The rider's current position.
   final GeoPoint? position;
+  final List<GeoPoint> waypoints;
   final GeoPoint? destination;
   final double? bearing;
 
@@ -72,6 +78,7 @@ class RouteMap extends StatelessWidget {
     final points = <LatLng>[
       ...routePoints.map(toDisplay),
       ...trackPoints.map(toDisplay),
+      ...fitPoints.map(toDisplay),
     ];
 
     final camera = _cameraFor(points, toDisplay);
@@ -154,6 +161,32 @@ class RouteMap extends StatelessWidget {
                     height: 34,
                     child: _PositionDot(bearing: bearing),
                   ),
+                ],
+              ),
+            if (waypoints.isNotEmpty)
+              MarkerLayer(
+                markers: [
+                  for (var i = 0; i < waypoints.length; i++)
+                    Marker(
+                      point: toDisplay(waypoints[i]),
+                      width: 30,
+                      height: 30,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: AppColors.background,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppColors.accent, width: 2),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '${i + 1}',
+                            style: AppText.label.copyWith(
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             if (destination != null)

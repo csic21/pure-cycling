@@ -468,6 +468,21 @@ void main() {
   });
 
   group('route planning', () {
+    testWidgets('the planner fits a phone-height viewport', (tester) async {
+      await pumpApp(tester);
+      tester.view.physicalSize = const Size(1200, 2550);
+      await tester.pump();
+
+      await tester.tap(find.text('路线规划'));
+      await settle(tester);
+
+      expect(find.text('添加途经点'), findsOneWidget);
+      expect(find.byType(RouteMap), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await shutdownApp(tester, database);
+    });
+
     testWidgets('says plainly that no map key is configured', (tester) async {
       await pumpApp(tester);
 
@@ -502,6 +517,14 @@ void main() {
       expect(find.text('开始导航并记录'), findsOneWidget);
       expect(find.text('只保存路线'), findsOneWidget);
       expect(find.textContaining('这是直线路径'), findsOneWidget);
+      expect(find.byType(RouteMap), findsOneWidget);
+
+      await tester.tap(find.text('重选起点'));
+      await settle(tester);
+      expect(find.text('在地图上点选新的起点'), findsOneWidget);
+      await tester.tapAt(tester.getCenter(find.byType(RouteMap)));
+      await settle(tester);
+      expect(find.text('开始导航并记录'), findsOneWidget);
 
       await shutdownApp(tester, database);
     });
