@@ -9,8 +9,10 @@ import 'package:cycling_app/features/settings/data/settings_repository.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:cycling_app/shared/widgets/route_map.dart';
 import 'package:flutter/material.dart' hide Route;
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 import 'support/test_harness.dart';
 
@@ -140,6 +142,149 @@ void main() {
       await openTab(tester, '设置');
       expect(find.text('数据字段'), findsNothing);
       expect(find.text('码表'), findsOneWidget);
+
+      await shutdownApp(tester, database);
+    });
+  });
+
+  group('system back', () {
+    /// Records the platform calls a back press produces.
+    ///
+    /// `SystemNavigator.pop` is the whole observable effect of "the app quit"
+    /// in a widget test — there is no activity to finish. The binding makes the
+    /// same call itself when nothing in the tree claims the back, so asserting
+    /// on it also proves the framework did not fall back to quitting on its own
+    /// when the app was supposed to stay put.
+    List<String> watchForExit(WidgetTester tester) {
+      final calls = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          calls.add(call.method);
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      return calls;
+    }
+
+    /// Presses the system back button, as Android delivers it, and reports
+    /// whether the framework claimed it. `false` is what makes the platform
+    /// finish the activity.
+    Future<bool> pressBack(WidgetTester tester) async {
+      final handled = await tester.binding.handlePopRoute();
+      await settle(tester);
+      return handled;
+    }
+
+    /// The location the shell is showing. The navigation bar is on every
+    /// screen the shell owns and is never offstage, unlike the branches behind
+    /// the `IndexedStack`.
+    String location(WidgetTester tester) =>
+        GoRouter.of(tester.element(find.byType(NavigationBar))).state.uri.path;
+
+    testWidgets('back on the ride tab quits the app', (tester) async {
+      await pumpApp(tester);
+      final calls = watchForExit(tester);
+
+      final handled = await pressBack(tester);
+
+      expect(calls, contains('SystemNavigator.pop'));
+      expect(handled, isTrue);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('back on the ride tab quits the app after a settings sub-page', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+
+      // Deep in 设置, back to the ride tab, then leave. This is the state a
+      // rider is most likely to be in when they are done, and it used to be
+      // the one state where back did nothing at all: the settings branch stays
+      // mounted (that is what keeps your place), and go_router's `PopScope` for
+      // a branch on a sub-page reports `canPop: false` on the shell route for
+      // the rest of the session — which the root navigator answered as
+      // "handled", so the platform never got to quit.
+      await openTab(tester, '设置');
+      await tester.tap(find.text('单位制'));
+      await settle(tester);
+      await openTab(tester, '骑行');
+
+      final calls = watchForExit(tester);
+      final handled = await pressBack(tester);
+
+      expect(calls, contains('SystemNavigator.pop'));
+      expect(handled, isTrue);
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('back on a secondary tab returns to the ride tab', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+      final calls = watchForExit(tester);
+
+      for (final tab in ['路线', '记录', '设置']) {
+        await openTab(tester, tab);
+        expect(location(tester), isNot('/'));
+
+        await pressBack(tester);
+
+        // The back is spent on the tab, not on the app: the rider lands on the
+        // ride tab with the app still running, and a second back is what
+        // leaves.
+        expect(calls, isNot(contains('SystemNavigator.pop')));
+        expect(location(tester), '/');
+      }
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('back inside a tab pops that tab', (tester) async {
+      await pumpApp(tester);
+      await openTab(tester, '设置');
+      await tester.tap(find.text('单位制'));
+      await settle(tester);
+      expect(location(tester), '/settings/units');
+
+      final calls = watchForExit(tester);
+      await pressBack(tester);
+
+      // The branch's own navigator pops before the shell is ever consulted, so
+      // owning back at the shell does not turn every sub-page into a quit.
+      expect(location(tester), '/settings');
+      expect(calls, isNot(contains('SystemNavigator.pop')));
+
+      await shutdownApp(tester, database);
+    });
+
+    testWidgets('back out of the route planner returns to the ride tab', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+      await tester.tap(find.text('路线规划'));
+      await settle(tester);
+      expect(location(tester), '/routes/plan');
+
+      final calls = watchForExit(tester);
+      await pressBack(tester);
+
+      expect(location(tester), '/');
+      expect(calls, isNot(contains('SystemNavigator.pop')));
+
+      // …and the next one leaves. The planner was pushed onto the ride tab's
+      // own branch, so this is also the case where the shell decides while a
+      // branch behind it still holds a sub-page.
+      await pressBack(tester);
+      expect(calls, contains('SystemNavigator.pop'));
 
       await shutdownApp(tester, database);
     });
