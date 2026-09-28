@@ -49,6 +49,8 @@ function deps(stub: Stub = {}): RelayDeps {
     amapBase: 'https://amap.test',
     dailyLimit: 200,
     globalDailyLimit: 500,
+    placeDailyLimit: 100,
+    placeGlobalDailyLimit: 500,
     ...stub.env,
   };
 
@@ -255,6 +257,57 @@ Deno.test('a client cannot smuggle its own key or endpoint', async () => {
   assertEquals(url.host, 'amap.test', '上游主机不能被请求体改变');
   assertEquals(url.pathname, '/v5/direction/bicycling', '路径不能被请求体改变');
   assertEquals(url.searchParams.get('key'), 'server-key', 'Key 不能被请求体覆盖');
+});
+
+Deno.test('place search uses only the fixed endpoint and server key', async () => {
+  const record: Stub['record'] = {};
+  const buckets: string[] = [];
+  const response = await handleRoute(
+    relayRequest({
+      action: 'place_search', keywords: '咖啡', location: '116.4074,39.9042',
+      limit: 999, key: 'attacker-key', path: '/v3/geocode/regeo',
+      amapBase: 'https://attacker.test',
+    }),
+    deps({
+      record,
+      quota: (body) => { buckets.push(body.p_bucket); return json(true); },
+      amap: () => json({ status: '1', pois: [] }),
+    }),
+  );
+  assertEquals(response.status, 200, '地点搜索成功');
+  assertEquals(buckets, ['place', 'place-global'], '搜索使用独立的配额桶');
+  const url = record.amapUrl!;
+  assertEquals(url.host, 'amap.test', '上游主机固定');
+  assertEquals(url.pathname, '/v3/place/text', '只调用地点搜索');
+  assertEquals(url.searchParams.get('key'), 'server-key', 'Key 不接受客户端覆盖');
+  assertEquals(url.searchParams.get('keywords'), '咖啡', '传递搜索词');
+  assertEquals(url.searchParams.get('offset'), '8', '搜索结果数限制为 8');
+  assertEquals(url.searchParams.get('sortrule'), 'distance', '附近结果按距离排序');
+});
+
+Deno.test('place search rejects invalid input before consuming quota', async () => {
+  let called = false;
+  const d = deps({ quota: () => { called = true; return json(true); } });
+  const badAction = await handleRoute(relayRequest({ action: '/v3/geocode/regeo' }), d);
+  const badLocation = await handleRoute(relayRequest({
+    action: 'place_search', keywords: '咖啡', location: 'not coordinates',
+  }), d);
+  assertEquals(badAction.status, 400, '任意 action 应拒绝');
+  assertEquals(badLocation.status, 400, '坏坐标应拒绝');
+  assertEquals(called, false, '无效请求不消耗配额');
+});
+
+Deno.test('place search project quota stops new accounts', async () => {
+  let vendorCalled = false;
+  const response = await handleRoute(
+    relayRequest({ action: 'place_search', keywords: '咖啡' }),
+    deps({
+      quota: (body) => json(body.p_bucket !== 'place-global'),
+      amap: () => { vendorCalled = true; return json({}); },
+    }),
+  );
+  assertEquals(response.status, 429, '项目额度耗尽应拒绝搜索');
+  assertEquals(vendorCalled, false, '额度耗尽时不能调用高德');
 });
 
 Deno.test('alternatives are clamped to what the vendor accepts', async () => {

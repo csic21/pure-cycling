@@ -36,6 +36,8 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
   List<PlaceSuggestion> _suggestions = const [];
   Timer? _debounce;
   bool _searching = false;
+  String? _searchError;
+  int _searchEpoch = 0;
 
   Route? _planned;
   bool _planning = false;
@@ -104,12 +106,18 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
 
   void _onQueryChanged(String value) {
     _debounce?.cancel();
+    final epoch = ++_searchEpoch;
     final query = value.trim();
 
     if (query.isEmpty) {
-      setState(() => _suggestions = const []);
+      setState(() {
+        _suggestions = const [];
+        _searchError = null;
+        _searching = false;
+      });
       return;
     }
+    setState(() => _searchError = null);
 
     // 350 ms: long enough that typing a Chinese place name does not fire a
     // request per keystroke, short enough that it feels immediate.
@@ -120,14 +128,23 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
       setState(() => _searching = true);
       try {
         final results = await places.search(query, near: _origin, limit: 8);
-        if (!mounted) return;
+        if (!mounted || epoch != _searchEpoch) return;
         setState(() {
           _suggestions = results;
           _searching = false;
         });
+      } on RoutePlanningException catch (error) {
+        if (!mounted || epoch != _searchEpoch) return;
+        setState(() {
+          _searching = false;
+          _searchError = error.message;
+        });
       } catch (_) {
-        if (!mounted) return;
-        setState(() => _searching = false);
+        if (!mounted || epoch != _searchEpoch) return;
+        setState(() {
+          _searching = false;
+          _searchError = '地点搜索暂时不可用，请稍后重试';
+        });
       }
     });
   }
@@ -267,9 +284,11 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
                   _Notice(
                     icon: Icons.info_outline,
                     text: availability.reason,
-                    onTap: () => context.push(FunctionsConfig.isConfigured
-                        ? AppRoutes.login
-                        : AppRoutes.settingsMap),
+                    onTap: () => context.push(
+                      FunctionsConfig.isConfigured
+                          ? AppRoutes.login
+                          : AppRoutes.settingsMap,
+                    ),
                     actionLabel: FunctionsConfig.isConfigured ? '去登录' : '去设置',
                   ),
 
@@ -280,7 +299,11 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
                   selected: _destination,
                   searching: _searching,
                   suggestions: _suggestions,
+                  searchError: _searchError,
                   searchEnabled: services.canSearchPlaces,
+                  unavailableHint: FunctionsConfig.isConfigured
+                      ? '登录后可搜索目的地'
+                      : '未配置地图服务，无法搜索',
                   onChanged: _onQueryChanged,
                   onSelected: (suggestion) {
                     setState(() {
@@ -394,6 +417,9 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
     final places = ref.read(mapServicesProvider).places;
     final controller = TextEditingController();
     final results = ValueNotifier<List<PlaceSuggestion>>(const []);
+    Timer? debounce;
+    var searchEpoch = 0;
+    var sheetOpen = true;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -412,20 +438,33 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
                   controller: controller,
                   autofocus: true,
                   decoration: const InputDecoration(hintText: '搜索途经点'),
-                  onChanged: (value) async {
-                    if (value.trim().isEmpty) {
+                  onChanged: (value) {
+                    debounce?.cancel();
+                    final epoch = ++searchEpoch;
+                    final query = value.trim();
+                    if (query.isEmpty) {
                       results.value = const [];
                       return;
                     }
-                    try {
-                      results.value = await places.search(
-                        value.trim(),
-                        near: _origin,
-                        limit: 8,
-                      );
-                    } catch (_) {
-                      results.value = const [];
-                    }
+                    debounce = Timer(
+                      const Duration(milliseconds: 350),
+                      () async {
+                        try {
+                          final found = await places.search(
+                            query,
+                            near: _origin,
+                            limit: 8,
+                          );
+                          if (sheetOpen && epoch == searchEpoch) {
+                            results.value = found;
+                          }
+                        } catch (_) {
+                          if (sheetOpen && epoch == searchEpoch) {
+                            results.value = const [];
+                          }
+                        }
+                      },
+                    );
                   },
                 ),
               ),
@@ -456,6 +495,10 @@ class _RoutePlanScreenState extends ConsumerState<RoutePlanScreen> {
         ),
       ),
     );
+    sheetOpen = false;
+    debounce?.cancel();
+    controller.dispose();
+    results.dispose();
   }
 }
 
@@ -499,7 +542,9 @@ class _DestinationField extends StatelessWidget {
     required this.selected,
     required this.searching,
     required this.suggestions,
+    required this.searchError,
     required this.searchEnabled,
+    required this.unavailableHint,
     required this.onChanged,
     required this.onSelected,
     required this.onClear,
@@ -509,7 +554,9 @@ class _DestinationField extends StatelessWidget {
   final PlaceSuggestion? selected;
   final bool searching;
   final List<PlaceSuggestion> suggestions;
+  final String? searchError;
   final bool searchEnabled;
+  final String unavailableHint;
   final ValueChanged<String> onChanged;
   final ValueChanged<PlaceSuggestion> onSelected;
   final VoidCallback onClear;
@@ -526,7 +573,7 @@ class _DestinationField extends StatelessWidget {
             onChanged: onChanged,
             textInputAction: TextInputAction.search,
             decoration: InputDecoration(
-              hintText: searchEnabled ? '搜索目的地' : '未配置地图服务，无法搜索',
+              hintText: searchEnabled ? '搜索目的地' : unavailableHint,
               prefixIcon: const Icon(Icons.place_outlined, size: 20),
               suffixIcon: searching
                   ? const Padding(
@@ -546,6 +593,17 @@ class _DestinationField extends StatelessWidget {
             ),
           ),
         ),
+        if (searchError != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                searchError!,
+                style: AppText.caption.copyWith(color: AppColors.danger),
+              ),
+            ),
+          ),
         if (suggestions.isNotEmpty)
           ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 260),

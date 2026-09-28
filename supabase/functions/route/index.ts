@@ -1,4 +1,4 @@
-// The routing relay: the AMap key never leaves the server.
+// The route and place-search relay: the AMap key never leaves the server.
 //
 // The logic lives in `handler.ts` (injected dependencies, testable without a
 // network); this file is the Deno wiring. The key lives in this function's
@@ -35,5 +35,7 @@ Deno.serve((req) =>
       // Anonymous accounts can be recreated, so an account-only limit does
       // not cap the project's total AMap usage.
       globalDailyLimit: Number(Deno.env.get('ROUTE_GLOBAL_DAILY_LIMIT') ?? '500'),
+      placeDailyLimit: Number(Deno.env.get('PLACE_DAILY_LIMIT') ?? '100'),
+      placeGlobalDailyLimit: Number(Deno.env.get('PLACE_GLOBAL_DAILY_LIMIT') ?? '500'),
     },
   }));

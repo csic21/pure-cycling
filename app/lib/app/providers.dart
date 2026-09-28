@@ -341,17 +341,15 @@ final mapServicesProvider = Provider<MapServices>((ref) {
                 : MapTileSource.osm),
       );
     }
+    final client = AmapRelayClient(
+      endpoint: relayEndpoint,
+      accessToken: _sessionAccessToken,
+      anonKey: SupabaseConfig.anonKey,
+    );
+    ref.onDispose(client.close);
     return MapServices(
-      // Search is not relayed (only routing is), so it degrades to "no
-      // results" rather than to a broken screen. A rider who wants search can
-      // fill their own key below.
-      places: const NullPlaceProvider(),
-      routes: AmapRouteProvider(
-        client: AmapRelayClient(
-          endpoint: relayEndpoint,
-          accessToken: _sessionAccessToken,
-        ),
-      ),
+      places: AmapPlaceProvider(client: client),
+      routes: AmapRouteProvider(client: client),
       trafficLights: const AmapTrafficLightProvider(),
       tileSource: tileOverride ?? MapTileSource.amapVector,
     );

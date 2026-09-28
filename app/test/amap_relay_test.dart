@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:cycling_app/core/map/amap/amap_relay_client.dart';
+import 'package:cycling_app/core/map/amap/amap_place_provider.dart';
 import 'package:cycling_app/core/map/amap/amap_route_provider.dart';
 import 'package:cycling_app/core/map/coord_transform.dart';
 import 'package:cycling_app/core/map/map_providers.dart';
@@ -24,39 +25,38 @@ void main() {
   /// A minimal but structurally complete v5 bicycling response, in GCJ-02 —
   /// which is what the vendor (and therefore the relay) returns.
   String amapBody() => jsonEncode({
-        'status': '1',
-        'info': 'OK',
-        'infocode': '10000',
-        'route': {
-          'paths': [
+    'status': '1',
+    'info': 'OK',
+    'infocode': '10000',
+    'route': {
+      'paths': [
+        {
+          'distance': '1234',
+          'duration': '300',
+          'steps': [
             {
-              'distance': '1234',
-              'duration': '300',
-              'steps': [
-                {
-                  'instruction': '向东骑行',
-                  'road_name': '人民大道',
-                  'step_distance': '600',
-                  'action': 'straight',
-                  'polyline': '116.407400,39.904200;116.417400,39.904200',
-                  'cost': {'duration': '150'},
-                },
-                {
-                  'instruction': '左转进入北向路',
-                  'road_name': '北向路',
-                  'step_distance': '634',
-                  'action': 'left',
-                  'polyline': '116.417400,39.904200;116.417400,39.914200',
-                  'cost': {'duration': '150'},
-                },
-              ],
+              'instruction': '向东骑行',
+              'road_name': '人民大道',
+              'step_distance': '600',
+              'action': 'straight',
+              'polyline': '116.407400,39.904200;116.417400,39.904200',
+              'cost': {'duration': '150'},
+            },
+            {
+              'instruction': '左转进入北向路',
+              'road_name': '北向路',
+              'step_distance': '634',
+              'action': 'left',
+              'polyline': '116.417400,39.904200;116.417400,39.914200',
+              'cost': {'duration': '150'},
             },
           ],
         },
-      });
+      ],
+    },
+  });
 
-  test('posts the relay payload and parses the route back to WGS-84',
-      () async {
+  test('posts the relay payload and parses the route back to WGS-84', () async {
     late http.Request seen;
     final client = AmapRelayClient(
       endpoint: 'https://relay.test/functions/v1/route',
@@ -94,7 +94,7 @@ void main() {
     expect(
       payload['destination'],
       '${gcjDestination.lng.toStringAsFixed(6)},'
-          '${gcjDestination.lat.toStringAsFixed(6)}',
+      '${gcjDestination.lat.toStringAsFixed(6)}',
     );
     expect(payload['alternatives'], 1);
 
@@ -122,10 +122,9 @@ void main() {
 
     expect(client.isConfigured, isFalse);
     await expectLater(
-      AmapRouteProvider(client: client).planRoute(
-        origin: origin,
-        destination: destination,
-      ),
+      AmapRouteProvider(
+        client: client,
+      ).planRoute(origin: origin, destination: destination),
       throwsA(
         isA<RoutePlanningException>()
             .having((e) => e.isConfiguration, 'isConfiguration', isTrue)
@@ -152,10 +151,9 @@ void main() {
     );
 
     await expectLater(
-      AmapRouteProvider(client: client).planRoute(
-        origin: origin,
-        destination: destination,
-      ),
+      AmapRouteProvider(
+        client: client,
+      ).planRoute(origin: origin, destination: destination),
       throwsA(
         isA<RoutePlanningException>()
             .having((e) => e.isConfiguration, 'isConfiguration', isFalse)
@@ -164,35 +162,39 @@ void main() {
     );
   });
 
-  test('an expired session points at the login rather than at a retry',
-      () async {
-    final client = AmapRelayClient(
-      endpoint: 'https://relay.test/functions/v1/route',
-      accessToken: () => 'stale',
-      httpClient: MockClient(
-        (_) async => http.Response(
-          jsonEncode({
-            'status': '0',
-            'info': '需要登录后使用在线路线规划（匿名账号也可以）',
-            'infocode': 'relay_401',
-          }),
-          401,
-          headers: {'content-type': 'application/json; charset=utf-8'},
+  test(
+    'an expired session points at the login rather than at a retry',
+    () async {
+      final client = AmapRelayClient(
+        endpoint: 'https://relay.test/functions/v1/route',
+        accessToken: () => 'stale',
+        httpClient: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'status': '0',
+              'info': '需要登录后使用在线路线规划（匿名账号也可以）',
+              'infocode': 'relay_401',
+            }),
+            401,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          ),
         ),
-      ),
-    );
+      );
 
-    await expectLater(
-      AmapRouteProvider(client: client).planRoute(
-        origin: origin,
-        destination: destination,
-      ),
-      throwsA(
-        isA<RoutePlanningException>()
-            .having((e) => e.isConfiguration, 'isConfiguration', isTrue),
-      ),
-    );
-  });
+      await expectLater(
+        AmapRouteProvider(
+          client: client,
+        ).planRoute(origin: origin, destination: destination),
+        throwsA(
+          isA<RoutePlanningException>().having(
+            (e) => e.isConfiguration,
+            'isConfiguration',
+            isTrue,
+          ),
+        ),
+      );
+    },
+  );
 
   test('a vendor error inside a 200 keeps its translation', () async {
     final client = AmapRelayClient(
@@ -212,13 +214,15 @@ void main() {
     );
 
     await expectLater(
-      AmapRouteProvider(client: client).planRoute(
-        origin: origin,
-        destination: destination,
-      ),
+      AmapRouteProvider(
+        client: client,
+      ).planRoute(origin: origin, destination: destination),
       throwsA(
-        isA<RoutePlanningException>()
-            .having((e) => e.message, 'message', contains('无法规划出骑行路线')),
+        isA<RoutePlanningException>().having(
+          (e) => e.message,
+          'message',
+          contains('无法规划出骑行路线'),
+        ),
       ),
     );
   });
@@ -231,8 +235,52 @@ void main() {
     );
 
     await expectLater(
-      client.get('/v3/place/text', const {'keywords': '咖啡'}),
+      client.get('/v3/geocode/regeo', const {'location': '116.4,39.9'}),
       throwsA(isA<RoutePlanningException>()),
     );
   });
+
+  test(
+    'place search uses the relay and converts returned coordinates',
+    () async {
+      late http.Request seen;
+      final client = AmapRelayClient(
+        endpoint: 'https://relay.test/functions/v1/route',
+        accessToken: () => 'session-token',
+        anonKey: 'public-key',
+        httpClient: MockClient((request) async {
+          seen = request;
+          return http.Response(
+            jsonEncode({
+              'status': '1',
+              'pois': [
+                {
+                  'id': 'poi-1',
+                  'name': '人民公园',
+                  'location': '116.407400,39.904200',
+                  'address': '北京市',
+                },
+              ],
+            }),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }),
+      );
+      final places = AmapPlaceProvider(client: client);
+      final found = await places.search('人民公园', near: origin, limit: 8);
+      expect(seen.method, 'POST');
+      expect(seen.headers['Authorization'], 'Bearer session-token');
+      expect(seen.headers['apikey'], 'public-key');
+      final payload = jsonDecode(seen.body) as Map<String, dynamic>;
+      expect(payload['action'], 'place_search');
+      expect(payload['keywords'], '人民公园');
+      expect(payload['limit'], 8);
+      expect(found, hasLength(1));
+      expect(found.first.name, '人民公园');
+      final expected = CoordTransform.gcj02ToWgs84(origin);
+      expect(found.first.point.lat, closeTo(expected.lat, 1e-9));
+      expect(found.first.point.lng, closeTo(expected.lng, 1e-9));
+    },
+  );
 }

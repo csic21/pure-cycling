@@ -1,14 +1,14 @@
 import '../../utils/geo.dart';
 import '../coord_transform.dart';
 import '../map_providers.dart';
-import 'amap_client.dart';
+import 'amap_route_client.dart';
 
 /// POI search and reverse geocoding via AMap's `/v3/place/text` and
 /// `/v3/geocode/regeo`.
 class AmapPlaceProvider implements PlaceProvider {
   AmapPlaceProvider({required this.client});
 
-  final AmapClient client;
+  final AmapRouteClient client;
 
   @override
   String get id => 'amap';
@@ -61,11 +61,7 @@ class AmapPlaceProvider implements PlaceProvider {
     // comes from the street or neighbourhood when AMap supplies one.
     final label = _shortLabel(component) ?? formatted;
 
-    return PlaceSuggestion(
-      name: label,
-      address: formatted,
-      point: point,
-    );
+    return PlaceSuggestion(name: label, address: formatted, point: point);
   }
 
   List<PlaceSuggestion> _parsePois(Map<String, dynamic> body, GeoPoint? near) {
@@ -131,7 +127,12 @@ class AmapPlaceProvider implements PlaceProvider {
 
   static String? _shortLabel(Object? component) {
     if (component is! Map<String, dynamic>) return null;
-    for (final key in ['streetNumber', 'township', 'neighborhood', 'building']) {
+    for (final key in [
+      'streetNumber',
+      'township',
+      'neighborhood',
+      'building',
+    ]) {
       final value = component[key];
       if (value is Map<String, dynamic>) {
         final street = value['street']?.toString();

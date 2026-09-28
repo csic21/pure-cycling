@@ -178,7 +178,11 @@ class _MapSettingsScreenState extends ConsumerState<MapSettingsScreen> {
             rows: [
               SettingsTile(
                 title: 'POI 搜索',
-                subtitle: services.places.isConfigured ? '可用' : '需要配置 Key',
+                subtitle: services.places.isConfigured
+                    ? '可用'
+                    : FunctionsConfig.isConfigured
+                    ? '登录后可用'
+                    : '需要配置 Key',
                 leading: const Icon(Icons.search),
               ),
             ],
