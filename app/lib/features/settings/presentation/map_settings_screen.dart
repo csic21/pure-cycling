@@ -59,7 +59,7 @@ class _MapSettingsScreenState extends ConsumerState<MapSettingsScreen> {
                 title: '地图风格',
                 subtitle: services.tileSource.darkAvailable
                     ? null
-                    : '高德栅格图只有浅色样式，应用会自动压暗以适应 OLED 屏幕',
+                    : '高德栅格图只有浅色底图：选「深色」保留配色压暗，选「浅色」用原图',
                 value: settings.mapStyle,
                 options: [
                   for (final style in MapStyle.values)

@@ -315,12 +315,22 @@ final amapKeyProvider = FutureProvider<String>((ref) async {
 final mapServicesProvider = Provider<MapServices>((ref) {
   final settings = ref.watch(currentSettingsProvider);
   final relayEndpoint = FunctionsConfig.routeUrl;
+  final dark = settings.mapStyle == MapStyle.dark;
 
   // A build-time choice beats everything below it. Routes are converted to
   // the tile source's datum at the drawing boundary (`RouteMap`), so any
   // combination is geometrically correct — this is about whose tiles we are
   // allowed to serve, not about coordinates.
   final tileOverride = MapConfig.tileSourceOverride;
+
+  /// The tile source to draw, carrying the rider's light/dark setting.
+  ///
+  /// The setting is resolved here rather than inside the map widget because
+  /// it decides whether a light-only basemap gets darkened in software, and
+  /// that is a fact about the source, not about any one screen. Every map in
+  /// the app receives the answer with its tiles; none of them can disagree.
+  MapTileSource tiles(MapTileSource source) =>
+      (tileOverride ?? source).forDarkPreference(dark);
 
   // The relay comes first: it is the distribution shape, and it needs no key
   // on the device at all. A rider who also happens to have their own key can
@@ -334,11 +344,9 @@ final mapServicesProvider = Provider<MapServices>((ref) {
         places: const NullPlaceProvider(),
         routes: const OfflineRouteProvider(),
         trafficLights: const AmapTrafficLightProvider(),
-        tileSource:
-            tileOverride ??
-            (settings.mapStyle == MapStyle.dark
-                ? MapTileSource.cartoDark
-                : MapTileSource.osm),
+        tileSource: tiles(
+          dark ? MapTileSource.cartoDark : MapTileSource.osm,
+        ),
       );
     }
     final client = AmapRelayClient(
@@ -351,7 +359,7 @@ final mapServicesProvider = Provider<MapServices>((ref) {
       places: AmapPlaceProvider(client: client),
       routes: AmapRouteProvider(client: client),
       trafficLights: const AmapTrafficLightProvider(),
-      tileSource: tileOverride ?? MapTileSource.amapVector,
+      tileSource: tiles(MapTileSource.amapVector),
     );
   }
 
@@ -362,11 +370,9 @@ final mapServicesProvider = Provider<MapServices>((ref) {
       places: const NullPlaceProvider(),
       routes: const OfflineRouteProvider(),
       trafficLights: const AmapTrafficLightProvider(),
-      tileSource:
-          tileOverride ??
-          (settings.mapStyle == MapStyle.dark
-              ? MapTileSource.cartoDark
-              : MapTileSource.osm),
+      tileSource: tiles(
+        dark ? MapTileSource.cartoDark : MapTileSource.osm,
+      ),
     );
   }
 
@@ -379,8 +385,10 @@ final mapServicesProvider = Provider<MapServices>((ref) {
     trafficLights: const AmapTrafficLightProvider(),
     // Tiles follow the routing provider's datum: a GCJ-02 route drawn on
     // WGS-84 tiles is 300 m off, and this makes that impossible to configure
-    // by accident.
-    tileSource: tileOverride ?? MapTileSource.amapVector,
+    // by accident. It is also why a dark map here is a dimmed AMap rather
+    // than a dark basemap from someone else — Carto's would put every line in
+    // the wrong place.
+    tileSource: tiles(MapTileSource.amapVector),
   );
 });
 

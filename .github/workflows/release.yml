@@ -37,9 +37,10 @@ defaults:
 #                          entirely when it is not (no placeholder address,
 #                          because a support address that does not exist is
 #                          worse than none)
-#                       (…/functions/v1). Public by nature — it is in every
-#                       binary that uses it; each function guards itself with a
-#                       session check, and the relay also with a quota.
+#
+# SUPABASE_FUNCTIONS_URL is public by nature — it is in every binary that uses
+# it. The public release function uses a shared cache and a public GitHub
+# Release fallback.
 #
 # The AMap Web Service key lives only in Supabase Edge Function secrets.
 # The public source repository also hosts Release metadata and APKs. The
@@ -66,6 +67,13 @@ jobs:
       - run: dart run build_runner build --delete-conflicting-outputs
       - run: flutter analyze
       - run: flutter test
+
+      - name: Check update service and published repository
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: .
+        env:
+          FUNCTIONS_URL: ${{ vars.SUPABASE_FUNCTIONS_URL }}
+        run: ./scripts/check-release-service.sh "$FUNCTIONS_URL" "$GITHUB_REPOSITORY"
 
       - name: Check tag matches the app version
         if: startsWith(github.ref, 'refs/tags/v')

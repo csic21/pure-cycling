@@ -29,6 +29,7 @@ class MapTileSource {
     this.minZoom = 3,
     this.attribution,
     this.darkAvailable = false,
+    this.dimTiles = false,
   });
 
   final String id;
@@ -43,9 +44,48 @@ class MapTileSource {
   final double minZoom;
   final String? attribution;
 
-  /// Whether this source has a genuinely dark style. Raster AMap tiles do
-  /// not, which is why the OLED theme dims the map container instead.
+  /// Whether this source has a genuinely dark style of its own. AMap's raster
+  /// tiles do not; Carto's dark basemap does.
   final bool darkAvailable;
+
+  /// Whether `RouteMap` should darken these tiles in software.
+  ///
+  /// Never set by hand — it is the answer to "the rider asked for a dark map
+  /// and this source cannot give one", which [forDarkPreference] decides. It
+  /// travels on the source rather than as an argument to the map widget so
+  /// that a map cannot be built without that decision having been made: every
+  /// call site already passes a tile source, and none of them has to remember
+  /// anything else.
+  final bool dimTiles;
+
+  /// This source as it should be drawn for the rider's light/dark preference.
+  ///
+  /// [dark] is the rider's setting (设置 → 地图风格), not a property of the
+  /// provider. A source with a dark style of its own is handed back untouched:
+  /// its designed colours beat anything a colour matrix can do to a light
+  /// basemap, and filtering an already-dark image is a worse conversion of
+  /// something that was already right.
+  ///
+  /// A light-only source is dimmed in software instead — which on AMap is not
+  /// a fallback but the only option. Its tiles are the only ones whose datum
+  /// matches an AMap route, so a dark basemap from another provider cannot be
+  /// substituted without moving every line 300 m (see 「坐标系」). The map
+  /// gets darker; where the roads are does not change.
+  MapTileSource forDarkPreference(bool dark) {
+    if (!dark || darkAvailable) return this;
+    return MapTileSource(
+      id: id,
+      name: name,
+      urlTemplate: urlTemplate,
+      datum: datum,
+      subdomains: subdomains,
+      maxZoom: maxZoom,
+      minZoom: minZoom,
+      attribution: attribution,
+      darkAvailable: darkAvailable,
+      dimTiles: true,
+    );
+  }
 
   /// AMap raster tiles. Publicly served and the only source with usable road
   /// detail inside China at the zoom levels a bike route needs.

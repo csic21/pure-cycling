@@ -616,4 +616,65 @@ end $$;
 reset role;
 SQL
 
+echo "==> asserting the shared Release cache and its grants"
+psql_stdin <<'SQL'
+set role service_role;
+
+do $$
+declare
+  v_repo text := 'csic21/pure-cycling';
+  v_lease uuid := 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  v_other uuid := 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  v_decision jsonb;
+  v_stored boolean;
+begin
+  select public.claim_release_cache(v_repo, v_lease) into v_decision;
+  if v_decision->>'state' <> 'refresh' then
+    raise exception 'first caller did not receive the refresh lease: %', v_decision;
+  end if;
+  select public.claim_release_cache(v_repo, v_other) into v_decision;
+  if v_decision->>'state' <> 'wait' then
+    raise exception 'second caller also received the refresh lease: %', v_decision;
+  end if;
+  select public.finish_release_cache(v_repo, v_lease, 200,
+    '{"tag_name":"v1.0.0"}') into v_stored;
+  if not v_stored then
+    raise exception 'lease owner could not store the Release';
+  end if;
+  select public.claim_release_cache(v_repo, v_other) into v_decision;
+  if v_decision->>'state' <> 'fresh' or
+     v_decision->>'body' <> '{"tag_name":"v1.0.0"}' then
+    raise exception 'second caller did not get shared data: %', v_decision;
+  end if;
+  update public.release_cache
+    set expires_at = now() - interval '1 second',
+        fetched_at = now() - interval '2 days'
+    where repository = v_repo;
+  select public.claim_release_cache(v_repo, v_other) into v_decision;
+  if v_decision->>'state' <> 'refresh' or v_decision->>'body' is not null then
+    raise exception 'a two-day-old release was offered as stale: %', v_decision;
+  end if;
+  raise notice 'one refresh lease and a shared cached answer';
+end $$;
+
+reset role;
+set role anon;
+do $$
+begin
+  begin
+    perform 1 from public.release_cache;
+    raise exception 'anon can read release_cache';
+  exception when insufficient_privilege then
+    raise notice 'anon cannot read release_cache';
+  end;
+  begin
+    perform public.claim_release_cache('csic21/pure-cycling', gen_random_uuid());
+    raise exception 'anon can claim a release refresh';
+  exception when insufficient_privilege then
+    raise notice 'anon cannot call release cache RPCs';
+  end;
+end $$;
+reset role;
+SQL
+
 echo "==> migrations OK"

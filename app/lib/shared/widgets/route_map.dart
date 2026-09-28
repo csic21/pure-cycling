@@ -122,11 +122,11 @@ class RouteMap extends StatelessWidget {
               minZoom: tileSource.minZoom,
               // The package name is required by the tile providers' policies.
               userAgentPackageName: 'app.purecycling.cycling_app',
-              // Retroactively tinting the raster tiles is the only way to
-              // darken AMap's light-only raster basemap, which matters on an
-              // OLED screen at night. It is done with a colour matrix rather
-              // than an overlay so the road detail stays legible.
-              tileBuilder: tileSource.darkAvailable ? null : _darkenTileBuilder,
+              // Whether to dim is decided on the tile source, not here: it
+              // depends on the rider's light/dark setting, which the provider
+              // resolves when it picks the source (`forDarkPreference`). By
+              // the time tiles get here the question is already answered.
+              tileBuilder: tileSource.dimTiles ? _dimTileBuilder : null,
             ),
             if (trackPoints.length >= 2)
               PolylineLayer(
@@ -282,20 +282,46 @@ class RouteMap extends StatelessWidget {
     }
   }
 
-  /// Dims and desaturates raster tiles for night use.
-  static Widget _darkenTileBuilder(
+  /// Dims light-only raster tiles for night use, without greying them out.
+  ///
+  /// AMap's basemap has no dark style and, on an OLED phone at night, is a
+  /// torch. The shape of that basemap decides how it has to be re-toned, and
+  /// it is not the obvious way:
+  ///
+  /// * It is light *everywhere*. The background is cream, the roads are white
+  ///   on top of it, and the two differ by about five steps of brightness.
+  ///   Anything that scales the image uniformly — a black overlay, a
+  ///   straight multiply — scales that five-step gap along with everything
+  ///   else, so the map survives as a flat grey field with a faint road grid
+  ///   in it. The information was only ever in the colour.
+  /// * An equal-weight matrix, the other obvious filter, is plain
+  ///   desaturation and throws the colour away outright. That is what this
+  ///   function used to do, and it made the whole map monochrome.
+  ///
+  /// So the transform splits each pixel into what carries its brightness and
+  /// what carries its colour, and treats the two differently: brightness is
+  /// cut to 20%, colour is kept at 80%. Water stays blue, parks stay green,
+  /// the warm arterials stay distinct from the white minor roads — at a fifth
+  /// of the light, which is the point of the exercise.
+  ///
+  /// The small blue offset cancels AMap's cream base, which would otherwise
+  /// leave the whole map with a sepia cast next to the pure-black chrome. It
+  /// is far too small to reach the colours above; only the near-neutral
+  /// background moves.
+  ///
+  /// The matrix is that transform with the luminance weights (0.2126, 0.7152,
+  /// 0.0722) multiplied out, so it can stay a matrix — one GPU pass per tile,
+  /// no shader.
+  static Widget _dimTileBuilder(
     BuildContext context,
     Widget tile,
     TileImage _,
   ) {
     return ColorFiltered(
       colorFilter: const ColorFilter.matrix(<double>[
-        // Luminance-preserving desaturation and a strong value cut. The
-        // alternative — a translucent black overlay — greys the whole map
-        // uniformly and loses the road hierarchy that makes it readable.
-        0.28, 0.36, 0.10, 0, -22,
-        0.28, 0.36, 0.10, 0, -22,
-        0.28, 0.36, 0.10, 0, -22,
+        0.6724, -0.4291, -0.0433, 0, 0,
+        -0.1276, 0.3709, -0.0433, 0, 1,
+        -0.1276, -0.4291, 0.7567, 0, 6,
         0, 0, 0, 1, 0,
       ]),
       child: tile,

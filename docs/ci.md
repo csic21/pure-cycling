@@ -77,8 +77,8 @@ flutter run --dart-define-from-file=dart_define.json
 | 名称 | 用途 |
 |---|---|
 | `SUPABASE_URL` | 项目 URL。本身不是秘密，它就在每个 App 二进制里 |
-| `SUPABASE_FUNCTIONS_URL` | `route` 函数的 URL。同样不是秘密——它就在每个用到它的二进制里；函数自己用会话校验和每账号配额守住 |
-| `GITHUB_RELEASE_REPO` | 本地构建可选，默认 `csic21/pure-cycling`；CI 会自动使用当前仓库 |
+| `SUPABASE_FUNCTIONS_URL` | 边缘函数的基址（`route` / `delete-account` / `release`）。同样不是秘密——它就在每个用到它的二进制里；各函数按上面各自的方式守住 |
+| `GITHUB_RELEASE_REPO` | App 预期的 Release 仓库；CI 自动写入当前仓库，本地构建默认 `csic21/pure-cycling`。App 会拒绝来自其他仓库的中转响应和 APK |
 | `SUPPORT_EMAIL` | 可选。填入后「设置 → 关于」多一行联系方式；不填就不显示那一行（不用占位地址） |
 
 生成 keystore 的 base64：
@@ -126,7 +126,7 @@ node_modules 相对于 npm 省一半以上，而且全局 store 是内容寻址�
 
 | 检查 | 在哪 | 证明什么 |
 |---|---|---|
-| `deno check` + `deno test`（22 个） | `functions` job，每次 push | 拒绝路径（401/429/503/400）、上游 URL 只由服务端构造、配额三分支、删除顺序（先文件后账号） |
+| `deno check` + `deno test` | `functions` job，每次 push | 拒绝路径（401/429/503/400）、上游 URL 只由服务端构造、共享 Release 缓存、配额三分支、删除顺序（先文件后账号） |
 | `scripts/check-functions-config.sh` | `functions` job，每次 push | 每个函数 `verify_jwt = true` —— 中转那条错了，它就是一个对全网开放的算路接口，而且请求看起来一切正常 |
 | `scripts/verify-routing-relay.sh` | 本地（要整栈 + Edge runtime） | 真实运行时、真实 Kong、真实会话，桩代替高德 |
 | `scripts/verify-account-deletion.sh` | 本地（要整栈 + Edge runtime） | 账号真的被删掉、GPX 没留成孤儿、别人的数据一条不少、旧会话立即失效 |
@@ -147,16 +147,52 @@ node_modules 相对于 npm 省一半以上，而且全局 store 是内容寻址�
 ### `release.yml` — 打 tag 时
 
 ```
-verify    先跑一遍 CI 的全部检查（tag 不该绕过测试）
+verify    先跑一遍 CI 的全部检查，并核对更新服务与当前发布仓库
 android   签名 AAB
           同时构建签名 APK，供 GitHub Release 下载
 publish   用 Actions 自带的 GITHUB_TOKEN 把 APK 发布到当前仓库的 Release
 ios       编译归档（不签名）
 ```
 
-发布时先把 `app/pubspec.yaml` 的版本升到例如 `0.2.0+2`，然后推送同版本 tag `v0.2.0`。源码和 Release 都位于公开的 `csic21/pure-cycling`，App 无需 GitHub token 即可检查更新。Android 签名四项 Secret 也必须齐全，发布任务才会生成可安装的 APK。首次发布前请备份签名 keystore；后续更新必须使用同一把签名密钥。
+发布时先把 `app/pubspec.yaml` 的版本升到例如 `0.2.0+2`，然后推送同版本 tag `v0.2.0`。源码和 Release 都位于公开的 `csic21/pure-cycling`。Android 签名四项 Secret 也必须齐全，发布任务才会生成可安装的 APK。首次发布前请备份签名 keystore；后续更新必须使用同一把签名密钥。
 
-App 启动时每天最多静默检查一次 GitHub 最新 Release，也可以在「设置 → 关于 → 检查更新」手动检查。检测到新版本后，Android 用户点击下载 APK 并由系统确认安装。iOS 会显示版本说明，安装更新仍由 TestFlight 或 App Store 完成。GitHub Release 的 APK 不会自动替换正在运行的 App。
+App 启动时每天最多静默检查一次最新 Release，也可以在「设置 → 关于 → 检查更新」手动检查。检测到新版本后，Android 用户点击下载 APK 并由系统确认安装。iOS 会显示版本说明，安装更新仍由 TestFlight 或 App Store 完成。GitHub Release 的 APK 不会自动替换正在运行的 App。
+
+### 更新检查为什么要走中转
+
+**App 不直接问 GitHub。** 匿名调 `api.github.com` 的配额是 **60 次/小时，按公网 IP 计**，
+而这个额度是整个 IP 后面的所有人共用的。国内运营商大量使用 CGNAT，
+一个公网 IPv4 后面是成百上千个用户 —— 额度被陌生人花光，
+每个骑手都拿到一个 403，而重试在接下来一小时内都不会有用。
+这个配额不在 App 手里，所以 App 做什么都没用。
+
+`supabase/functions/release` 查询 GitHub，并将结果保存在
+Postgres 的 `release_cache` 中。数据库租约保证不同边缘实例同时收到请求时
+只有一个实例回源；成功结果缓存十分钟，没有 Release 的结果缓存 30 秒。
+GitHub 暂时不可用时最多沿用一天内的上次成功结果，并短暂退避。
+
+它和另外两个函数不同，是**唯一不要求会话**的：它转发的是公开仓库的公开信息，
+没有秘密可保护，而要求会话会让退出登录的骑手查不了更新。
+`scripts/check-functions-config.sh` 会断言它保持公开，免得被当成漏配改回去。
+
+首次部署和 fork 部署的顺序：先应用 `20260928084427_release_cache.sql`
+迁移，再部署函数。默认仓库是 `csic21/pure-cycling`；fork 必须设置
+`RELEASE_REPOSITORY` 为**这次工作流发布到的仓库**。数据库配置不可用时函数返回 503。
+
+```sh
+supabase db push --linked
+supabase functions deploy release --no-verify-jwt
+./scripts/check-release-service.sh "$SUPABASE_FUNCTIONS_URL" csic21/pure-cycling
+```
+
+fork 在部署前运行 `supabase secrets set RELEASE_REPOSITORY=owner/repo`。
+`GITHUB_TOKEN` 可选：配置后匿名 API 的额度问题会进一步减轻；没有 token 时，
+共享缓存限制请求量，若 GitHub API 仍限流，函数会使用 GitHub 官方的
+`/releases/latest` 链接取得版本，并验证当前和早期版本使用的 APK 下载链接。
+此回退不会提供完整的 Release 说明，App 会引导用户查看 GitHub 页面。
+发布工作流会在构建前调用公开的更新接口，检查它已部署、缓存可用且
+`X-Release-Repository` 与当前 `$GITHUB_REPOSITORY` 一致。首次发布时
+`release_missing` 的 404 是正常状态；其他 404 或 503 会阻止发布。
 
 Apple 的部分**故意停在编译**。上架 TestFlight 还需要 App Store Connect API key、分发证书和 provisioning profile——三个额外的 secret，以及「要不要从 CI 发布」这个决定。现在的产物是编译检查和冒烟测试用的构建，不是可上架的构建。
 

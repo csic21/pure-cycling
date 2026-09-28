@@ -2,8 +2,9 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-/// Public repository that hosts the app source and installable releases.
-/// A shipped app queries its releases without embedding a GitHub token.
+import '../sync/functions_config.dart';
+
+/// Repository whose APK was built into this app's release pipeline.
 abstract final class ReleaseSource {
   static const repository = String.fromEnvironment(
     'GITHUB_RELEASE_REPO',
@@ -36,6 +37,17 @@ class ReleaseCheckException implements Exception {
   String toString() => message;
 }
 
+/// Reads the latest published release and says whether it is newer than the
+/// installed build.
+///
+/// It asks the project's relay, not GitHub. Asking GitHub from the device does
+/// not work: anonymous requests are capped at 60 per hour *per public IP*, and
+/// that budget is shared by everything behind the address — which on a Chinese
+/// carrier is thousands of riders. See
+/// `supabase/functions/release/handler.ts` for the whole story.
+///
+/// The payload is still GitHub's release JSON, which is what the parsing below
+/// is written against; the relay passes it through rather than reshaping it.
 class GitHubReleaseChecker {
   GitHubReleaseChecker({http.Client? client})
     : _client = client ?? http.Client();
@@ -45,42 +57,55 @@ class GitHubReleaseChecker {
   void close() => _client.close();
 
   /// Returns null when the installed version is already current.
+  ///
+  /// [relayUrl] defaults to the configured relay. It is a parameter so tests
+  /// can point at a stub.
   Future<AppRelease?> check({
     required String installedVersion,
-    String repository = ReleaseSource.repository,
+    String? relayUrl,
   }) async {
-    if (repository.isEmpty) {
-      throw const ReleaseCheckException('尚未配置公开的 GitHub Release 更新源');
+    final endpoint = (relayUrl ?? FunctionsConfig.releaseUrl)?.trim() ?? '';
+    if (endpoint.isEmpty) {
+      throw const ReleaseCheckException('这个版本没有配置更新服务，无法检查更新');
     }
-    if (!RegExp(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$').hasMatch(repository)) {
-      throw const ReleaseCheckException('更新源配置不正确');
+    final api = Uri.tryParse(endpoint);
+    if (api == null || api.scheme != 'https' || api.host.isEmpty) {
+      throw const ReleaseCheckException('更新服务地址不安全');
     }
 
-    final api = Uri.https(
-      'api.github.com',
-      '/repos/$repository/releases/latest',
-    );
     late http.Response response;
     try {
       response = await _client
-          .get(
-            api,
-            headers: {
-              'Accept': 'application/vnd.github+json',
-              'User-Agent': 'pure-cycling-app',
-              'X-GitHub-Api-Version': '2022-11-28',
-            },
-          )
-          .timeout(const Duration(seconds: 8));
+          .get(api, headers: {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 10));
     } catch (_) {
       throw const ReleaseCheckException('无法连接更新服务，请稍后重试');
     }
 
     if (response.statusCode == 404) {
-      throw const ReleaseCheckException('还没有公开的 GitHub Release');
+      // The Supabase gateway also returns 404 when the function has not been
+      // deployed. Only the relay's own structured 404 means no Release yet.
+      try {
+        final body = jsonDecode(utf8.decode(response.bodyBytes));
+        if (response.headers['x-release-repository']?.toLowerCase() ==
+                ReleaseSource.repository.toLowerCase() &&
+            body is Map<String, dynamic> &&
+            body['code'] == 'release_missing') {
+          throw const ReleaseCheckException('还没有公开的 GitHub Release');
+        }
+      } on ReleaseCheckException {
+        rethrow;
+      } catch (_) {
+        // An HTML or malformed gateway error is still a service failure.
+      }
+      throw const ReleaseCheckException('更新服务尚未就绪，请稍后重试');
     }
     if (response.statusCode != 200) {
       throw const ReleaseCheckException('更新服务暂时不可用，请稍后重试');
+    }
+    if (response.headers['x-release-repository']?.toLowerCase() !=
+        ReleaseSource.repository.toLowerCase()) {
+      throw const ReleaseCheckException('更新服务与安装包来源不一致');
     }
 
     try {
@@ -94,7 +119,7 @@ class GitHubReleaseChecker {
       }
       if (_compareVersions(version, installed) <= 0) return null;
 
-      final pageUrl = _githubUri(json['html_url']);
+      final pageUrl = _githubUri(json['html_url'], 'tag');
       if (pageUrl == null) {
         throw const ReleaseCheckException('Release 下载地址不安全');
       }
@@ -104,7 +129,7 @@ class GitHubReleaseChecker {
         if (asset is! Map<String, dynamic>) continue;
         final name = asset['name'];
         if (name is! String || !name.toLowerCase().endsWith('.apk')) continue;
-        apkUrl = _githubUri(asset['browser_download_url']);
+        apkUrl = _githubUri(asset['browser_download_url'], 'download');
         if (apkUrl != null) break;
       }
 
@@ -142,12 +167,14 @@ class GitHubReleaseChecker {
     return 0;
   }
 
-  static Uri? _githubUri(dynamic raw) {
+  static Uri? _githubUri(dynamic raw, String kind) {
     if (raw is! String) return null;
     final uri = Uri.tryParse(raw);
     if (uri == null || uri.scheme != 'https' || uri.host != 'github.com') {
       return null;
     }
+    final expected = '/${ReleaseSource.repository.toLowerCase()}/releases/$kind/';
+    if (!uri.path.toLowerCase().startsWith(expected)) return null;
     return uri;
   }
 }

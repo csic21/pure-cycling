@@ -44,8 +44,27 @@ abstract final class AppColors {
   /// Synced / confirmed.
   static const Color success = Color(0xFF30D158);
 
-  static const Color trackLine = Color(0xFFC8FF3D);
+  /// The planned route — the line the rider is following.
+  ///
+  /// This is the accent, and on a map it is the only thing that should be.
+  /// Planning a good cycling route is the product's primary action, and the
+  /// route line is where that action becomes visible.
   static const Color routeLine = Color(0xFFC8FF3D);
+
+  /// The recorded track — where the rider has actually been.
+  ///
+  /// Deliberately *not* the accent, even on the screens where it is the only
+  /// line drawn. The accent means "in progress / primary action", and the
+  /// live thing on a map is the position marker, which already carries it. A
+  /// track is a fact about the past. Both being accent-lime meant that in
+  /// navigation — the one screen that draws a route *and* a track on the same
+  /// map — two lines shared the colour that is supposed to mean one thing.
+  ///
+  /// The value is the midpoint of the theme's own text ramp, halfway between
+  /// `textSecondary` and `textTertiary`. It reads on both the dimmed basemap
+  /// and AMap's light one, and recedes next to the route drawn over it.
+  static const Color trackLine = Color(0xFF8A8F95);
+
   static const Color elevationFill = Color(0x33C8FF3D);
 }
 

@@ -407,6 +407,22 @@ verify_jwt = true
 # that names a user), but the identity is the whole operation.
 verify_jwt = true
 
+[functions.release]
+# The one function that is deliberately open, and the exception is the point:
+# it serves the latest Release of a public repository — the same bytes GitHub
+# would hand anyone who asked. There is no secret to protect, so a session
+# would buy nothing here, while requiring one would break the update check for
+# every rider who is signed out.
+#
+# It is not a free proxy either, and what stops it is upstream rather than in
+# front: the request cannot steer the GitHub call (the repository and the
+# endpoint are deployment settings, not parameters), and the response is
+# held in a service-role-only Postgres table with a refresh lease, so
+# hammering the relay does not become hammering GitHub.
+#
+# Deploy with: supabase functions deploy release --no-verify-jwt
+verify_jwt = false
+
 [analytics]
 # Logflare plus a vector sidecar, for a log pipeline this project does not
 # consume. Off to keep the local stack small.
