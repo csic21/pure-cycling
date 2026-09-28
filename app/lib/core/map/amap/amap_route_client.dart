@@ -1,4 +1,4 @@
-/// The HTTP surface the AMap route provider needs.
+/// The HTTP surface the AMap route and place providers need.
 ///
 /// Two implementations, one provider: talking to the vendor with the rider's
 /// own key ([AmapClient]), or to our routing relay with the rider's session
@@ -13,7 +13,7 @@ abstract interface class AmapRouteClient {
 
   /// Fetches [path] and returns the decoded AMap envelope.
   ///
-  /// The route provider only ever asks for `/v5/direction/bicycling`. The
-  /// relay asserts the same thing at its end — it is not a general gateway.
+  /// The relay accepts only route planning and place search; it is not a
+  /// general gateway.
   Future<Map<String, dynamic>> get(String path, Map<String, String> params);
 }
