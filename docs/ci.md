@@ -156,7 +156,7 @@ ios       编译归档（不签名）
 
 发布时先把 `app/pubspec.yaml` 的版本升到例如 `0.2.0+2`，然后推送同版本 tag `v0.2.0`。源码和 Release 都位于公开的 `csic21/pure-cycling`。Android 签名四项 Secret 也必须齐全，发布任务才会生成可安装的 APK。首次发布前请备份签名 keystore；后续更新必须使用同一把签名密钥。
 
-App 启动时每天最多静默检查一次最新 Release，也可以在「设置 → 关于 → 检查更新」手动检查。检测到新版本后，Android 用户点击下载 APK 并由系统确认安装。iOS 会显示版本说明，安装更新仍由 TestFlight 或 App Store 完成。GitHub Release 的 APK 不会自动替换正在运行的 App。
+App 启动时每天最多静默检查一次最新 Release，也可以在「设置 → 关于 → 检查更新」手动检查。检测到新版本后，Android 用户点击「安装更新」，App 在内部下载 APK 并显示进度，然后打开系统安装界面。用户需要确认安装；部分设备首次使用时还需要允许「从此应用安装」。iOS 会显示版本说明，安装更新仍由 TestFlight 或 App Store 完成。GitHub Release 的 APK 不会自动替换正在运行的 App。
 
 ### 更新检查为什么要走中转
 

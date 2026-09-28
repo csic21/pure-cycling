@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
@@ -5,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'apk_updater.dart';
 import 'github_release_checker.dart';
 
 const _lastCheckKey = 'github_release_last_check';
@@ -74,9 +77,27 @@ Future<void> checkForAppUpdate(
           TextButton(
             onPressed: () async {
               Navigator.of(dialogContext).pop();
+              if (downloadUrl != null) {
+                final result = await showDialog<Object>(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (_) => _ApkDownloadDialog(url: downloadUrl),
+                );
+                if (!context.mounted || result == null) return;
+                if (result is ApkUpdateException) {
+                  _message(context, result.message);
+                  return;
+                }
+                try {
+                  await ApkUpdater.install(result as File);
+                } on ApkUpdateException catch (error) {
+                  if (context.mounted) _message(context, error.message);
+                }
+                return;
+              }
               try {
                 final opened = await launchUrl(
-                  downloadUrl ?? release!.pageUrl,
+                  release!.pageUrl,
                   mode: LaunchMode.externalApplication,
                 );
                 if (!opened && context.mounted) {
@@ -86,7 +107,7 @@ Future<void> checkForAppUpdate(
                 if (context.mounted) _message(context, '无法打开更新页面');
               }
             },
-            child: Text(downloadUrl == null ? '查看 Release' : '下载更新'),
+            child: Text(downloadUrl == null ? '查看 Release' : '安装更新'),
           ),
         ],
       ),
@@ -95,6 +116,78 @@ Future<void> checkForAppUpdate(
     if (!automatic && context.mounted) _message(context, error.message);
   } catch (_) {
     if (!automatic && context.mounted) _message(context, '检查更新失败，请稍后重试');
+  }
+}
+
+class _ApkDownloadDialog extends StatefulWidget {
+  const _ApkDownloadDialog({required this.url});
+
+  final Uri url;
+
+  @override
+  State<_ApkDownloadDialog> createState() => _ApkDownloadDialogState();
+}
+
+class _ApkDownloadDialogState extends State<_ApkDownloadDialog> {
+  final _updater = ApkUpdater();
+  int _received = 0;
+  int? _total;
+
+  @override
+  void initState() {
+    super.initState();
+    _download();
+  }
+
+  Future<void> _download() async {
+    try {
+      final file = await _updater.download(
+        widget.url,
+        onProgress: (received, total) {
+          if (!mounted) return;
+          setState(() {
+            _received = received;
+            _total = total;
+          });
+        },
+      );
+      if (mounted) Navigator.of(context).pop(file);
+    } on ApkUpdateException catch (error) {
+      if (mounted) Navigator.of(context).pop(error);
+    }
+  }
+
+  @override
+  void dispose() {
+    _updater.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = _total == null ? null : _received / _total!;
+    final receivedMb = (_received / 1024 / 1024).toStringAsFixed(1);
+    final totalMb = _total == null
+        ? ''
+        : ' / ${(_total! / 1024 / 1024).toStringAsFixed(1)} MB';
+    return AlertDialog(
+      title: const Text('正在下载更新'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LinearProgressIndicator(value: progress),
+          const SizedBox(height: 12),
+          Text('$receivedMb MB$totalMb'),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+    );
   }
 }
 
