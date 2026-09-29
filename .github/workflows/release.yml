@@ -172,6 +172,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # This job publishes an artifact but also runs a repository script — the
+      # feed check after the Release is created — so it needs the checkout too.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: android-release
