@@ -217,6 +217,69 @@ void main() {
   });
 
   group('distance and speed', () {
+    test('phone GPS movement overrides a stuck Android zero speed', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        var travelled = 0.0;
+        for (var i = 0; i < 10; i++) {
+          advance(const Duration(seconds: 1));
+          travelled += 5;
+          engine.onLocation(fixAt(origin, travelled, clock(), speed: 0));
+        }
+
+        expect(engine.state.stats.distanceMeters, greaterThan(20));
+        expect(engine.state.stats.currentSpeedMps, greaterThan(2));
+        expect(engine.state.autoPaused, isFalse);
+
+        for (var i = 0; i < 8; i++) {
+          advance(const Duration(seconds: 1));
+          engine.onLocation(fixAt(origin, travelled, clock(), speed: 0));
+        }
+        expect(engine.state.autoPaused, isTrue);
+        engine.dispose();
+      });
+    });
+
+    test('slow GPS movement also escapes a stuck zero speed', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        var travelled = 0.0;
+        for (var i = 0; i < 14; i++) {
+          advance(const Duration(seconds: 1));
+          travelled += 2;
+          engine.onLocation(fixAt(origin, travelled, clock(), speed: 0));
+        }
+        expect(engine.state.stats.currentSpeedMps, greaterThan(1));
+        expect(engine.state.stats.distanceMeters, greaterThan(10));
+        engine.dispose();
+      });
+    });
+
+    test('GPS jitter with a zero speed does not create movement', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        for (final offset in [
+          0.0,
+          5.0,
+          -4.0,
+          6.0,
+          -5.0,
+          4.0,
+          0.0,
+          -6.0,
+          5.0,
+          0.0,
+        ]) {
+          advance(const Duration(seconds: 1));
+          engine.onLocation(fixAt(origin, offset, clock(), speed: 0));
+        }
+        expect(engine.state.stats.currentSpeedMps, 0);
+        expect(engine.state.stats.distanceMeters, 0);
+        expect(engine.state.autoPaused, isFalse);
+        engine.dispose();
+      });
+    });
+
     test('a steady 18 km/h ride reports a plausible distance and speed', () {
       withRide((advance, clock, starve) {
         final engine = startRiding(clock: clock);

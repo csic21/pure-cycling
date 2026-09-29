@@ -130,18 +130,17 @@ class GpsFilterConfig {
     double? maxAccuracyMeters,
     int? longGapSeconds,
     double? gradeWindowMeters,
-  }) =>
-      GpsFilterConfig(
-        maxAccuracyMeters: maxAccuracyMeters ?? this.maxAccuracyMeters,
-        maxSpeedMps: maxSpeedMps,
-        reportedSpeedCeilingMps: reportedSpeedCeilingMps,
-        longGapSeconds: longGapSeconds ?? this.longGapSeconds,
-        longGapMaxSpeedMps: longGapMaxSpeedMps,
-        speedSmoothingAlpha: speedSmoothingAlpha,
-        gradeWindowMeters: gradeWindowMeters ?? this.gradeWindowMeters,
-        minSpeedToReportMps: minSpeedToReportMps,
-        minAltitudeSmoothingAlpha: minAltitudeSmoothingAlpha,
-      );
+  }) => GpsFilterConfig(
+    maxAccuracyMeters: maxAccuracyMeters ?? this.maxAccuracyMeters,
+    maxSpeedMps: maxSpeedMps,
+    reportedSpeedCeilingMps: reportedSpeedCeilingMps,
+    longGapSeconds: longGapSeconds ?? this.longGapSeconds,
+    longGapMaxSpeedMps: longGapMaxSpeedMps,
+    speedSmoothingAlpha: speedSmoothingAlpha,
+    gradeWindowMeters: gradeWindowMeters ?? this.gradeWindowMeters,
+    minSpeedToReportMps: minSpeedToReportMps,
+    minAltitudeSmoothingAlpha: minAltitudeSmoothingAlpha,
+  );
 }
 
 /// Validation and smoothing in front of the distance calculator (spec §13).
@@ -156,6 +155,9 @@ class GpsFilter {
 
   LocationFix? _lastAccepted;
   double? _smoothedSpeed;
+  LocationFix? _zeroSpeedAnchor;
+  double _zeroSpeedPathMeters = 0;
+  bool _zeroSpeedMovementConfirmed = false;
 
   /// The GPS altitude series. The one that drifts.
   double? _smoothedGpsAltitude;
@@ -303,8 +305,9 @@ class GpsFilter {
 
     // A negative accuracy is the platform saying "I cannot quantify this",
     // which is not the same statement as zero error.
-    _compassAccuracy =
-        (accuracyDegrees != null && accuracyDegrees >= 0) ? accuracyDegrees : null;
+    _compassAccuracy = (accuracyDegrees != null && accuracyDegrees >= 0)
+        ? accuracyDegrees
+        : null;
     _compassHeading = normalizeBearing(degrees);
     _compassAt = at;
   }
@@ -313,10 +316,7 @@ class GpsFilter {
   ///
   /// [cumulativeDistanceMeters] is the ride distance *before* this sample,
   /// needed to place the sample in the gradient window.
-  ProcessedFix process(
-    LocationFix fix, {
-    double cumulativeDistanceMeters = 0,
-  }) {
+  ProcessedFix process(LocationFix fix, {double cumulativeDistanceMeters = 0}) {
     totalFixes++;
 
     // A barometer that stops reporting has to hand the altitude back to GPS,
@@ -337,8 +337,7 @@ class GpsFilter {
       return _acceptFirst(fix);
     }
 
-    final dtMs =
-        fix.timestamp.difference(last.timestamp).inMilliseconds;
+    final dtMs = fix.timestamp.difference(last.timestamp).inMilliseconds;
 
     if (dtMs <= 0) {
       rejectedFixes++;
@@ -363,8 +362,12 @@ class GpsFilter {
     }
 
     final dtSeconds = dtMs / 1000.0;
-    final meters =
-        haversineMeters(last.latitude, last.longitude, fix.latitude, fix.longitude);
+    final meters = haversineMeters(
+      last.latitude,
+      last.longitude,
+      fix.latitude,
+      fix.longitude,
+    );
     final impliedSpeed = meters / dtSeconds;
 
     if (fix.isMocked) {
@@ -470,6 +473,8 @@ class GpsFilter {
     );
 
     final speed = _smoothSpeed(
+      fix: fix,
+      previousFix: last,
       reported: fix.hasSpeed ? fix.speed : null,
       derived: impliedSpeed,
       distanceMeters: meters,
@@ -570,9 +575,11 @@ class GpsFilter {
   /// Doppler speed is smoother and unaffected by position noise, but some
   /// receivers report a stale or zero value. The derived speed is exact for
   /// the segment in hand but explodes when the time delta is tiny. When they
-  /// agree, weight the platform value; when they disagree, take the smaller
-  /// magnitude, because the failure mode of both is to over-report.
+  /// agree, weight the platform value. Sustained position change can also
+  /// disprove a platform speed stuck at zero.
   double _smoothSpeed({
+    required LocationFix fix,
+    required LocationFix previousFix,
     required double? reported,
     required double derived,
     required double distanceMeters,
@@ -581,7 +588,8 @@ class GpsFilter {
   }) {
     double candidate;
 
-    final reportedUsable = reported != null &&
+    final reportedUsable =
+        reported != null &&
         reported.isFinite &&
         reported >= 0 &&
         reported < config.reportedSpeedCeilingMps;
@@ -589,7 +597,54 @@ class GpsFilter {
     // Derived speed is meaningless when the segment is shorter than the GPS
     // noise floor or the interval is too short to divide by.
     final derivedUsable =
-        distanceMeters >= 3.0 && dtSeconds >= 0.5 && derived < config.maxSpeedMps;
+        distanceMeters >= 3.0 &&
+        dtSeconds >= 0.5 &&
+        derived < config.maxSpeedMps;
+
+    // Some Android providers keep reporting Doppler speed as zero while
+    // positions move. One segment can be GPS jitter, so only override that
+    // zero after several fixes have moved consistently beyond the accuracy
+    // radius. Keep the decision until a genuinely stationary fix arrives.
+    final zeroReported =
+        reportedUsable && reported < config.minSpeedToReportMps;
+    double? confirmedPositionSpeed;
+    if (zeroReported) {
+      var anchor = _zeroSpeedAnchor ?? previousFix;
+      if (!_zeroSpeedMovementConfirmed &&
+          fix.timestamp.difference(anchor.timestamp) >
+              const Duration(seconds: 12)) {
+        anchor = previousFix;
+        _zeroSpeedPathMeters = 0;
+      }
+      _zeroSpeedAnchor = anchor;
+      _zeroSpeedPathMeters += distanceMeters;
+      final netMeters = haversineMeters(
+        anchor.latitude,
+        anchor.longitude,
+        fix.latitude,
+        fix.longitude,
+      );
+      final spanSeconds =
+          fix.timestamp.difference(anchor.timestamp).inMilliseconds / 1000;
+      final accuracy = anchor.accuracy > fix.accuracy
+          ? anchor.accuracy
+          : fix.accuracy;
+      final radius = (accuracy * 2).clamp(12.0, 25.0);
+      if (!_zeroSpeedMovementConfirmed &&
+          spanSeconds >= 2 &&
+          netMeters >= radius &&
+          netMeters >= _zeroSpeedPathMeters * 0.7 &&
+          netMeters / spanSeconds >= config.minSpeedToReportMps) {
+        _zeroSpeedMovementConfirmed = true;
+      }
+      if (_zeroSpeedMovementConfirmed) {
+        confirmedPositionSpeed = derivedUsable
+            ? derived
+            : netMeters / spanSeconds;
+      }
+    } else {
+      _resetZeroSpeedConflict();
+    }
 
     // ---- The stopped case, decided immediately ----
     //
@@ -602,12 +657,18 @@ class GpsFilter {
     // time the auto-pause rule is not yet counting toward its delay. A rider
     // who brakes at a red light would wait roughly ten seconds for a pause
     // configured at five.
-    if (distanceMeters < 2.0 && reportedUsable && reported < 2.0) {
+    final stopRadius = _zeroSpeedMovementConfirmed
+        ? ((_smoothedSpeed ?? 0) * dtSeconds * 0.25).clamp(0.5, 2.0)
+        : 2.0;
+    if (distanceMeters < stopRadius && reportedUsable && reported < 2.0) {
+      if (_zeroSpeedMovementConfirmed) _resetZeroSpeedConflict();
       _smoothedSpeed = reported;
       return _smoothedSpeed!;
     }
 
-    if (reportedUsable && derivedUsable) {
+    if (confirmedPositionSpeed != null) {
+      candidate = confirmedPositionSpeed;
+    } else if (reportedUsable && derivedUsable) {
       final diff = (reported - derived).abs();
       final tolerance = (reported * 0.35).clamp(1.5, 6.0);
       candidate = diff <= tolerance
@@ -647,8 +708,13 @@ class GpsFilter {
       alpha = (alpha * 2.0).clamp(0.0, 0.7);
     }
 
-    var smoothed =
-        previous == null ? candidate : previous + alpha * (candidate - previous);
+    var smoothed = previous == null
+        ? candidate
+        : previous + alpha * (candidate - previous);
+    if (confirmedPositionSpeed != null && previous == 0) {
+      // EMA from zero can remain below the display floor on a slow ride.
+      smoothed = candidate;
+    }
 
     // Snap to zero at a standstill. Without this the readout sits at
     // "0.6 km/h" at every red light, which reads as a bug.
@@ -663,6 +729,12 @@ class GpsFilter {
 
     _smoothedSpeed = smoothed < 0 ? 0 : smoothed;
     return _smoothedSpeed!;
+  }
+
+  void _resetZeroSpeedConflict() {
+    _zeroSpeedAnchor = null;
+    _zeroSpeedPathMeters = 0;
+    _zeroSpeedMovementConfirmed = false;
   }
 
   /// Smooths the altitude series, scaled to how much the source can be
@@ -877,6 +949,7 @@ class GpsFilter {
   void reset() {
     _lastAccepted = null;
     _smoothedSpeed = null;
+    _resetZeroSpeedConflict();
     _smoothedGpsAltitude = null;
     _bearing = null;
     _gradeWindow.clear();
@@ -916,6 +989,7 @@ class GpsFilter {
   }) {
     _lastAccepted = lastFix;
     _smoothedSpeed = smoothedSpeed;
+    _resetZeroSpeedConflict();
     _smoothedGpsAltitude = smoothedAltitude;
     _gradeWindow.clear();
     _gradeWindowDistance = 0;
@@ -925,6 +999,5 @@ class GpsFilter {
   }
 
   /// Fraction of samples rejected, `0..1`, for the GPS quality indicator.
-  double get rejectionRatio =>
-      totalFixes == 0 ? 0 : rejectedFixes / totalFixes;
+  double get rejectionRatio => totalFixes == 0 ? 0 : rejectedFixes / totalFixes;
 }
