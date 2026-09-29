@@ -95,3 +95,10 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // GPS_PROVIDER requests go through LocationRequestCompat. The same
+    // artifact geolocator already uses; the app has to name it because a
+    // plugin's implementation dependency is not on this module's classpath.
+    implementation("androidx.core:core:1.16.0")
+}

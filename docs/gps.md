@@ -109,7 +109,7 @@ Dart 取消最后一个监听
 
 **冻结的是哪一档，要说准**：是**锁屏那一刻生效的请求**，不是骑手选的那一档。
 边骑边锁屏 → 冻结在所选精度和间隔；锁屏前刚停过 30 秒 → 冻结在所选精度、5 秒一次。
-精度不降到 `medium`：那一档会让融合定位把卫星芯片休眠，下一个点要等很久，
+精度不降到 `medium`：那一档会让系统把卫星芯片休眠，下一个点要等很久，
 红灯处信号图标就会变红。距离和爬升不受影响（距离计算器的锚点设计让延迟的点照常入账），
 付出的是轨迹分辨率，以及自动恢复最多晚 5 秒，停车时也比「休眠精度」更费电。
 这是一个可以接受的取舍，但不能说成「没有影响」。
@@ -231,7 +231,7 @@ AndroidSettings(
   accuracy: LocationAccuracy.best,
   distanceFilter: 0,                          // 关键
   intervalDuration: Duration(seconds: 1),
-  forceLocationManager: false,                // 用 FusedLocationProvider
+  forceLocationManager: true,                 // 不依赖 Google Play 服务
   useMSLAltitude: true,
   foregroundNotificationConfig: ForegroundNotificationConfig(
     notificationTitle: '正在记录骑行',
@@ -242,15 +242,24 @@ AndroidSettings(
 )
 ```
 
+高精度和均衡档在这条流旁边再直接向 `LocationManager.GPS_PROVIDER` 要卫星点
+（`app.purecycling/gnss`，约 1 Hz，每个历元都交上来）。多普勒时速来自
+`Location.getSpeed()`。geolocator 这条流保持订阅：它的前台服务让灭屏之后卫星点
+仍然合法，卫星流报错或安静超过 3 秒时改由它供数。两路同时到达时只采纳卫星点，
+避免距离被记两次。省电档不打开卫星通道。海拔优先用 NMEA GGA 的海拔（5 秒内），
+其次是 API 34 的海平面高度，避免卫星流接手时爬升突然跳几十米。
+
+iOS 高精度使用 `LocationAccuracy.bestForNavigation`，并保持
+`pauseLocationUpdatesAutomatically: false` 与 `activityType: otherNavigation`。
+
+导航进行中，沿路线投影的距离差除以时间差用来补上停在 0 的多普勒速度。
+偏航、间隔短于 0.4 秒或长于 12 秒、结果低于 1.5 m/s（投影爬行）或已有
+不低于 0.5 m/s 的多普勒速度时，这个补速不进码表。轮速传感器仍然优先。
+
 ### `distanceFilter: 0` 是必须的
 
 平台默认的基于距离的过滤器会在低速时静默丢弃定位 —— 而那恰恰是自动暂停规则最需要数据的地方。
 如果设成 10 米，骑手在停车场里慢速挪动时一个点都收不到。
-
-### FusedLocationProvider
-
-`forceLocationManager: false` 使用 Google Play Services 的融合定位提供者。
-在所有装有 Play Services 的 Android 设备上，它的精度和耗电都明显优于原始的 LocationManager。
 
 ### `useMSLAltitude: true`
 
@@ -265,8 +274,8 @@ MSL 转换给出的是骑手在地图上能对上的数字。
 
 | 档位 | 精度（Android / iOS） | 间隔（Android） | 用途 |
 |---|---|---|---|
-| 高精度 | `best` | 1 秒 | 骑行默认 |
-| 均衡 | `high` | 2 秒 | 省电与精度折中 |
+| 高精度 | `best` / `bestForNavigation` | 1 秒 | 骑行默认。Android 另要 GPS_PROVIDER |
+| 均衡 | `high` | 2 秒 | 省电与精度折中。Android 同样走 GPS_PROVIDER |
 | 省电 | `medium` | 5 秒 | 长距离骑行、低电量。骑手自己选的，停车不会自动降到这一档 |
 
 **动态降采样已经实现**（`core/location/sampling_policy.dart`）。规则一句话：

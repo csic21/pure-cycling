@@ -77,10 +77,10 @@ class RideSession {
     required RouteProvider Function() routeProvider,
     required AppSettings settings,
     VoiceBackend? voiceBackend,
-  })  : _recorder = recorder,
-        _routeProvider = routeProvider,
-        _settings = settings,
-        _voiceBackend = voiceBackend ?? FlutterTtsVoiceBackend();
+  }) : _recorder = recorder,
+       _routeProvider = routeProvider,
+       _settings = settings,
+       _voiceBackend = voiceBackend ?? FlutterTtsVoiceBackend();
 
   final RideRecorder _recorder;
 
@@ -172,12 +172,7 @@ class RideSession {
   void clearRoute() {
     _navigation?.dispose();
     _navigation = null;
-    _emit(
-      _state.copyWith(
-        clearNavigation: true,
-        route: null,
-      ),
-    );
+    _emit(_state.copyWith(clearNavigation: true, route: null));
   }
 
   void pause() => _recorder.pause();
@@ -275,14 +270,14 @@ class RideSession {
       // The coach is rebuilt with the engine: a new route means the
       // announcement state — which turn, which band — starts over too.
       final previous = _voice;
-      _voice = VoiceCoach(
-        backend: _voiceBackend,
-        config: _settings.navigation,
-      );
+      _voice = VoiceCoach(backend: _voiceBackend, config: _settings.navigation);
       if (previous != null) unawaited(previous.dispose());
 
       _navSub?.cancel();
       _navSub = _navigation!.snapshots.listen((snapshot) {
+        _recorder.noteRouteMatch(
+          snapshot.offRoute ? null : snapshot.matchedSpeedMps,
+        );
         _voice?.onSnapshot(snapshot);
         _emit(_state.copyWith(navigation: snapshot));
       });
@@ -315,11 +310,9 @@ class RideSession {
 
   static String _permissionMessage(LocationPermissionStatus? status) {
     return switch (status) {
-      LocationPermissionStatus.serviceDisabled =>
-        '系统定位服务未开启，请在设置中打开后重试',
+      LocationPermissionStatus.serviceDisabled => '系统定位服务未开启，请在设置中打开后重试',
       LocationPermissionStatus.denied => '未获得定位权限，无法记录骑行',
-      LocationPermissionStatus.deniedForever =>
-        '定位权限已被永久拒绝，请在系统设置中手动开启',
+      LocationPermissionStatus.deniedForever => '定位权限已被永久拒绝，请在系统设置中手动开启',
       LocationPermissionStatus.notDetermined => '未能确认定位权限',
       _ => '无法开始记录，请检查定位权限',
     };

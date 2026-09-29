@@ -355,8 +355,10 @@ class RideEngine {
   double _currentSpeed = 0;
   double? _gpsSpeedMps;
   double? _wheelSpeedMps;
+  double? _routeSpeedMps;
   DateTime? _lastWheelSpeedAt;
   DateTime? _lastGpsSpeedAt;
+  DateTime? _routeSpeedAt;
   double? _grade;
 
   double _gpsAccuracy = 0;
@@ -539,12 +541,13 @@ class RideEngine {
 
     _gpsSpeedMps = gpsSpeed;
     _lastGpsSpeedAt = _now();
-    // A fresh wheel reading is the direct measurement of bicycle speed.
-    // Keep using it when GPS also reports fixes; otherwise every GPS update
-    // overwrites the sensor and the speed display appears unresponsive.
-    final speed = _freshWheelSpeed ? _wheelSpeedMps! : gpsSpeed;
+    // Wheel, then a fresh along-route fill, then the Doppler sample. The
+    // route fill is only there when this fix's own speed is stuck near zero.
+    _syncDisplayedSpeed();
+    final speed = _currentSpeed;
+    final pauseSpeed = _speedForAutoPause() ?? speed;
     final transition = _status == RideStatus.riding
-        ? _applyAutoPause(speed, _now())
+        ? _applyAutoPause(pauseSpeed, _now())
         : (pausing: false, resuming: false);
     final isAutoPausing = transition.pausing;
     final isAutoResuming = transition.resuming;
@@ -805,19 +808,52 @@ class RideEngine {
       _freshWheelSpeed ||
       _coastingGpsSpeed ||
       _showStopped ||
-      _pausedHoldingZero;
+      _pausedHoldingZero ||
+      _useRouteSpeed;
+
+  /// Along-route speed is allowed to speak only while the receiver's own
+  /// speed is missing or stuck near zero. A live Doppler sample, a wheel
+  /// sensor, and a confirmed stop all outrank it. Below [_routeSpeedFloorMps]
+  /// the number is the projection creeping, not the bike.
+  static const Duration _routeSpeedFreshFor = Duration(seconds: 4);
+  static const double _routeSpeedFloorMps = 1.5;
+  static const double _liveDopplerMps = 0.5;
+  static const double _routeSpeedCeilingMps = 25;
+
+  bool get _freshRouteSpeed {
+    final speed = _routeSpeedMps;
+    final at = _routeSpeedAt;
+    return speed != null &&
+        at != null &&
+        speed >= _routeSpeedFloorMps &&
+        _now().difference(at) <= _routeSpeedFreshFor;
+  }
+
+  bool get _liveDoppler =>
+      _freshGpsSpeed &&
+      _gpsSpeedMps != null &&
+      _gpsSpeedMps! >= _liveDopplerMps;
+
+  bool get _useRouteSpeed =>
+      _freshRouteSpeed &&
+      !_freshWheelSpeed &&
+      !_showStopped &&
+      !_pausedHoldingZero &&
+      !_liveDoppler;
 
   /// Puts the displayed speed on the source that is allowed to speak.
   ///
-  /// Wheel, then a confirmed stop, then a fresh Doppler sample, then a short
-  /// coast, then decay. The coast is the last Doppler value, not a speed
-  /// computed from vibration — the accelerometer only decides whether that
-  /// value is still plausible.
+  /// Wheel, then a confirmed stop, then along-route speed when Doppler is
+  /// stuck, then a fresh Doppler sample, then a short coast, then decay. The
+  /// coast is the last Doppler value, not a speed computed from vibration —
+  /// the accelerometer only decides whether that value is still plausible.
   void _syncDisplayedSpeed() {
     if (_freshWheelSpeed) {
       _currentSpeed = _wheelSpeedMps!;
     } else if (_showStopped || _pausedHoldingZero) {
       _currentSpeed = 0;
+    } else if (_useRouteSpeed) {
+      _currentSpeed = _routeSpeedMps!;
     } else if (_freshGpsSpeed && _gpsSpeedMps != null) {
       _currentSpeed = _gpsSpeedMps!;
     } else if (_coastingGpsSpeed && _gpsSpeedMps != null) {
@@ -832,12 +868,50 @@ class RideEngine {
   /// Null when there is no evidence either way, so a brand-new ride does not
   /// pause just because the phone is lying still. A coast holds a ride that
   /// is already going; it does not start one, and it does not resume one.
+  /// Along-route speed counts here too: a receiver stuck at zero must not
+  /// pause a ride whose progress along the route is still increasing.
   double? _speedForAutoPause() {
     if (_freshWheelSpeed) return _wheelSpeedMps;
     if (_showStopped || _pausedHoldingZero) return 0;
+    if (_useRouteSpeed) return _routeSpeedMps;
     if (_freshGpsSpeed && _gpsSpeedMps != null) return _gpsSpeedMps;
     if (_coastingGpsSpeed) return _gpsSpeedMps;
     return null;
+  }
+
+  /// Records speed measured along the active route, in m/s.
+  ///
+  /// Null, or a value that is not a bicycle speed, clears it. The same value
+  /// only refreshes the timestamp: navigation re-emits a snapshot on the
+  /// position that just produced it, and publishing again would feed that
+  /// position straight back in.
+  void noteRouteMatch(double? speedMps) {
+    if (!_status.isActive) return;
+
+    final rejected =
+        speedMps == null ||
+        !speedMps.isFinite ||
+        speedMps < 0 ||
+        speedMps >= _routeSpeedCeilingMps;
+    if (rejected) {
+      if (_routeSpeedMps == null) return;
+      _routeSpeedMps = null;
+      _routeSpeedAt = null;
+    } else if (_routeSpeedMps == speedMps) {
+      _routeSpeedAt = _now();
+      return;
+    } else {
+      _routeSpeedMps = speedMps;
+      _routeSpeedAt = _now();
+    }
+
+    final previousSpeed = _currentSpeed;
+    final couldShowSpeed = _speedAvailable;
+    _syncDisplayedSpeed();
+    if (_currentSpeed > _maxSpeed) _maxSpeed = _currentSpeed;
+    if (_currentSpeed != previousSpeed || _speedAvailable != couldShowSpeed) {
+      _publish();
+    }
   }
 
   /// The accelerometer's verdict, or null when there is nothing current to go
@@ -1233,8 +1307,10 @@ class RideEngine {
     _currentSpeed = 0;
     _gpsSpeedMps = null;
     _wheelSpeedMps = null;
+    _routeSpeedMps = null;
     _lastWheelSpeedAt = null;
     _lastGpsSpeedAt = null;
+    _routeSpeedAt = null;
     _grade = null;
     _gpsAccuracy = 0;
     _lastFixAt = null;

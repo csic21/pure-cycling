@@ -54,6 +54,7 @@ class NavigationSnapshot {
     this.progress = 0,
     this.autoMapReason = MapAutoReason.none,
     this.rerouteCount = 0,
+    this.matchedSpeedMps,
   });
 
   final String routeId;
@@ -88,6 +89,14 @@ class NavigationSnapshot {
 
   final MapAutoReason autoMapReason;
 
+  /// Speed along the route geometry, in m/s, while the rider is on it.
+  ///
+  /// Fills a Doppler reading that the receiver left at zero. Null on the
+  /// first sample, off the route, or when the last sample is older than a
+  /// few seconds. A value under about 1.5 m/s is projection creep, and the
+  /// ride engine ignores it.
+  final double? matchedSpeedMps;
+
   /// How many times the route has been replanned, including the manual
   /// 「重新规划」action.
   ///
@@ -97,8 +106,7 @@ class NavigationSnapshot {
   /// distinguish "still off route" from "off route a second time".
   final int rerouteCount;
 
-  Maneuver get maneuver =>
-      currentInstruction?.maneuver ?? Maneuver.unknown;
+  Maneuver get maneuver => currentInstruction?.maneuver ?? Maneuver.unknown;
 
   bool get hasRoute => routeId.isNotEmpty;
 
@@ -119,6 +127,7 @@ class NavigationSnapshot {
     double? progress,
     MapAutoReason? autoMapReason,
     int? rerouteCount,
+    double? matchedSpeedMps,
   }) {
     return NavigationSnapshot(
       routeId: routeId,
@@ -140,24 +149,26 @@ class NavigationSnapshot {
       progress: progress ?? this.progress,
       autoMapReason: autoMapReason ?? this.autoMapReason,
       rerouteCount: rerouteCount ?? this.rerouteCount,
+      matchedSpeedMps: matchedSpeedMps ?? this.matchedSpeedMps,
     );
   }
 
   /// Clears the turn banner, which must be possible explicitly — a non-null
   /// `copyWith` cannot express "no next turn".
   NavigationSnapshot clearInstruction() => NavigationSnapshot(
-        routeId: routeId,
-        routeName: routeName,
-        mode: mode,
-        distanceAlongRouteMeters: distanceAlongRouteMeters,
-        distanceToDestinationMeters: distanceToDestinationMeters,
-        remainingDuration: remainingDuration,
-        eta: eta,
-        offRoute: offRoute,
-        offRouteMeters: offRouteMeters,
-        snappedPoint: snappedPoint,
-        progress: progress,
-        autoMapReason: autoMapReason,
-        rerouteCount: rerouteCount,
-      );
+    routeId: routeId,
+    routeName: routeName,
+    mode: mode,
+    distanceAlongRouteMeters: distanceAlongRouteMeters,
+    distanceToDestinationMeters: distanceToDestinationMeters,
+    remainingDuration: remainingDuration,
+    eta: eta,
+    offRoute: offRoute,
+    offRouteMeters: offRouteMeters,
+    snappedPoint: snappedPoint,
+    progress: progress,
+    autoMapReason: autoMapReason,
+    rerouteCount: rerouteCount,
+    matchedSpeedMps: matchedSpeedMps,
+  );
 }

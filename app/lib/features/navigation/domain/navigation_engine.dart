@@ -34,10 +34,10 @@ class NavigationEngine {
     required RouteProvider provider,
     NavigationConfig config = const NavigationConfig(),
     GroundSpeedProvider? groundSpeed,
-  })  : _route = route,
-        _provider = provider,
-        _config = config,
-        _groundSpeed = groundSpeed;
+  }) : _route = route,
+       _provider = provider,
+       _config = config,
+       _groundSpeed = groundSpeed;
 
   Route _route;
   final RouteProvider _provider;
@@ -61,6 +61,17 @@ class NavigationEngine {
 
   int _lastSegment = 0;
   double _along = 0;
+
+  /// Along-route speed, and the sample it was measured from.
+  ///
+  /// The anchor stays put when two fixes arrive closer than [_matchedMinDt]
+  /// so a burst does not freeze the previous speed. A stop (no progress)
+  /// then shows up as soon as the gap reaches that minimum.
+  double? _matchedSpeed;
+  DateTime? _matchedSpeedAt;
+  double? _matchedAlong;
+  DateTime? _matchedAlongAt;
+
   bool _disposed = false;
 
   /// When the rider first went off route, or null while on it.
@@ -82,6 +93,13 @@ class NavigationEngine {
   /// When the map should revert to the minimal view, or null if it should not.
   DateTime? _mapUntil;
 
+  /// The auto-map event the rider just dismissed, so the same junction or the
+  /// same off-route stretch cannot put the map straight back on the next fix.
+  ///
+  /// Null when nothing is being held off. A later, different event — the next
+  /// turn, or a new deviation — still raises the map.
+  String? _suppressedAutoMap;
+
   int _rerouteCount = 0;
 
   NavigationSnapshot get snapshot => _snapshot;
@@ -93,7 +111,8 @@ class NavigationEngine {
   /// Builds the geometry index and emits the first snapshot.
   void initialize({NavigationMode? mode}) {
     _rebuildIndex();
-    _mode = mode ??
+    _mode =
+        mode ??
         (_config.minimalByDefault
             ? NavigationMode.minimal
             : NavigationMode.map);
@@ -114,7 +133,8 @@ class NavigationEngine {
     final points = _route.points;
     _cumulative = List<double>.filled(points.length, 0);
     for (var i = 1; i < points.length; i++) {
-      _cumulative[i] = _cumulative[i - 1] +
+      _cumulative[i] =
+          _cumulative[i - 1] +
           haversineMeters(
             points[i - 1].lat,
             points[i - 1].lng,
@@ -126,20 +146,16 @@ class NavigationEngine {
     _instructionDistance = List<double>.filled(_route.instructions.length, 0);
     for (var i = 0; i < _route.instructions.length; i++) {
       final index = _route.instructions[i].startPolylineIndex;
-      _instructionDistance[i] =
-          (index >= 0 && index < _cumulative.length) ? _cumulative[index] : 0;
+      _instructionDistance[i] = (index >= 0 && index < _cumulative.length)
+          ? _cumulative[index]
+          : 0;
     }
   }
 
-  double get totalDistance =>
-      _cumulative.isEmpty ? 0 : _cumulative.last;
+  double get totalDistance => _cumulative.isEmpty ? 0 : _cumulative.last;
 
   /// Feeds a position.
-  void onPosition(
-    GeoPoint position,
-    double? headingDegrees, {
-    DateTime? now,
-  }) {
+  void onPosition(GeoPoint position, double? headingDegrees, {DateTime? now}) {
     if (_disposed || _route.points.length < 2) return;
 
     final at = now ?? DateTime.now();
@@ -158,6 +174,7 @@ class NavigationEngine {
     _lastSegment = match.segment;
 
     _updateOffRoute(position, match, at);
+    _updateMatchedSpeed(at);
     _updateAutoMap(at);
 
     _emit(buildSnapshot(at));
@@ -177,12 +194,22 @@ class NavigationEngine {
     _mode = NavigationMode.map;
     // A user request does not auto-dismiss: they asked for it.
     _mapUntil = null;
-    _emit(buildSnapshot(DateTime.now())
-        .copyWith(mode: _mode, autoMapReason: MapAutoReason.userRequest));
+    _suppressedAutoMap = null;
+    _emit(
+      buildSnapshot(
+        DateTime.now(),
+      ).copyWith(mode: _mode, autoMapReason: MapAutoReason.userRequest),
+    );
   }
 
-  /// Return to the minimal view, cancelling any pending auto-dismiss.
+  /// Return to the computer, and keep this auto-map event from undoing it.
+  ///
+  /// The next fix used to run [_updateAutoMap] and, if the rider was still
+  /// inside the same junction or still off route, put the map straight back.
+  /// The button then looked like it did nothing. The dismissal holds until
+  /// that event ends; the following turn or a new deviation still shows the map.
   void requestMinimal() {
+    _suppressedAutoMap = _autoMapTrigger(DateTime.now());
     _mode = NavigationMode.minimal;
     _mapUntil = null;
     _emit(buildSnapshot(DateTime.now()).copyWith(mode: _mode));
@@ -203,13 +230,15 @@ class NavigationEngine {
     _rebuildIndex();
     _along = 0;
     _lastSegment = 0;
+    _clearMatchedSpeed();
     _offRouteSince = null;
     _rerouting = false;
     _mapUntil = null;
+    _suppressedAutoMap = null;
     _mode = _config.minimalByDefault
         ? NavigationMode.minimal
         : NavigationMode.map;
-    _emit();
+    _emit(buildSnapshot(DateTime.now()));
   }
 
   /// Forces a reroute, e.g. from a manual "重新规划" action.
@@ -299,7 +328,8 @@ class NavigationEngine {
 
     if (bestSegment < 0 || bestDistance == null) return null;
 
-    final segmentLength = _cumulative[bestSegment + 1] - _cumulative[bestSegment];
+    final segmentLength =
+        _cumulative[bestSegment + 1] - _cumulative[bestSegment];
     final along = _cumulative[bestSegment] + segmentLength * bestT;
 
     return (along: along, segment: bestSegment, offsetMeters: bestDistance);
@@ -337,8 +367,80 @@ class NavigationEngine {
     return now.difference(since) >= const Duration(seconds: 5);
   }
 
+  /// Shortest gap that can be a speed, and the longest one that still is.
+  ///
+  /// Under [_matchedMinDt] the fixes are the same epoch. Over
+  /// [_matchedMaxDt] the rider was out of reception; dividing that gap
+  /// invents a speed for a tunnel.
+  static const Duration _matchedMinDt = Duration(milliseconds: 400);
+  static const Duration _matchedMaxDt = Duration(seconds: 12);
+  static const Duration _matchedFreshFor = Duration(seconds: 4);
+
+  /// Below this, progress is the projection creeping along the polyline.
+  static const double _matchedCreepMps = 1.5;
+  static const double _matchedCeilingMps = 25;
+
+  void _updateMatchedSpeed(DateTime at) {
+    if (_isOffRouteAt(at)) {
+      _clearMatchedSpeed();
+      return;
+    }
+
+    final previousAlong = _matchedAlong;
+    final previousAt = _matchedAlongAt;
+    if (previousAlong == null || previousAt == null) {
+      _matchedAlong = _along;
+      _matchedAlongAt = at;
+      return;
+    }
+
+    final dt = at.difference(previousAt);
+    if (dt < _matchedMinDt) return;
+
+    _matchedAlong = _along;
+    _matchedAlongAt = at;
+    if (dt > _matchedMaxDt) return;
+
+    final seconds = dt.inMilliseconds / 1000.0;
+    final instant = (_along - previousAlong) / seconds;
+    if (!instant.isFinite || instant < 0 || instant > _matchedCeilingMps) {
+      return;
+    }
+
+    final previous = _matchedSpeed;
+    final fresh =
+        _matchedSpeedAt != null &&
+        at.difference(_matchedSpeedAt!) <= _matchedFreshFor;
+    // A stop has to land on this sample. Smoothing a cruise speed down
+    // through 1.5 m/s would keep the computer reading "moving" after the
+    // along-route distance has already stopped growing.
+    final smoothed = previous == null || !fresh || previous < _matchedCreepMps
+        ? instant
+        : previous + 0.7 * (instant - previous);
+    _matchedSpeed = instant < _matchedCreepMps ? instant : smoothed;
+    _matchedSpeedAt = at;
+  }
+
+  double? _freshMatchedSpeed(DateTime now) {
+    final speed = _matchedSpeed;
+    final at = _matchedSpeedAt;
+    if (speed == null || at == null) return null;
+    if (_isOffRouteAt(now)) return null;
+    if (now.difference(at) > _matchedFreshFor) return null;
+    return speed;
+  }
+
+  void _clearMatchedSpeed() {
+    _matchedSpeed = null;
+    _matchedSpeedAt = null;
+    _matchedAlong = null;
+    _matchedAlongAt = null;
+  }
+
   Future<void> _maybeReroute(DateTime now) async {
-    if (!_config.rerouteOnDeviation || _rerouting || !_isOffRouteAt(now)) return;
+    if (!_config.rerouteOnDeviation || _rerouting || !_isOffRouteAt(now)) {
+      return;
+    }
     final from = _lastPosition;
     if (from == null) return;
 
@@ -399,10 +501,28 @@ class NavigationEngine {
         _mode = NavigationMode.minimal;
         _mapUntil = null;
       }
+      _suppressedAutoMap = null;
       return;
     }
 
     // A user-requested map stays up until they dismiss it.
+    if (_mode == NavigationMode.map &&
+        _mapUntil == null &&
+        _suppressedAutoMap == null) {
+      return;
+    }
+
+    final trigger = _autoMapTrigger(now);
+    if (_suppressedAutoMap != null) {
+      if (trigger != null && trigger == _suppressedAutoMap) {
+        _mode = NavigationMode.minimal;
+        _mapUntil = null;
+        return;
+      }
+      // That junction or deviation is over. A different one may show the map.
+      _suppressedAutoMap = null;
+    }
+
     if (_mode == NavigationMode.map && _mapUntil == null) return;
 
     if (_mapUntil != null && now.isAfter(_mapUntil!)) {
@@ -411,14 +531,33 @@ class NavigationEngine {
       return;
     }
 
-    final reason = _autoMapReason(now);
-    if (reason != MapAutoReason.none) {
+    if (trigger != null) {
       _mode = NavigationMode.map;
       // The dismiss timer starts now and is refreshed while the trigger keeps
       // firing, so the map stays up through a run of consecutive turns and
       // clears a few seconds after the last one.
       _mapUntil = now.add(Duration(seconds: _config.autoMapDismissSeconds));
     }
+  }
+
+  /// Stable id of the auto-map event in force, or null when the map has no
+  /// reason to appear.
+  ///
+  /// Turn-family reasons share the upcoming instruction, so dismissing
+  /// 「即将转弯」 also holds off 「复杂路口」 for that same turn. Off route is
+  /// its own event: leaving the route after dismissing a junction still
+  /// raises the map, and dismissing the deviation holds until the rider is
+  /// back on the route.
+  String? _autoMapTrigger(DateTime now) {
+    final reason = _autoMapReason(now);
+    return switch (reason) {
+      MapAutoReason.none || MapAutoReason.userRequest => null,
+      MapAutoReason.offRoute => 'off',
+      MapAutoReason.approachingTurn ||
+      MapAutoReason.complexJunction ||
+      MapAutoReason.roundabout ||
+      MapAutoReason.consecutiveTurns => 'turn:${_nextTurn()?.index ?? -1}',
+    };
   }
 
   MapAutoReason _autoMapReason(DateTime now) {
@@ -486,11 +625,16 @@ class NavigationEngine {
     final remaining = (totalDistance - _along).clamp(0.0, double.infinity);
 
     final nextTurn = _nextTurn();
-    final following = nextTurn == null ? null : _nextTurn(after: nextTurn.index);
+    final following = nextTurn == null
+        ? null
+        : _nextTurn(after: nextTurn.index);
 
-    final distanceToTurn =
-        nextTurn == null ? null : (_instructionDistance[nextTurn.index] - _along)
-            .clamp(0.0, double.infinity);
+    final distanceToTurn = nextTurn == null
+        ? null
+        : (_instructionDistance[nextTurn.index] - _along).clamp(
+            0.0,
+            double.infinity,
+          );
 
     // Once the rider has covered some ground, their own average is a better
     // predictor than the service's estimate — it knows about their bike, their
@@ -502,8 +646,9 @@ class NavigationEngine {
     }
     if (speedForEta <= 0.5) speedForEta = 4.2;
 
-    final remainingDuration =
-        Duration(seconds: (remaining / speedForEta).round());
+    final remainingDuration = Duration(
+      seconds: (remaining / speedForEta).round(),
+    );
 
     return NavigationSnapshot(
       routeId: _route.id,
@@ -518,16 +663,17 @@ class NavigationEngine {
       eta: now.add(remainingDuration),
       offRoute: _isOffRouteAt(now),
       offRouteMeters: _lastOffsetMeters,
-      snappedPoint: _route.points.isEmpty
-          ? null
-          : _pointAtDistance(_along),
-      progress: totalDistance <= 0 ? 0 : (_along / totalDistance).clamp(0.0, 1.0),
+      snappedPoint: _route.points.isEmpty ? null : _pointAtDistance(_along),
+      progress: totalDistance <= 0
+          ? 0
+          : (_along / totalDistance).clamp(0.0, 1.0),
       autoMapReason: _mode == NavigationMode.map
           ? (_mapUntil == null
-              ? MapAutoReason.userRequest
-              : _autoMapReason(now))
+                ? MapAutoReason.userRequest
+                : _autoMapReason(now))
           : MapAutoReason.none,
       rerouteCount: _rerouteCount,
+      matchedSpeedMps: _freshMatchedSpeed(now),
     );
   }
 
@@ -570,5 +716,5 @@ class NavigationEngine {
 }
 
 /// Supplies the rider's current and average speed to the navigation engine.
-typedef GroundSpeedProvider = ({double currentSpeedMps, double avgSpeedMps})
-    Function();
+typedef GroundSpeedProvider =
+    ({double currentSpeedMps, double avgSpeedMps}) Function();

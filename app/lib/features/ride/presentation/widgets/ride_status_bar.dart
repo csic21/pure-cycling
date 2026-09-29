@@ -82,7 +82,7 @@ class RideStatusBar extends StatelessWidget {
                 isMapMode ? Icons.list_alt_outlined : Icons.map_outlined,
                 size: 22,
               ),
-              tooltip: isMapMode ? '极简导航' : '地图导航',
+              tooltip: isMapMode ? '码表' : '地图',
             ),
 
           if (batteryPercent != null)

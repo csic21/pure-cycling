@@ -18,6 +18,7 @@ class MainActivity : FlutterActivity() {
     private var barometer: BarometerStreamHandler? = null
     private var compass: CompassStreamHandler? = null
     private var motion: MotionStreamHandler? = null
+    private var gnss: GnssStreamHandler? = null
     private var rideFullscreen = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -113,6 +114,10 @@ class MainActivity : FlutterActivity() {
         val motionHandler = MotionStreamHandler(this)
         motion = motionHandler
         EventChannel(messenger, MOTION_CHANNEL).setStreamHandler(motionHandler)
+
+        val gnssHandler = GnssStreamHandler(this)
+        gnss = gnssHandler
+        EventChannel(messenger, GNSS_CHANNEL).setStreamHandler(gnssHandler)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -174,6 +179,8 @@ class MainActivity : FlutterActivity() {
         compass = null
         motion?.stop()
         motion = null
+        gnss?.stop()
+        gnss = null
         super.onDestroy()
     }
 
@@ -190,5 +197,8 @@ class MainActivity : FlutterActivity() {
 
         /** Must match `PlatformMotionSource.channelName` on the Dart side. */
         const val MOTION_CHANNEL = "app.purecycling/motion"
+
+        /** Must match `LocationService` GNSS channel on the Dart side. */
+        const val GNSS_CHANNEL = "app.purecycling/gnss"
     }
 }

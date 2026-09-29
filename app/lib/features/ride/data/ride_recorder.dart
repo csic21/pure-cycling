@@ -428,6 +428,9 @@ class RideRecorder {
   void onSensorReading(SensorReading reading) =>
       _engine?.onSensorReading(reading);
 
+  /// Forwards along-route speed into the engine. See [RideEngine.noteRouteMatch].
+  void noteRouteMatch(double? speedMps) => _engine?.noteRouteMatch(speedMps);
+
   Future<void> dispose() async {
     _disposed = true;
     await _teardownEngine();

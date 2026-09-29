@@ -575,8 +575,10 @@ class GpsFilter {
   /// Doppler speed is smoother and unaffected by position noise, but some
   /// receivers report a stale or zero value. The derived speed is exact for
   /// the segment in hand but explodes when the time delta is tiny. When they
-  /// agree, weight the platform value. Sustained position change can also
-  /// disprove a platform speed stuck at zero.
+  /// agree, weight the platform value. A trusted Doppler sample that is
+  /// higher is acceleration and is taken as-is; a lower one is braking.
+  /// Sustained position change can also disprove a platform speed stuck at
+  /// zero.
   double _smoothSpeed({
     required LocationFix fix,
     required LocationFix previousFix,
@@ -666,14 +668,36 @@ class GpsFilter {
       return _smoothedSpeed!;
     }
 
+    // A Doppler sample is trusted when the receiver says so (tight speed
+    // accuracy) or the horizontal fix is already good enough to ride on.
+    // Position-derived speed lags a real acceleration by a fix or two; the
+    // satellite's own speed does not.
+    final speedAccuracy = fix.speedAccuracy;
+    final dopplerTrusted =
+        reportedUsable &&
+        ((speedAccuracy != null &&
+                speedAccuracy.isFinite &&
+                speedAccuracy > 0 &&
+                speedAccuracy <= 1.5) ||
+            (accuracy != null && accuracy <= 25));
+
     if (confirmedPositionSpeed != null) {
       candidate = confirmedPositionSpeed;
     } else if (reportedUsable && derivedUsable) {
       final diff = (reported - derived).abs();
       final tolerance = (reported * 0.35).clamp(1.5, 6.0);
-      candidate = diff <= tolerance
-          ? reported * 0.6 + derived * 0.4
-          : (reported < derived ? reported : derived);
+      if (diff <= tolerance) {
+        candidate = dopplerTrusted
+            ? reported * 0.8 + derived * 0.2
+            : reported * 0.6 + derived * 0.4;
+      } else if (reported <= derived || dopplerTrusted) {
+        // Braking: the lower number is the one that just happened. A trusted
+        // Doppler value that is higher is acceleration, and the position
+        // segment has not caught up yet.
+        candidate = reported;
+      } else {
+        candidate = derived;
+      }
     } else if (reportedUsable) {
       candidate = reported;
     } else if (derivedUsable) {
@@ -684,10 +708,17 @@ class GpsFilter {
       candidate = (_smoothedSpeed ?? 0) * 0.9;
     }
 
+    final previous = _smoothedSpeed;
+    final rising = previous == null || candidate >= previous;
+
     // Poor accuracy means noisy position, so lean harder on the previous
-    // value; good accuracy means the new sample is worth more.
+    // value; good accuracy means the new sample is worth more. A trusted
+    // Doppler rise skips that lag: one sample should already read as the
+    // speed the receiver just measured.
     var alpha = config.speedSmoothingAlpha;
-    if (accuracy != null) {
+    if (dopplerTrusted && rising) {
+      alpha = 0.85;
+    } else if (accuracy != null) {
       if (accuracy > 20) {
         alpha *= 0.6;
       } else if (accuracy < 6) {
@@ -695,15 +726,8 @@ class GpsFilter {
       }
     }
 
-    final previous = _smoothedSpeed;
-
-    // Asymmetric: fall fast, rise slow.
-    //
-    // A bicycle can brake hard but cannot accelerate instantly, so a falling
-    // reading is more trustworthy than a rising one. Symmetric smoothing
-    // would keep the display — and the auto-pause rule — reading a stale
-    // cruising speed for several seconds after the rider has actually
-    // stopped, which is exactly the moment the number matters most.
+    // Fall fast. A bicycle can brake hard, and a stale cruise speed is what
+    // keeps auto-pause from counting the seconds at a red light.
     if (previous != null && candidate < previous) {
       alpha = (alpha * 2.0).clamp(0.0, 0.7);
     }

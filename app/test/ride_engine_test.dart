@@ -282,6 +282,44 @@ void main() {
       });
     });
 
+    test('a trusted Doppler sample reaches the computer on the next fix', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        advance(const Duration(seconds: 1));
+        engine.onLocation(fixAt(origin, 0, clock(), speed: 0));
+        advance(const Duration(seconds: 1));
+        engine.onLocation(fixAt(origin, 0, clock(), speed: 8));
+
+        expect(engine.state.stats.currentSpeedMps, greaterThan(6));
+
+        engine.noteRouteMatch(3);
+        expect(
+          engine.state.stats.currentSpeedMps,
+          greaterThan(6),
+          reason: 'a live Doppler sample stays ahead of the route fill',
+        );
+        engine.dispose();
+      });
+    });
+
+    test('along-route speed fills a stuck zero and a stop clears it', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        advance(const Duration(seconds: 1));
+        engine.onLocation(fixAt(origin, 0, clock(), speed: 0));
+        advance(const Duration(seconds: 1));
+        engine.onLocation(fixAt(origin, 0, clock(), speed: 0));
+
+        engine.noteRouteMatch(5.5);
+        expect(engine.state.stats.currentSpeedMps, closeTo(5.5, 0.05));
+        expect(engine.state.speedAvailable, isTrue);
+
+        engine.noteRouteMatch(0);
+        expect(engine.state.stats.currentSpeedMps, 0);
+        engine.dispose();
+      });
+    });
+
     test('a steady 18 km/h ride reports a plausible distance and speed', () {
       withRide((advance, clock, starve) {
         final engine = startRiding(clock: clock);
@@ -909,81 +947,86 @@ void main() {
       },
     );
 
-    test('a confirmed stop zeros the speed without waiting out the fresh window',
-        () {
-      withRide((advance, clock, starve) {
-        final engine = startRiding(clock: clock);
-        ride(advance, clock, engine, 5, 10);
-        expect(engine.state.stats.currentSpeedMps, greaterThan(3));
+    test(
+      'a confirmed stop zeros the speed without waiting out the fresh window',
+      () {
+        withRide((advance, clock, starve) {
+          final engine = startRiding(clock: clock);
+          ride(advance, clock, engine, 5, 10);
+          expect(engine.state.stats.currentSpeedMps, greaterThan(3));
 
-        final still = _Noise(amplitude: 0.005, seed: 7);
-        for (var i = 0; i < 70; i++) {
-          advance(const Duration(milliseconds: 66));
-          engine.onMotionSample(still.next());
-        }
+          final still = _Noise(amplitude: 0.005, seed: 7);
+          for (var i = 0; i < 70; i++) {
+            advance(const Duration(milliseconds: 66));
+            engine.onMotionSample(still.next());
+          }
 
-        expect(engine.state.motionDetected, isFalse);
-        expect(engine.state.stats.currentSpeedMps, 0);
-        expect(
-          engine.state.speedAvailable,
-          isTrue,
-          reason: '车已经停了，时速应该是 0，而不是和红标一起变成 --',
-        );
-        expect(
-          engine.state.gpsSignalLost,
-          isFalse,
-          reason: '几秒的静默还不是信号丢失，红标仍按原来的阈值',
-        );
+          expect(engine.state.motionDetected, isFalse);
+          expect(engine.state.stats.currentSpeedMps, 0);
+          expect(
+            engine.state.speedAvailable,
+            isTrue,
+            reason: '车已经停了，时速应该是 0，而不是和红标一起变成 --',
+          );
+          expect(
+            engine.state.gpsSignalLost,
+            isFalse,
+            reason: '几秒的静默还不是信号丢失，红标仍按原来的阈值',
+          );
 
-        engine.dispose();
-      });
-    });
+          engine.dispose();
+        });
+      },
+    );
 
-    test('a rolling phone keeps the last Doppler speed through a short gap', () {
-      withRide((advance, clock, starve) {
-        final engine = startRiding(
-          clock: clock,
-          config: const RideEngineConfig(
-            gpsSignalLostAfter: Duration(seconds: 5),
-          ),
-        );
-        ride(advance, clock, engine, 5, 10);
+    test(
+      'a rolling phone keeps the last Doppler speed through a short gap',
+      () {
+        withRide((advance, clock, starve) {
+          final engine = startRiding(
+            clock: clock,
+            config: const RideEngineConfig(
+              gpsSignalLostAfter: Duration(seconds: 5),
+            ),
+          );
+          ride(advance, clock, engine, 5, 10);
 
-        final rolling = _Noise(amplitude: 0.07, seed: 11);
-        for (var i = 0; i < 40; i++) {
-          advance(const Duration(milliseconds: 66));
-          engine.onMotionSample(rolling.next());
-        }
-        expect(engine.state.motionDetected, isTrue);
+          final rolling = _Noise(amplitude: 0.07, seed: 11);
+          for (var i = 0; i < 40; i++) {
+            advance(const Duration(milliseconds: 66));
+            engine.onMotionSample(rolling.next());
+          }
+          expect(engine.state.motionDetected, isTrue);
 
-        // Past the signal-lost threshold, still inside the coast. Motion
-        // expires after three seconds, so the gap is checked with a fresh
-        // verdict rather than with a stale one.
-        advance(const Duration(seconds: 4));
-        for (var i = 0; i < 8; i++) {
-          advance(const Duration(milliseconds: 66));
-          engine.onMotionSample(rolling.next());
-        }
+          // Past the signal-lost threshold, still inside the coast. Motion
+          // expires after three seconds, so the gap is checked with a fresh
+          // verdict rather than with a stale one.
+          advance(const Duration(seconds: 4));
+          for (var i = 0; i < 8; i++) {
+            advance(const Duration(milliseconds: 66));
+            engine.onMotionSample(rolling.next());
+          }
 
-        expect(engine.state.gpsSignalLost, isTrue);
-        expect(engine.state.speedAvailable, isTrue);
-        expect(engine.state.stats.currentSpeedMps, closeTo(5, 1));
-        expect(engine.state.autoPaused, isFalse);
+          expect(engine.state.gpsSignalLost, isTrue);
+          expect(engine.state.speedAvailable, isTrue);
+          expect(engine.state.stats.currentSpeedMps, closeTo(5, 1));
+          expect(engine.state.autoPaused, isFalse);
 
-        advance(const Duration(seconds: 20));
-        for (var i = 0; i < 8; i++) {
-          advance(const Duration(milliseconds: 66));
-          engine.onMotionSample(rolling.next());
-        }
-        expect(
-          engine.state.speedAvailable,
-          isFalse,
-          reason: '续上的时间过了就该承认不知道，不能靠振动一直显示旧时速',
-        );
+          advance(const Duration(seconds: 20));
+          for (var i = 0; i < 8; i++) {
+            advance(const Duration(milliseconds: 66));
+            engine.onMotionSample(rolling.next());
+          }
+          expect(
+            engine.state.speedAvailable,
+            isFalse,
+            reason: '续上的时间过了就该承认不知道，不能靠振动一直显示旧时速',
+          );
 
-        engine.dispose();
-      });
-    });
+          engine.dispose();
+        });
+      },
+    );
 
     test('vibration during a gap does not resume an auto-pause', () {
       withRide((advance, clock, starve) {

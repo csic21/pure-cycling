@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart' as permissions;
 
@@ -146,18 +147,28 @@ class LocationService {
   /// happen downstream in `GpsFilter`, not here — this layer's only job is to
   /// hand over whatever the receiver produces, with no lossy transform in
   /// between.
+  ///
+  /// On Android, high and balanced rides prefer GPS_PROVIDER directly
+  /// (`app.purecycling/gnss`). The geolocator stream stays open beside it:
+  /// its foreground service is what keeps satellite delivery legal with the
+  /// screen off, and its fixes fill in when the satellite stream errors or
+  /// goes quiet. A geolocator fix is dropped for a few seconds after a
+  /// satellite fix so the two listeners cannot double-count distance.
   Stream<LocationFix> fixes({
     GpsAccuracyMode mode = GpsAccuracyMode.high,
     bool background = true,
     Duration? interval,
   }) {
-    return Geolocator.getPositionStream(
+    final resolved = interval ?? _defaultInterval(mode);
+    final fallback = Geolocator.getPositionStream(
       locationSettings: _settingsFor(
         mode,
         background: background,
-        interval: interval,
+        interval: resolved,
       ),
     ).map(_toFix);
+    if (!_preferSatelliteFixes(mode)) return fallback;
+    return _satelliteFirst(fallback, resolved);
   }
 
   /// Location settings for a sampling profile (spec §32).
@@ -167,10 +178,10 @@ class LocationService {
   /// Stopping stretches the interval without relaxing the accuracy request.
   /// [interval] carries that: five seconds while parked, at whatever accuracy
   /// the rider chose. `LocationAccuracy.medium` is reserved for the 省电 tier
-  /// the rider picked themselves — it lets the fused provider sleep the GNSS
-  /// chip, and a chip that has to wake up at a traffic light is exactly when
-  /// the signal icon turns red. The distance calculator's anchor design means
-  /// a slower interval loses nothing when the rider sets off again.
+  /// the rider picked themselves — it lets the platform sleep the GNSS chip,
+  /// and a chip that has to wake up at a traffic light is exactly when the
+  /// signal icon turns red. The distance calculator's anchor design means a
+  /// slower interval loses nothing when the rider sets off again.
   ///
   /// `distanceFilter: 0` is essential: the platform's default distance-based
   /// filter would silently drop fixes at low speed, which is exactly where the
@@ -187,13 +198,7 @@ class LocationService {
     required bool background,
     Duration? interval,
   }) {
-    final resolvedInterval =
-        interval ??
-        switch (mode) {
-          GpsAccuracyMode.high => const Duration(seconds: 1),
-          GpsAccuracyMode.balanced => const Duration(seconds: 2),
-          GpsAccuracyMode.batterySaver => const Duration(seconds: 5),
-        };
+    final resolvedInterval = interval ?? _defaultInterval(mode);
 
     final android = AndroidSettings(
       accuracy: switch (mode) {
@@ -203,9 +208,11 @@ class LocationService {
       },
       distanceFilter: 0,
       intervalDuration: resolvedInterval,
-      // Fused provider: better accuracy and materially better battery than
-      // the raw LocationManager on every Android device with Play Services.
-      forceLocationManager: false,
+      // LocationManager, so a phone without Play Services still produces
+      // fixes. The live speed path is the GPS_PROVIDER channel opened beside
+      // this stream; this request is what keeps that channel delivering
+      // after the screen turns off.
+      forceLocationManager: true,
       // Android reports altitude above the WGS84 ellipsoid by default, which
       // reads roughly 30-50 m high in China. The MSL conversion gives the
       // number a rider would recognize from a map.
@@ -223,7 +230,7 @@ class LocationService {
 
     final apple = AppleSettings(
       accuracy: switch (mode) {
-        GpsAccuracyMode.high => LocationAccuracy.best,
+        GpsAccuracyMode.high => LocationAccuracy.bestForNavigation,
         GpsAccuracyMode.balanced => LocationAccuracy.high,
         GpsAccuracyMode.batterySaver => LocationAccuracy.medium,
       },
@@ -254,6 +261,80 @@ class LocationService {
     };
   }
 
+  static Duration _defaultInterval(GpsAccuracyMode mode) => switch (mode) {
+    GpsAccuracyMode.high => const Duration(seconds: 1),
+    GpsAccuracyMode.balanced => const Duration(seconds: 2),
+    GpsAccuracyMode.batterySaver => const Duration(seconds: 5),
+  };
+
+  /// Satellite fixes are the speed source on Android except in the rider's
+  /// own 省电 tier, which is allowed to leave the chip asleep.
+  bool _preferSatelliteFixes(GpsAccuracyMode mode) =>
+      defaultTargetPlatform == TargetPlatform.android &&
+      mode != GpsAccuracyMode.batterySaver;
+
+  /// How long a satellite fix keeps the geolocator copy out of the pipeline.
+  static const Duration _satelliteHoldsFor = Duration(seconds: 3);
+
+  /// Must match `MainActivity.GNSS_CHANNEL`.
+  static const EventChannel _gnssChannel = EventChannel('app.purecycling/gnss');
+
+  Stream<LocationFix> _satelliteFirst(
+    Stream<LocationFix> fallback,
+    Duration interval,
+  ) {
+    late final StreamController<LocationFix> controller;
+    StreamSubscription<LocationFix>? fallbackSub;
+    StreamSubscription<dynamic>? gnssSub;
+    DateTime? lastGnssAt;
+
+    void emit(LocationFix fix) {
+      if (!controller.isClosed) controller.add(fix);
+    }
+
+    controller = StreamController<LocationFix>(
+      onListen: () {
+        fallbackSub = fallback.listen(
+          (fix) {
+            final seen = lastGnssAt;
+            if (seen != null &&
+                DateTime.now().difference(seen) < _satelliteHoldsFor) {
+              return;
+            }
+            emit(fix);
+          },
+          onError: (Object error, StackTrace stack) {
+            if (!controller.isClosed) controller.addError(error, stack);
+          },
+        );
+        gnssSub = _gnssChannel
+            .receiveBroadcastStream(interval.inMilliseconds)
+            .listen(
+              (event) {
+                final fix = fixFromGnssEvent(event);
+                if (fix == null) return;
+                lastGnssAt = DateTime.now();
+                emit(fix);
+              },
+              onError: (Object _, StackTrace _) {
+                // The satellite request can fail (GPS off, permission, no
+                // plugin). The geolocator stream is still open and becomes
+                // the source; closing the merged stream would end the ride.
+                lastGnssAt = null;
+              },
+              cancelOnError: false,
+            );
+      },
+      onCancel: () async {
+        await fallbackSub?.cancel();
+        await gnssSub?.cancel();
+        fallbackSub = null;
+        gnssSub = null;
+      },
+    );
+    return controller.stream;
+  }
+
   static LocationFix _toFix(Position p) => LocationFix(
     latitude: p.latitude,
     longitude: p.longitude,
@@ -276,4 +357,35 @@ class LocationService {
         b.latitude,
         b.longitude,
       );
+}
+
+/// Parses one event from the Android `app.purecycling/gnss` channel.
+///
+/// Returns null when the payload is not a fix. Callers skip those rather
+/// than failing the ride.
+LocationFix? fixFromGnssEvent(Object? event) {
+  if (event is! Map) return null;
+  final latitude = event['latitude'];
+  final longitude = event['longitude'];
+  final timestamp = event['timestamp'];
+  if (latitude is! num || longitude is! num || timestamp is! num) return null;
+
+  double? number(Object? value) => value is num ? value.toDouble() : null;
+
+  return LocationFix(
+    latitude: latitude.toDouble(),
+    longitude: longitude.toDouble(),
+    timestamp: DateTime.fromMillisecondsSinceEpoch(
+      timestamp.toInt(),
+      isUtc: true,
+    ),
+    altitude: number(event['altitude']),
+    altitudeAccuracy: number(event['altitude_accuracy']),
+    accuracy: number(event['accuracy']) ?? 0,
+    speed: number(event['speed']),
+    speedAccuracy: number(event['speed_accuracy']),
+    heading: number(event['heading']),
+    headingAccuracy: number(event['heading_accuracy']),
+    isMocked: event['is_mocked'] == true,
+  );
 }

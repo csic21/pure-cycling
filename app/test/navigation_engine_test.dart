@@ -36,12 +36,7 @@ void main() {
     }
     final corner = points.last;
     for (var i = 1; i <= segments; i++) {
-      points.add(
-        GeoPoint(
-          corner.lat + (i * step) / 111132.0,
-          corner.lng,
-        ),
-      );
+      points.add(GeoPoint(corner.lat + (i * step) / 111132.0, corner.lng));
     }
 
     return Route(
@@ -75,6 +70,75 @@ void main() {
     );
   }
 
+  /// East, north, then east again: a left turn and then a right turn.
+  ///
+  /// The second corner is 400 m after the first, far enough that dismissing
+  /// the first junction is a different event from arriving at the second.
+  Route twoTurnRoute() {
+    const step = 25.0;
+    final points = <GeoPoint>[];
+
+    void addLeg(GeoPoint Function(double meters) at, int segments) {
+      final start = points.isEmpty ? 0 : 1;
+      for (var i = start; i <= segments; i++) {
+        points.add(at(i * step));
+      }
+    }
+
+    addLeg(east, 40); // 1000 m east
+    final corner = points.last;
+    addLeg(
+      (meters) => GeoPoint(corner.lat + meters / 111132.0, corner.lng),
+      16, // 400 m north
+    );
+    final second = points.last;
+    addLeg(
+      (meters) => GeoPoint(second.lat, second.lng + meters / 85300.0),
+      40, // 1000 m east
+    );
+
+    final firstCorner = 40; // vertex index of the left turn
+    final secondCorner = 40 + 16;
+
+    return Route(
+      id: 'route-2',
+      name: '两转弯',
+      points: points,
+      distanceMeters: 2400,
+      estimatedDuration: const Duration(minutes: 10),
+      instructions: [
+        RouteInstruction(
+          index: 0,
+          maneuver: Maneuver.depart,
+          text: '向东出发',
+          distanceMeters: 1000,
+          durationSeconds: 240,
+          startPolylineIndex: 0,
+          endPolylineIndex: firstCorner,
+        ),
+        RouteInstruction(
+          index: 1,
+          maneuver: Maneuver.left,
+          text: '左转',
+          distanceMeters: 400,
+          durationSeconds: 100,
+          startPolylineIndex: firstCorner,
+          endPolylineIndex: secondCorner,
+        ),
+        RouteInstruction(
+          index: 2,
+          maneuver: Maneuver.right,
+          text: '右转',
+          distanceMeters: 1000,
+          durationSeconds: 240,
+          startPolylineIndex: secondCorner,
+          endPolylineIndex: points.length - 1,
+        ),
+      ],
+      provider: 'test',
+    );
+  }
+
   /// A provider that always fails, for tests that must not reroute.
   RouteProvider failingProvider() => _FakeRouteProvider(shouldFail: true);
 
@@ -96,8 +160,7 @@ void main() {
 
       engine.onPosition(east(500), 90);
       expect(engine.snapshot.distanceAlongRouteMeters, closeTo(500, 20));
-      expect(engine.snapshot.distanceToDestinationMeters,
-          closeTo(1500, 20));
+      expect(engine.snapshot.distanceToDestinationMeters, closeTo(1500, 20));
       expect(engine.snapshot.progress, closeTo(0.25, 0.02));
 
       // Past the corner and up the second leg.
@@ -117,10 +180,7 @@ void main() {
       expect(engine.snapshot.distanceAlongRouteMeters, advanced);
 
       engine.onPosition(east(900), 90);
-      expect(
-        engine.snapshot.distanceAlongRouteMeters,
-        greaterThan(advanced),
-      );
+      expect(engine.snapshot.distanceAlongRouteMeters, greaterThan(advanced));
     });
 
     test('a fix far off the route is reported as a deviation', () {
@@ -128,7 +188,10 @@ void main() {
 
       // 200 m north of the eastbound leg — a genuinely different road.
       engine.onPosition(east(500 + 0), 90);
-      engine.onPosition(GeoPoint(east(500).lat + 200 / 111132.0, east(500).lng), 0);
+      engine.onPosition(
+        GeoPoint(east(500).lat + 200 / 111132.0, east(500).lng),
+        0,
+      );
 
       expect(engine.snapshot.offRouteMeters, greaterThan(150));
     });
@@ -140,7 +203,10 @@ void main() {
       engine.onPosition(east(325), 90);
 
       // A 500 m glitch, then back on the route.
-      engine.onPosition(GeoPoint(origin.lat + 500 / 111132.0, east(325).lng), 0);
+      engine.onPosition(
+        GeoPoint(origin.lat + 500 / 111132.0, east(325).lng),
+        0,
+      );
       engine.onPosition(east(350), 90);
 
       expect(engine.snapshot.distanceAlongRouteMeters, closeTo(350, 40));
@@ -157,44 +223,43 @@ void main() {
       // The player is on the first leg; the next thing to do is the left turn
       // at 1000 m.
       expect(engine.snapshot.currentInstruction!.maneuver, Maneuver.left);
-      expect(
-        engine.snapshot.distanceToNextTurnMeters,
-        closeTo(800, 30),
-      );
+      expect(engine.snapshot.distanceToNextTurnMeters, closeTo(800, 30));
     });
 
-    test('straight-through steps are skipped in favour of the next decision',
-        () {
-      final route = lRoute();
-      final withStraight = Route(
-        id: route.id,
-        name: route.name,
-        points: route.points,
-        distanceMeters: route.distanceMeters,
-        estimatedDuration: route.estimatedDuration,
-        instructions: [
-          route.instructions.first,
-          // A provider-supplied "continue straight" step, which is noise on a
-          // banner.
-          RouteInstruction(
-            index: 1,
-            maneuver: Maneuver.straight,
-            text: '继续直行',
-            distanceMeters: 200,
-            durationSeconds: 48,
-            startPolylineIndex: 20,
-            endPolylineIndex: 28,
-          ),
-          route.instructions.last,
-        ],
-        provider: 'test',
-      );
+    test(
+      'straight-through steps are skipped in favour of the next decision',
+      () {
+        final route = lRoute();
+        final withStraight = Route(
+          id: route.id,
+          name: route.name,
+          points: route.points,
+          distanceMeters: route.distanceMeters,
+          estimatedDuration: route.estimatedDuration,
+          instructions: [
+            route.instructions.first,
+            // A provider-supplied "continue straight" step, which is noise on a
+            // banner.
+            RouteInstruction(
+              index: 1,
+              maneuver: Maneuver.straight,
+              text: '继续直行',
+              distanceMeters: 200,
+              durationSeconds: 48,
+              startPolylineIndex: 20,
+              endPolylineIndex: 28,
+            ),
+            route.instructions.last,
+          ],
+          provider: 'test',
+        );
 
-      final engine = build(route: withStraight);
-      engine.onPosition(east(200), 90);
+        final engine = build(route: withStraight);
+        engine.onPosition(east(200), 90);
 
-      expect(engine.snapshot.currentInstruction!.maneuver, Maneuver.left);
-    });
+        expect(engine.snapshot.currentInstruction!.maneuver, Maneuver.left);
+      },
+    );
 
     test('a maneuver the rider has ridden past stops being the next turn', () {
       final engine = build();
@@ -209,8 +274,11 @@ void main() {
       engine.onPosition(GeoPoint(north(500).lat, east(1000).lng), 0);
 
       expect(engine.snapshot.currentInstruction, isNull);
-      expect(engine.snapshot.maneuver, Maneuver.unknown,
-          reason: 'the banner falls back to 「即将到达终点」');
+      expect(
+        engine.snapshot.maneuver,
+        Maneuver.unknown,
+        reason: 'the banner falls back to 「即将到达终点」',
+      );
     });
 
     test('road names come through for the banner', () {
@@ -255,26 +323,28 @@ void main() {
       final off = GeoPoint(east(500).lat + 300 / 111132.0, east(500).lng);
       engine.onPosition(off, 0, now: t0);
       for (var i = 1; i <= 3; i++) {
-        engine.onPosition(
-          off,
-          0,
-          now: t0.add(Duration(seconds: 3 * i)),
-        );
+        engine.onPosition(off, 0, now: t0.add(Duration(seconds: 3 * i)));
       }
 
       // The reroute is kicked off asynchronously so it cannot re-enter the
       // projection update; give it a turn of the event loop.
       await Future<void>.delayed(Duration.zero);
 
-      expect(provider.rerouteCalls, greaterThan(0),
-          reason: 'a rider who really left the route must be brought back');
+      expect(
+        provider.rerouteCalls,
+        greaterThan(0),
+        reason: 'a rider who really left the route must be brought back',
+      );
 
       // The counter the voice coach announces from is only on the next
       // snapshot: a reroute re-emits the previous one rather than flashing a
       // half-updated route on screen.
       engine.onPosition(off, 0, now: t0.add(const Duration(seconds: 12)));
-      expect(engine.snapshot.rerouteCount, 1,
-          reason: 'the coach learns about a reroute by watching this counter');
+      expect(
+        engine.snapshot.rerouteCount,
+        1,
+        reason: 'the coach learns about a reroute by watching this counter',
+      );
     });
 
     test('does not reroute when the setting is off', () {
@@ -303,7 +373,11 @@ void main() {
       engine.onPosition(east(500), 90);
       final off = GeoPoint(east(500).lat + 300 / 111132.0, east(500).lng);
       engine.onPosition(off, 0, now: DateTime.now());
-      engine.onPosition(off, 0, now: DateTime.now().add(const Duration(seconds: 8)));
+      engine.onPosition(
+        off,
+        0,
+        now: DateTime.now().add(const Duration(seconds: 8)),
+      );
 
       // Back on the road.
       engine.onPosition(east(520), 90);
@@ -359,8 +433,11 @@ void main() {
       // Around the corner, well clear of the junction.
       final corner = GeoPoint(north(300).lat, east(1000).lng);
       engine.onPosition(corner, 0, now: t0.add(const Duration(seconds: 2)));
-      expect(engine.snapshot.mode, NavigationMode.map,
-          reason: 'the map should linger briefly after a junction');
+      expect(
+        engine.snapshot.mode,
+        NavigationMode.map,
+        reason: 'the map should linger briefly after a junction',
+      );
 
       engine.onPosition(
         GeoPoint(north(400).lat, east(1000).lng),
@@ -397,6 +474,66 @@ void main() {
       expect(engine.snapshot.mode, NavigationMode.minimal);
     });
 
+    test(
+      'leaving the map for the computer sticks through the same junction',
+      () {
+        final engine = build(
+          config: const NavigationConfig(
+            minimalByDefault: true,
+            autoShowMap: true,
+            approachingTurnMeters: 150,
+          ),
+        );
+
+        final t0 = DateTime.now();
+        // 100 m from the left turn: the map comes up on its own.
+        engine.onPosition(east(900), 90, now: t0);
+        expect(engine.snapshot.mode, NavigationMode.map);
+
+        engine.requestMinimal();
+        expect(engine.snapshot.mode, NavigationMode.minimal);
+
+        // The next fixes are still inside that same junction. The map must not
+        // reclaim the screen — that is the button appearing to do nothing.
+        engine.onPosition(
+          east(920),
+          90,
+          now: t0.add(const Duration(seconds: 1)),
+        );
+        engine.onPosition(
+          east(960),
+          90,
+          now: t0.add(const Duration(seconds: 3)),
+        );
+        expect(engine.snapshot.mode, NavigationMode.minimal);
+      },
+    );
+
+    test('the following junction still raises the map after a dismissal', () {
+      final engine = build(
+        route: twoTurnRoute(),
+        config: const NavigationConfig(
+          minimalByDefault: true,
+          autoShowMap: true,
+          approachingTurnMeters: 150,
+        ),
+      );
+
+      final t0 = DateTime.now();
+      engine.onPosition(east(900), 90, now: t0);
+      expect(engine.snapshot.mode, NavigationMode.map);
+
+      engine.requestMinimal();
+      engine.onPosition(east(950), 90, now: t0.add(const Duration(seconds: 2)));
+      expect(engine.snapshot.mode, NavigationMode.minimal);
+
+      // Around the first corner and closing on the second turn, 100 m out.
+      // 1000 m east plus 300 m north is 100 m short of the right turn.
+      final closing = GeoPoint(north(300).lat, east(1000).lng);
+      engine.onPosition(closing, 0, now: t0.add(const Duration(seconds: 20)));
+      expect(engine.snapshot.mode, NavigationMode.map);
+    });
+
     test('respects a configuration that turns auto-switching off', () {
       final engine = build(
         config: const NavigationConfig(
@@ -416,7 +553,8 @@ void main() {
       engine.onPosition(east(100), 90);
 
       // 1900 m remaining at the provider's assumed pace.
-      final expected = engine.snapshot.distanceToDestinationMeters /
+      final expected =
+          engine.snapshot.distanceToDestinationMeters /
           engine.route.assumedSpeedMps;
       expect(
         engine.snapshot.remainingDuration.inSeconds,
@@ -424,8 +562,7 @@ void main() {
       );
     });
 
-    test('switches to the rider\'s own pace once they have covered ground',
-        () {
+    test('switches to the rider\'s own pace once they have covered ground', () {
       final engine = NavigationEngine(
         route: lRoute(),
         provider: failingProvider(),
@@ -440,6 +577,21 @@ void main() {
       // the provider's 4.17 m/s would give.
       expect(engine.snapshot.remainingDuration.inMinutes, lessThan(4));
     });
+  });
+
+  test('along-route speed appears on the second sample', () {
+    final engine = build();
+    final start = DateTime.utc(2026, 9, 29, 8);
+
+    engine.onPosition(east(100), 90, now: start);
+    expect(engine.snapshot.matchedSpeedMps, isNull);
+
+    engine.onPosition(
+      east(200),
+      90,
+      now: start.add(const Duration(seconds: 10)),
+    );
+    expect(engine.snapshot.matchedSpeedMps, closeTo(10, 0.5));
   });
 
   test('a route with too few points is handled without throwing', () {
