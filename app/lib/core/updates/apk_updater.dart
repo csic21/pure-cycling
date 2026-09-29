@@ -21,6 +21,7 @@ class ApkUpdater {
 
   static const _maximumBytes = 250 * 1024 * 1024;
   static const _channel = MethodChannel('app.purecycling/update');
+  static var _serial = 0;
   final http.Client _client;
 
   void close() => _client.close();
@@ -34,13 +35,20 @@ class ApkUpdater {
       throw const ApkUpdateException('安装包地址不安全');
     }
 
-    final directory =
-        destination ??
-        Directory('${(await getTemporaryDirectory()).path}/updates');
+    final directory = destination ?? await _updatesDirectory();
     await directory.create(recursive: true);
-    final part = File('${directory.path}/update.apk.part');
-    final apk = File('${directory.path}/update.apk');
-    if (await part.exists()) await part.delete();
+    // A new name every time. The system installer caches an APK by its
+    // content URI, and that URI is the path. Writing the next release over
+    // `update.apk` makes the installer open the package it already parsed —
+    // the one the rider installed last time — while this process, reading
+    // the file directly, sees the new bytes and lets the dialog through.
+    //
+    // The previous files go first, so a new download cannot stack on top of
+    // one the installer was still holding open.
+    await discardDownloadedPackages(directory: directory);
+    final stamp = '${DateTime.now().microsecondsSinceEpoch}${_serial++}';
+    final part = File('${directory.path}/update-$stamp.apk.part');
+    final apk = File('${directory.path}/update-$stamp.apk');
 
     try {
       var current = url;
@@ -109,6 +117,62 @@ class ApkUpdater {
     }
   }
 
+  /// How long a package handed to the installer is left on disk.
+  ///
+  /// Long enough for the installer to open it. After that the file is only
+  /// taking space: each download has its own name, so keeping every one would
+  /// grow the cache by the size of the APK on every update.
+  static const downloadedPackageGrace = Duration(minutes: 1);
+
+  /// Deletes downloaded APKs and half-written parts.
+  ///
+  /// [olderThan] keeps a file still inside that window. The installer is
+  /// reading the one just handed over; a lifecycle flicker must not unlink it
+  /// out from under that screen. Null deletes everything, which is what a new
+  /// download and a cold start want. A file the installer still has open is
+  /// skipped and tried again next time.
+  static Future<void> discardDownloadedPackages({
+    Duration? olderThan,
+    Directory? directory,
+  }) async {
+    final Directory dir;
+    try {
+      dir = directory ?? await _updatesDirectory();
+    } catch (_) {
+      return;
+    }
+    if (!await dir.exists()) return;
+    final cutoff = olderThan == null
+        ? null
+        : DateTime.now().subtract(olderThan);
+    await for (final entity in dir.list()) {
+      if (entity is! File) continue;
+      final name = entity.uri.pathSegments.last;
+      if (!_isDownloadedPackage(name)) continue;
+      if (cutoff != null) {
+        try {
+          if (!((await entity.lastModified()).isBefore(cutoff))) continue;
+        } on FileSystemException {
+          continue;
+        }
+      }
+      try {
+        await entity.delete();
+      } on FileSystemException {
+        // Unlink failed. The next resume or the next download tries again,
+        // which is what stops a locked file from becoming a permanent copy.
+      }
+    }
+  }
+
+  static Future<Directory> _updatesDirectory() async =>
+      Directory('${(await getTemporaryDirectory()).path}/updates');
+
+  static bool _isDownloadedPackage(String name) =>
+      name == 'update.apk' ||
+      (name.startsWith('update-') &&
+          (name.endsWith('.apk') || name.endsWith('.apk.part')));
+
   /// Hands a downloaded APK to the system installer.
   ///
   /// [expectedVersion] is the version the check advertised to the rider. The
@@ -130,5 +194,16 @@ class ApkUpdater {
     } on MissingPluginException {
       throw const ApkUpdateException('当前设备不支持应用内安装');
     }
+    // The installer has the file now. Drop it once that screen has had time
+    // to open it. The grace window also covers a download the rider starts
+    // in that same minute: only files already older than the window go, so
+    // the new one is not unlinked mid-write. Coming back to the app sweeps
+    // anything this timer missed.
+    unawaited(
+      Future<void>.delayed(
+        downloadedPackageGrace,
+        () => discardDownloadedPackages(olderThan: downloadedPackageGrace),
+      ),
+    );
   }
 }

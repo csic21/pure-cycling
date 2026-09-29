@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'providers.dart';
 import 'router.dart';
 import 'theme.dart';
+import '../core/updates/apk_updater.dart';
 import '../core/updates/update_prompt.dart';
 
 class CyclingApp extends ConsumerStatefulWidget {
@@ -25,6 +26,9 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // A previous update may have left its APK behind if the process died
+    // before the grace timer ran. Nothing is being installed at cold start.
+    unawaited(ApkUpdater.discardDownloadedPackages());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _updateTimer = Timer(const Duration(seconds: 3), () {
@@ -110,6 +114,14 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
         // screen was off.
         ref.read(rideSessionProvider.notifier).setForeground(true);
         unawaited(ref.read(syncServiceProvider).syncNow());
+        // The package just handed to the installer stays for a minute, so a
+        // resume that races the installer does not delete it mid-read.
+        // Anything older is a finished or abandoned download.
+        unawaited(
+          ApkUpdater.discardDownloadedPackages(
+            olderThan: ApkUpdater.downloadedPackageGrace,
+          ),
+        );
     }
   }
 

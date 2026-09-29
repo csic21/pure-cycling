@@ -40,10 +40,8 @@ class MainActivity : FlutterActivity() {
                 result.notImplemented()
                 return@setMethodCallHandler
             }
-            val path = call.argument<String>("path")
-            val expected = File(cacheDir, "updates/update.apk").canonicalFile
-            val apk = path?.let { File(it).canonicalFile }
-            if (apk == null || apk != expected || !apk.isFile || apk.length() == 0L) {
+            val apk = acceptedUpdate(call.argument<String>("path"))
+            if (apk == null) {
                 result.error("invalid_apk", "安装包文件无效，请重新下载", null)
                 return@setMethodCallHandler
             }
@@ -86,7 +84,14 @@ class MainActivity : FlutterActivity() {
                 )
                 val intent = Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(uri, "application/vnd.android.package-archive")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    // NEW_TASK so a package-installer activity still showing the
+                    // previous URI is not reused. The URI itself also changes
+                    // per download; either half alone still served the old APK
+                    // on several OEM installers.
+                    addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_ACTIVITY_NEW_TASK,
+                    )
                 }
                 startActivity(intent)
                 result.success(null)
@@ -113,6 +118,22 @@ class MainActivity : FlutterActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && rideFullscreen) applyRideFullscreen()
+    }
+
+    /// A download this process just wrote, and nothing else.
+    ///
+    /// The name has to be `update-<digits>.apk`. A fixed name makes the
+    /// content URI stable, and the system installer caches the APK it parsed
+    /// for that URI — so the dialog keeps offering the build the rider
+    /// already installed.
+    private fun acceptedUpdate(path: String?): File? {
+        val apk = path?.let { runCatching { File(it).canonicalFile }.getOrNull() }
+            ?: return null
+        val updates = File(cacheDir, "updates").canonicalFile
+        if (apk.parentFile != updates) return null
+        if (!updateName.matches(apk.name)) return null
+        if (!apk.isFile || apk.length() == 0L) return null
+        return apk
     }
 
     private fun applyRideFullscreen() {
@@ -157,6 +178,8 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
+        private val updateName = Regex("update-[0-9]+\\.apk")
+
         const val UPDATE_CHANNEL = "app.purecycling/update"
         const val RIDE_FULLSCREEN_CHANNEL = "app.purecycling/ride_fullscreen"
         /** Must match `PlatformBarometerSource.channelName` on the Dart side. */
