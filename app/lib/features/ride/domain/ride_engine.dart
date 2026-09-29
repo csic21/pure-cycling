@@ -721,6 +721,24 @@ class RideEngine {
 
   static const Duration _wheelSpeedStaleAfter = Duration(seconds: 5);
 
+  /// How long the last Doppler speed may stay on screen after it stops being
+  /// fresh, while the accelerometer still says the bike is rolling.
+  ///
+  /// The signal-lost icon answers "has a fix arrived?". The speed tile answers
+  /// a different question, and a gap of a few seconds should keep the last
+  /// Doppler value instead of flipping to `--`. Past this the number is
+  /// unknown. Vibration must not hold it any longer than that, and must not
+  /// resume a ride that has already auto-paused.
+  static const Duration gpsSpeedCoastAfter = Duration(seconds: 25);
+
+  /// How long the receiver may be quiet before a confirmed stop zeros the
+  /// readout.
+  ///
+  /// Shorter than the fresh-speed window on purpose. The last Doppler sample
+  /// is a cruising speed from before the bike stopped; holding it until the
+  /// signal-lost threshold is what makes a red light read 25 km/h.
+  static const Duration _stopZeroAfter = Duration(seconds: 3);
+
   bool get _freshGpsSpeed {
     final at = _lastGpsSpeedAt;
     return !_gpsPoor &&
@@ -728,12 +746,99 @@ class RideEngine {
         _now().difference(at) <= _config.gpsSignalLostAfter;
   }
 
+  /// The receiver has gone quiet for long enough that the last Doppler sample
+  /// no longer describes the bike.
+  bool get _fixQuiet {
+    final at = _lastFixArrivedAt;
+    if (at == null) return false;
+    return _now().difference(at) >= _stopZeroAfter;
+  }
+
+  bool get _gpsSpeedYoungEnoughToCoast {
+    final at = _lastGpsSpeedAt;
+    if (at == null || _gpsSpeedMps == null) return false;
+    return _now().difference(at) <= gpsSpeedCoastAfter;
+  }
+
+  /// Accelerometer says the bike is still, and fixes have stopped.
+  ///
+  /// A live fix still owns the number: the filter already snaps a real stop
+  /// to zero, and a smooth descent can look still to the phone. This only
+  /// replaces a Doppler value whose receiver has gone quiet.
+  bool get _showStopped =>
+      !_freshWheelSpeed &&
+      motionDetected == false &&
+      _gpsSpeedMps != null &&
+      _fixQuiet;
+
+  /// Last Doppler speed, held through a short gap while the phone is still
+  /// being shaken by the road. Never while auto-paused: vibration is not
+  /// evidence that the rider has set off again.
+  bool get _coastingGpsSpeed =>
+      !_freshWheelSpeed &&
+      !_freshGpsSpeed &&
+      !_showStopped &&
+      !_autoPause.isAutoPaused &&
+      motionDetected == true &&
+      _gpsSpeedYoungEnoughToCoast;
+
+  /// Auto-paused, and the receiver is not delivering a new speed.
+  ///
+  /// The Doppler sample can still be inside the fresh window — that window
+  /// measures age, not whether anything new has arrived. Showing it again
+  /// because the phone started rattling would both lie about the speed and
+  /// resume the ride. A fix that actually arrives is not quiet, and then the
+  /// fresh sample is allowed to speak.
+  bool get _pausedHoldingZero =>
+      _autoPause.isAutoPaused &&
+      !_freshWheelSpeed &&
+      _gpsSpeedMps != null &&
+      (_fixQuiet || !_freshGpsSpeed);
+
   bool get _freshWheelSpeed {
     final at = _lastWheelSpeedAt;
     return at != null && _now().difference(at) <= _wheelSpeedStaleAfter;
   }
 
-  bool get _speedAvailable => _freshGpsSpeed || _freshWheelSpeed;
+  bool get _speedAvailable =>
+      _freshGpsSpeed ||
+      _freshWheelSpeed ||
+      _coastingGpsSpeed ||
+      _showStopped ||
+      _pausedHoldingZero;
+
+  /// Puts the displayed speed on the source that is allowed to speak.
+  ///
+  /// Wheel, then a confirmed stop, then a fresh Doppler sample, then a short
+  /// coast, then decay. The coast is the last Doppler value, not a speed
+  /// computed from vibration — the accelerometer only decides whether that
+  /// value is still plausible.
+  void _syncDisplayedSpeed() {
+    if (_freshWheelSpeed) {
+      _currentSpeed = _wheelSpeedMps!;
+    } else if (_showStopped || _pausedHoldingZero) {
+      _currentSpeed = 0;
+    } else if (_freshGpsSpeed && _gpsSpeedMps != null) {
+      _currentSpeed = _gpsSpeedMps!;
+    } else if (_coastingGpsSpeed && _gpsSpeedMps != null) {
+      _currentSpeed = _gpsSpeedMps!;
+    } else {
+      _currentSpeed = _currentSpeed * 0.5 < 0.3 ? 0 : _currentSpeed * 0.5;
+    }
+  }
+
+  /// Speed the auto-pause rule is allowed to see.
+  ///
+  /// Null when there is no evidence either way, so a brand-new ride does not
+  /// pause just because the phone is lying still. A coast holds a ride that
+  /// is already going; it does not start one, and it does not resume one.
+  double? _speedForAutoPause() {
+    if (_freshWheelSpeed) return _wheelSpeedMps;
+    if (_showStopped || _pausedHoldingZero) return 0;
+    if (_freshGpsSpeed && _gpsSpeedMps != null) return _gpsSpeedMps;
+    if (_coastingGpsSpeed) return _gpsSpeedMps;
+    return null;
+  }
 
   /// The accelerometer's verdict, or null when there is nothing current to go
   /// on. See [RideState.motionDetected] for what null means downstream.
@@ -747,12 +852,12 @@ class RideEngine {
 
   /// Feeds an accelerometer magnitude, in g.
   ///
-  /// The verdict is deliberately weak, and consumers are expected to treat it
-  /// that way: it may only ever *shorten a stop*, never start, continue or
-  /// resume a ride. A phone can vibrate in a bag on a parked bike — an engine
-  /// idling, a rack rattling — so "moving" is not evidence that the rider is
-  /// riding. "Still" is much stronger evidence, and that is the direction the
-  /// two consumers lean.
+  /// The verdict is deliberately weak. "Still" is the strong evidence, and it
+  /// zeros the readout once fixes go quiet and shortens auto-pause. "Moving"
+  /// does not start or resume a ride — a phone rattles on a parked bike — but
+  /// for a few seconds after the last Doppler sample it does keep that sample
+  /// on screen, so a short tunnel does not blank the speed tile. Past
+  /// [gpsSpeedCoastAfter] the number is unknown again.
   void onMotionSample(double magnitudeG, {DateTime? at}) {
     if (!_status.isActive) return;
     if (!magnitudeG.isFinite) return;
@@ -762,15 +867,23 @@ class RideEngine {
     _motion.add(magnitudeG, stamp);
     _motionAt = stamp;
 
-    // Motion confirms a low speed; it cannot invent one while GPS and the
-    // wheel sensor are both silent. Otherwise a ride auto-pauses seconds after
-    // starting even though the speed is simply unknown.
-    final transition = _status == RideStatus.riding && _speedAvailable
-        ? _applyAutoPause(_currentSpeed, stamp)
+    // A stop shows zero and a short gap keeps the last Doppler value. Neither
+    // invents a speed from the vibration itself, and neither may resume a
+    // ride: a phone can rattle on a parked bike. With no speed sample at all
+    // there is nothing to pause on, or a new ride would auto-pause while the
+    // receiver is simply still acquiring.
+    final previousSpeed = _currentSpeed;
+    final couldShowSpeed = _speedAvailable;
+    _syncDisplayedSpeed();
+    final pauseSpeed = _speedForAutoPause();
+    final transition = _status == RideStatus.riding && pauseSpeed != null
+        ? _applyAutoPause(pauseSpeed, stamp)
         : (pausing: false, resuming: false);
     if (transition.pausing ||
         transition.resuming ||
-        _motion.moving != wasMoving) {
+        _motion.moving != wasMoving ||
+        _currentSpeed != previousSpeed ||
+        _speedAvailable != couldShowSpeed) {
       _publish(force: transition.pausing || transition.resuming);
     }
   }
@@ -1002,15 +1115,10 @@ class RideEngine {
 
     // The arrival clock, not the platform's: a replayed or cached fix is not
     // evidence that updates are arriving, and one is not evidence that the
-    // receiver has gone quiet either.
-    if (_freshWheelSpeed) {
-      _currentSpeed = _wheelSpeedMps!;
-    } else if (_freshGpsSpeed && _gpsSpeedMps != null) {
-      _currentSpeed = _gpsSpeedMps!;
-    } else if (!_speedAvailable) {
-      // Neither source is current: don't freeze the last displayed speed.
-      _currentSpeed = _currentSpeed * 0.5 < 0.3 ? 0 : _currentSpeed * 0.5;
-    }
+    // receiver has gone quiet either. Auto-pause is not driven from here —
+    // a silent receiver with no motion sensor must not pause a ride that is
+    // still in a tunnel. Motion samples and fixes are what move that rule.
+    _syncDisplayedSpeed();
 
     _publish();
   }

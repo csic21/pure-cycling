@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -133,8 +134,12 @@ class RideSettingsScreen extends ConsumerWidget {
               ),
               const _BackgroundLocationRow(),
               const _NotificationRow(),
+              if (defaultTargetPlatform == TargetPlatform.android)
+                const _BatteryOptimizationRow(),
             ],
-            footnote: '高精度档位每秒采样一次。停车时应用会自动降低采样频率以节省电量。',
+            footnote:
+                '高精度档位每秒采样一次。停车后改为大约 5 秒一次，'
+                '定位精度保持你选的那一档，避免卫星芯片休眠。',
           ),
 
           Padding(
@@ -233,6 +238,61 @@ class _NotificationRowState extends ConsumerState<_NotificationRow> {
       onTap: granted == false
           ? () async {
               await ref.read(notificationPermissionProvider).openSettings();
+              await _refresh();
+            }
+          : null,
+    );
+  }
+}
+
+/// Android's battery-optimization exemption.
+///
+/// The foreground service is not enough on the phones this app is ridden on.
+/// Xiaomi, Huawei and OPPO will still freeze a background process they have
+/// not been told to leave alone, and a frozen process delivers no fixes.
+/// The row is Android-only: other platforms have nothing to ask.
+class _BatteryOptimizationRow extends ConsumerStatefulWidget {
+  const _BatteryOptimizationRow();
+
+  @override
+  ConsumerState<_BatteryOptimizationRow> createState() =>
+      _BatteryOptimizationRowState();
+}
+
+class _BatteryOptimizationRowState
+    extends ConsumerState<_BatteryOptimizationRow> {
+  bool? _ignoring;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final ignoring = await ref.read(batteryOptimizationProvider).isIgnoring();
+    if (mounted) setState(() => _ignoring = ignoring);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ignoring = _ignoring;
+
+    return SettingsTile(
+      title: '电池优化',
+      subtitle: ignoring == null
+          ? '正在检查系统设置…'
+          : ignoring
+          ? '已关闭对本应用的电池优化，锁屏后系统不会为了省电停掉定位'
+          : '系统省电可能会在锁屏后停掉定位。关闭对本应用的电池优化，'
+                '记录才不会被中途掐断',
+      leading: Icon(
+        ignoring == false ? Icons.battery_alert_outlined : Icons.battery_saver,
+        color: ignoring == false ? AppColors.warning : null,
+      ),
+      onTap: ignoring == false
+          ? () async {
+              await ref.read(batteryOptimizationProvider).request();
               await _refresh();
             }
           : null,

@@ -63,6 +63,12 @@ class FakeLocationService extends LocationService {
   /// test (see `sampling_policy_test.dart`).
   final List<GpsAccuracyMode> requestedModes = [];
 
+  /// Interval passed with each [fixes] call, parallel to [requestedModes].
+  ///
+  /// Null is "the mode's own interval". A stopped ride passes five seconds
+  /// while keeping the rider's accuracy tier.
+  final List<Duration?> requestedIntervals = [];
+
   /// Pushes a fix, as the platform would.
   void emit(LocationFix fix) {
     if (!_controller.isClosed) _controller.add(fix);
@@ -125,9 +131,11 @@ class FakeLocationService extends LocationService {
   Stream<LocationFix> fixes({
     GpsAccuracyMode mode = GpsAccuracyMode.high,
     bool background = true,
+    Duration? interval,
   }) {
     streamOpened = true;
     requestedModes.add(mode);
+    requestedIntervals.add(interval);
     return _controller.stream;
   }
 

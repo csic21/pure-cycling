@@ -26,6 +26,7 @@ import '../core/map/amap/amap_route_provider.dart';
 import '../core/map/amap/amap_traffic_light_provider.dart';
 import '../core/map/local/offline_providers.dart';
 import '../core/map/map_providers.dart';
+import '../core/permissions/battery_optimization.dart';
 import '../core/permissions/notification_permission.dart';
 import '../core/sync/functions_config.dart';
 import '../core/sync/supabase_config.dart';
@@ -131,6 +132,11 @@ final motionAvailabilityProvider = FutureProvider<bool>(
 /// The Android 13+ grant behind the recording notification.
 final notificationPermissionProvider = Provider<NotificationPermission>(
   (ref) => const NotificationPermission(),
+);
+
+/// Android battery-optimization exemption. Off Android this is a no-op.
+final batteryOptimizationProvider = Provider<BatteryOptimization>(
+  (ref) => const BatteryOptimization(),
 );
 
 /// The version the rider sees in the About screen.

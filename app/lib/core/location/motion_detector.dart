@@ -104,7 +104,7 @@ class MotionDetector {
   /// A verdict needs a window to be measured over. Without this, the first
   /// sample after the stream opens — which has nothing to compare against —
   /// would read as "the bike is standing still", and both consumers would
-  /// believe it: the sampling policy would drop to the frugal profile and
+  /// believe it: the sampling policy would stretch its interval and
   /// auto-pause would shorten its delay, on the strength of one number.
   bool get hasReading => _gravity != null && _recent.length >= _minSamples;
 

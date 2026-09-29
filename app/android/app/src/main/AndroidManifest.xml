@@ -31,6 +31,13 @@
          normal sleep once the ride ends. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Lets the rider exempt this app from battery optimization. OEM power
+         savers stop GNSS updates for apps they consider idle, which is a
+         locked phone in a jersey pocket — the normal way a ride is recorded.
+         The permission only opens the system dialog; the rider still has to
+         agree, and declining it does not stop a foreground ride. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- ==================== 蓝牙传感器 ====================
          Android 12 split Bluetooth into runtime permissions. `BLUETOOTH_SCAN`
          is declared `neverForLocation` because this app scans for heart rate

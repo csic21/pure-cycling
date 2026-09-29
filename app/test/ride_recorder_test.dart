@@ -215,9 +215,10 @@ void main() {
       await recorder.startRide(const AppSettings());
       expect(
         location.requestedModes,
-        [GpsAccuracyMode.batterySaver],
-        reason: '停车时应改用省电档，而不是继续每秒采样',
+        [GpsAccuracyMode.high],
+        reason: '停车不降精度。降到均衡功耗会让卫星芯片休眠',
       );
+      expect(location.requestedIntervals, [const Duration(seconds: 5)]);
 
       await recorder.dispose();
       await location.dispose();
@@ -302,7 +303,8 @@ void main() {
       );
 
       await recorder.startRide(const AppSettings());
-      expect(location.requestedModes, [GpsAccuracyMode.batterySaver]);
+      expect(location.requestedModes, [GpsAccuracyMode.high]);
+      expect(location.requestedIntervals, [const Duration(seconds: 5)]);
 
       // The phone goes in a pocket and the rider sets off. The policy wants the
       // rider's own profile back — which is a re-subscription.
@@ -313,17 +315,22 @@ void main() {
 
       expect(
         location.requestedModes,
-        [GpsAccuracyMode.batterySaver],
+        [GpsAccuracyMode.high],
         reason: '锁屏后重新订阅会降级前台服务，而 Android 12+ 不允许在后台再提升它',
       );
+      expect(location.requestedIntervals, [const Duration(seconds: 5)]);
 
       recorder.setForeground(true);
 
       expect(
         location.requestedModes,
-        [GpsAccuracyMode.batterySaver, GpsAccuracyMode.balanced],
-        reason: '回到前台必须把推迟的档位补上，而不是一直用省电档',
+        [GpsAccuracyMode.high, GpsAccuracyMode.balanced],
+        reason: '回到前台必须把推迟的档位补上，而不是一直停在停车间隔',
       );
+      expect(location.requestedIntervals, [
+        const Duration(seconds: 5),
+        const Duration(seconds: 2),
+      ]);
 
       await recorder.dispose();
       await location.dispose();

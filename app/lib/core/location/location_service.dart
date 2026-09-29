@@ -149,9 +149,14 @@ class LocationService {
   Stream<LocationFix> fixes({
     GpsAccuracyMode mode = GpsAccuracyMode.high,
     bool background = true,
+    Duration? interval,
   }) {
     return Geolocator.getPositionStream(
-      locationSettings: _settingsFor(mode, background: background),
+      locationSettings: _settingsFor(
+        mode,
+        background: background,
+        interval: interval,
+      ),
     ).map(_toFix);
   }
 
@@ -159,29 +164,36 @@ class LocationService {
   ///
   /// One hertz at the default profile: a bicycle at 30 km/h moves 8 m between
   /// fixes, which is the right resolution for both distance and a smooth map.
-  /// The two frugal profiles trade that resolution for battery, and they are
-  /// what the stationary policy drops to — five seconds while parked is
-  /// plenty, and the distance calculator's anchor design means nothing is lost
-  /// when the rider sets off again.
+  /// Stopping stretches the interval without relaxing the accuracy request.
+  /// [interval] carries that: five seconds while parked, at whatever accuracy
+  /// the rider chose. `LocationAccuracy.medium` is reserved for the 省电 tier
+  /// the rider picked themselves — it lets the fused provider sleep the GNSS
+  /// chip, and a chip that has to wake up at a traffic light is exactly when
+  /// the signal icon turns red. The distance calculator's anchor design means
+  /// a slower interval loses nothing when the rider sets off again.
   ///
   /// `distanceFilter: 0` is essential: the platform's default distance-based
   /// filter would silently drop fixes at low speed, which is exactly where the
   /// auto-pause rule needs them.
   ///
   /// **iOS has no rate control.** `CLLocationManager` decides how often to
-  /// deliver, guided by the accuracy request; the tuple below therefore buys
-  /// less on iOS than on Android, where `intervalDuration` is honoured. What
-  /// iOS does get from the frugal profiles is a lower-accuracy request, which
-  /// is the largest part of the radio's power draw.
+  /// deliver, guided by the accuracy request; the interval below therefore
+  /// buys less on iOS than on Android, where `intervalDuration` is honoured.
+  /// What iOS does get from the rider-chosen 省电 tier is a lower-accuracy
+  /// request, which is the largest part of the radio's power draw. Stopping
+  /// does not take that tier: the accuracy stays what the rider picked.
   LocationSettings _settingsFor(
     GpsAccuracyMode mode, {
     required bool background,
+    Duration? interval,
   }) {
-    final interval = switch (mode) {
-      GpsAccuracyMode.high => const Duration(seconds: 1),
-      GpsAccuracyMode.balanced => const Duration(seconds: 2),
-      GpsAccuracyMode.batterySaver => const Duration(seconds: 5),
-    };
+    final resolvedInterval =
+        interval ??
+        switch (mode) {
+          GpsAccuracyMode.high => const Duration(seconds: 1),
+          GpsAccuracyMode.balanced => const Duration(seconds: 2),
+          GpsAccuracyMode.batterySaver => const Duration(seconds: 5),
+        };
 
     final android = AndroidSettings(
       accuracy: switch (mode) {
@@ -190,7 +202,7 @@ class LocationService {
         GpsAccuracyMode.batterySaver => LocationAccuracy.medium,
       },
       distanceFilter: 0,
-      intervalDuration: interval,
+      intervalDuration: resolvedInterval,
       // Fused provider: better accuracy and materially better battery than
       // the raw LocationManager on every Android device with Play Services.
       forceLocationManager: false,

@@ -145,9 +145,9 @@ class RideRecorder {
   /// rider chose — see [SamplingPolicy].
   final SamplingPolicy _sampling;
 
-  /// The profile the current subscription was opened with, so a change is a
+  /// The request the current subscription was opened with, so a change is a
   /// re-subscription and nothing else is.
-  GpsAccuracyMode? _requestedMode;
+  SamplingRequest? _requested;
 
   /// Whether the app is in the foreground.
   ///
@@ -466,13 +466,13 @@ class RideRecorder {
   /// a second copy of every fix into the engine. Making this `async` to await
   /// the cancel would need a reconcile loop to be safe again.
   void _subscribeLocation() {
-    final mode = _sampling.effective;
-    _requestedMode = mode;
+    final request = _sampling.request;
+    _requested = request;
     _streamAliveAt = _now();
     _stallReported = false;
     _locationSub?.cancel();
     _locationSub = _location
-        .fixes(mode: mode)
+        .fixes(mode: request.accuracy, interval: request.interval)
         .listen(
           (fix) {
             _streamAliveAt = _now();
@@ -507,7 +507,7 @@ class RideRecorder {
     _watchdog = null;
     await _locationSub?.cancel();
     _locationSub = null;
-    _requestedMode = null;
+    _requested = null;
     // The next ride starts with a clean tolerance: the backoff describes this
     // stream's history, not the receiver's.
     _stallTolerance = _fixStaleAfter;
@@ -533,10 +533,10 @@ class RideRecorder {
   void _syncSamplingProfile() {
     if (_locationSub == null) return;
     if (!_foreground) return;
-    // Nothing to remember on the way out: `effective` is the policy's own
+    // Nothing to remember on the way out: `request` is the policy's own
     // answer, so returning to the foreground and comparing it against the
-    // profile in force is the whole reconciliation.
-    if (_requestedMode == _sampling.effective) return;
+    // subscription in force is the whole reconciliation.
+    if (_requested == _sampling.request) return;
     _subscribeLocation();
   }
 
