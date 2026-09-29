@@ -259,7 +259,7 @@ Deno.test("invalid or unconfigured source never reaches GitHub", async () => {
   equal(calls, 0, "no GitHub calls");
 });
 
-Deno.test("anonymous API rate limit falls back to GitHub's latest-release permalink", async () => {
+Deno.test("anonymous API rate limit falls back to a tag-pinned release asset", async () => {
   const cache = new SharedCache(Date.now);
   const seen: string[] = [];
   const github: FetchLike = async (input, init) => {
@@ -279,10 +279,14 @@ Deno.test("anonymous API rate limit falls back to GitHub's latest-release permal
         headers: { Location: `https://github.com/${repo}/releases/tag/v0.2.0` },
       });
     }
-    if (url.endsWith("/releases/latest/download/pure-cycling-android.apk")) {
+    if (url.endsWith("/releases/download/v0.2.0/pure-cycling-android.apk")) {
       equal(init?.method, "HEAD", "asset existence check");
       return new Response(null, { status: 302 });
     }
+    // Anything else, including GitHub's `/releases/latest/download/...`
+    // permalink, fails the probe. That permalink is resolved again when the
+    // phone downloads, so advertising it could pair one version number with
+    // another release's file — and the app refuses the path outright.
     throw new Error(`unexpected URL: ${url}`);
   };
   const response = await handleRelease(
@@ -293,6 +297,11 @@ Deno.test("anonymous API rate limit falls back to GitHub's latest-release permal
   const body = await response.json();
   equal(body.tag_name, "v0.2.0", "fallback tag");
   equal(body.assets[0].name, "pure-cycling-android.apk", "verified APK");
+  equal(
+    body.assets[0].browser_download_url,
+    `https://github.com/${repo}/releases/download/v0.2.0/pure-cycling-android.apk`,
+    "APK link carries the same tag as tag_name",
+  );
   equal(seen.length, 4, "one API, one release link, two known asset checks");
 });
 

@@ -188,11 +188,21 @@ async function lookupRelease(
   }
 
   // Current CI publishes the first name; earlier releases used the second.
-  // Only advertise a documented latest-asset link after GitHub confirms it.
+  // Only advertise an asset link after GitHub confirms it exists.
+  //
+  // The URL is pinned to the tag resolved above, never GitHub's
+  // `/releases/latest/download/...` permalink. That permalink is resolved a
+  // second time, by GitHub, when the rider's phone downloads the file — so a
+  // cached body could promise one release's version number and hand over
+  // another release's APK. The app rejects it outright as well: `_githubUri`
+  // only accepts `/<repo>/releases/download/` paths, so advertising a
+  // permalink left the Android updater with no install button at all.
   const assetNames = ["pure-cycling-android.apk", "app-release.apk"];
+  const assetsBase = `https://github.com/${env.repository}/releases/download/${
+    encodeURIComponent(tag)
+  }`;
   const checks = await Promise.all(assetNames.map(async (name) => {
-    const url =
-      `https://github.com/${env.repository}/releases/latest/download/${name}`;
+    const url = `${assetsBase}/${name}`;
     try {
       const response = await fetchImpl(url, {
         method: "HEAD",

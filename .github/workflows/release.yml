@@ -197,6 +197,17 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes "纯粹骑行 $GITHUB_REF_NAME。Android 用户可下载 APK 更新；iOS 请通过原安装渠道更新。"
 
+      # A release is not finished while the feed riders consult still offers the
+      # version before it. The relay caches the latest release, and `verify`
+      # warms that cache minutes before this job creates the Release — so the
+      # old version is exactly what the cache has in hand. See
+      # scripts/wait-for-release-feed.sh.
+      - name: Wait for the update feed to serve this release
+        working-directory: .
+        env:
+          FUNCTIONS_URL: ${{ vars.SUPABASE_FUNCTIONS_URL }}
+        run: ./scripts/wait-for-release-feed.sh "$FUNCTIONS_URL" "$GITHUB_REF_NAME"
+
   # -------------------------------------------------------------------------
   # iOS is built but not uploaded. Shipping to TestFlight needs an App Store
   # Connect API key, a distribution certificate and a provisioning profile —

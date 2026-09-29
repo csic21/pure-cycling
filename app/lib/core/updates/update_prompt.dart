@@ -89,7 +89,10 @@ Future<void> checkForAppUpdate(
                   return;
                 }
                 try {
-                  await ApkUpdater.install(result as File);
+                  await ApkUpdater.install(
+                    result as File,
+                    expectedVersion: release!.version,
+                  );
                 } on ApkUpdateException catch (error) {
                   if (context.mounted) _message(context, error.message);
                 }

@@ -68,6 +68,18 @@ class MainActivity : FlutterActivity() {
                 result.error("invalid_apk", "安装包与当前应用不匹配或版本未更新", null)
                 return@setMethodCallHandler
             }
+            // The update feed is cached, so the release it describes can be
+            // replaced — or rolled back — while a rider is downloading. If the
+            // file does not carry the version they were promised, refuse it.
+            // The alternative is quietly reinstalling the build that is
+            // already on the phone and calling that an update.
+            val advertised = call.argument<String>("version")
+            if (advertised != null && archive?.versionName != advertised) {
+                result.error(
+                    "invalid_apk", "下载到的安装包不是提示的新版本，请重新检查更新", null
+                )
+                return@setMethodCallHandler
+            }
             try {
                 val uri = FileProvider.getUriForFile(
                     this, "$packageName.updates", apk

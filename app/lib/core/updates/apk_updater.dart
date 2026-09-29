@@ -109,9 +109,22 @@ class ApkUpdater {
     }
   }
 
-  static Future<void> install(File apk) async {
+  /// Hands a downloaded APK to the system installer.
+  ///
+  /// [expectedVersion] is the version the check advertised to the rider. The
+  /// native side compares it against the APK's own `versionName` before the
+  /// installer is opened: the update feed is cached, so a body can outlive the
+  /// release it describes, and a stale download has to fail loudly here rather
+  /// than quietly put the version that is already on the phone back on it.
+  static Future<void> install(
+    File apk, {
+    required String expectedVersion,
+  }) async {
     try {
-      await _channel.invokeMethod<void>('install', {'path': apk.path});
+      await _channel.invokeMethod<void>('install', {
+        'path': apk.path,
+        'version': expectedVersion,
+      });
     } on PlatformException catch (error) {
       throw ApkUpdateException(error.message ?? '无法打开系统安装界面');
     } on MissingPluginException {
