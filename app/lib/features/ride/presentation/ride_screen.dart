@@ -9,6 +9,7 @@ import '../../../app/providers.dart';
 import '../../../app/router.dart';
 import '../../../app/theme.dart';
 import '../../../core/map/map_providers.dart';
+import '../../../core/system/ride_fullscreen.dart';
 import '../../../core/utils/units.dart';
 import '../../../shared/widgets/pixel_shift.dart';
 import '../../../shared/widgets/standstill_dimmer.dart';
@@ -48,6 +49,7 @@ class _RideScreenState extends ConsumerState<RideScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(RideFullscreen.enter());
     // Started after the first frame so the recorder is not touched during a
     // build, and so a permission dialog appears over a rendered screen rather
     // than a blank one.
@@ -56,6 +58,7 @@ class _RideScreenState extends ConsumerState<RideScreen> {
 
   @override
   void dispose() {
+    unawaited(RideFullscreen.exit());
     unawaited(WakelockPlus.disable());
     _pageController.dispose();
     super.dispose();
@@ -112,33 +115,35 @@ class _RideScreenState extends ConsumerState<RideScreen> {
       child: Scaffold(
         backgroundColor: AppColors.background,
         body: SafeArea(
-          child: Column(
-            children: [
-              RideStatusBar(
-                ride: ride,
-                navigating: isNavigating,
-                routeName: session.route?.name,
-                batteryPercent: battery,
-                onClose: () => _confirmLeave(ref, ride),
-                onToggleMinimal: navigation == null
-                    ? null
-                    : () {
-                        if (navigation.mode == NavigationMode.map) {
-                          ref
-                              .read(rideSessionProvider.notifier)
-                              .requestMinimal();
-                        } else {
-                          ref.read(rideSessionProvider.notifier).requestMap();
-                        }
-                      },
-                isMapMode: navigation?.mode == NavigationMode.map,
-              ),
+          minimum: const EdgeInsets.all(2),
+          child: PixelShiftScope(
+            enabled: settings.oledMode && settings.pixelShift,
+            child: Column(
+              children: [
+                RideStatusBar(
+                  ride: ride,
+                  navigating: isNavigating,
+                  routeName: session.route?.name,
+                  batteryPercent: battery,
+                  onClose: () => _confirmLeave(ref, ride),
+                  onToggleMinimal: navigation == null
+                      ? null
+                      : () {
+                          if (navigation.mode == NavigationMode.map) {
+                            ref
+                                .read(rideSessionProvider.notifier)
+                                .requestMinimal();
+                          } else {
+                            ref.read(rideSessionProvider.notifier).requestMap();
+                          }
+                        },
+                  isMapMode: navigation?.mode == NavigationMode.map,
+                ),
 
-              // Pixel shift wraps the whole data surface, not individual tiles,
-              // so nothing clips or overlaps at the extremes of the offset.
-              Expanded(
-                child: PixelShiftScope(
-                  enabled: settings.oledMode && settings.pixelShift,
+                // Only the data surface dims at a standstill. The entire
+                // column, including this status strip and the controls,
+                // participates in pixel shift.
+                Expanded(
                   child: StandstillDimmer(
                     enabled: settings.oledMode && settings.dimOnStandstill,
                     speedMps: ride.stats.currentSpeedMps,
@@ -157,23 +162,24 @@ class _RideScreenState extends ConsumerState<RideScreen> {
                     ),
                   ),
                 ),
-              ),
 
-              if (pageCount > 1)
-                _PageDots(count: pageCount, current: _page)
-              else
-                const SizedBox(height: 8),
+                if (pageCount > 1)
+                  _PageDots(count: pageCount, current: _page)
+                else
+                  const SizedBox(height: 8),
 
-              RideControls(
-                ride: ride,
-                onPause: () => ref.read(rideSessionProvider.notifier).pause(),
-                onResume: () => ref.read(rideSessionProvider.notifier).resume(),
-                onStop: () => _confirmStop(ref),
-                onReroute: isNavigating
-                    ? () => ref.read(rideSessionProvider.notifier).reroute()
-                    : null,
-              ),
-            ],
+                RideControls(
+                  ride: ride,
+                  onPause: () => ref.read(rideSessionProvider.notifier).pause(),
+                  onResume: () =>
+                      ref.read(rideSessionProvider.notifier).resume(),
+                  onStop: () => _confirmStop(ref),
+                  onReroute: isNavigating
+                      ? () => ref.read(rideSessionProvider.notifier).reroute()
+                      : null,
+                ),
+              ],
+            ),
           ),
         ),
         // The countdown covers the whole screen while the first fix is being

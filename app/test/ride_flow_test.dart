@@ -5,10 +5,13 @@ import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/core/permissions/notification_permission.dart';
 import 'package:cycling_app/core/utils/geo.dart';
 import 'package:cycling_app/features/ride/presentation/ride_screen.dart';
+import 'package:cycling_app/features/ride/presentation/widgets/ride_controls.dart';
 import 'package:cycling_app/features/ride/presentation/widgets/location_notice.dart';
+import 'package:cycling_app/features/ride/presentation/widgets/ride_status_bar.dart';
 import 'package:cycling_app/features/routes/domain/route.dart';
 import 'package:cycling_app/features/settings/data/settings_repository.dart';
-import 'package:flutter/material.dart' show Size;
+import 'package:cycling_app/shared/widgets/pixel_shift.dart';
+import 'package:flutter/material.dart' show NavigationBar, Size;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -79,6 +82,21 @@ void main() {
       expect(find.text('暂停'), findsOneWidget);
       expect(find.text('结束'), findsOneWidget);
       expect(find.text('准备开始'), findsNothing);
+      expect(find.byType(NavigationBar), findsNothing);
+      expect(
+        find.ancestor(
+          of: find.byType(RideStatusBar),
+          matching: find.byType(PixelShiftScope),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.ancestor(
+          of: find.byType(RideControls),
+          matching: find.byType(PixelShiftScope),
+        ),
+        findsOneWidget,
+      );
 
       await shutdownApp(tester, database);
     });
