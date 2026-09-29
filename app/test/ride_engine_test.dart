@@ -47,7 +47,8 @@ void main() {
       void Function(Duration) advance,
       DateTime Function() clock,
       void Function(Duration) starveTimers,
-    ) body,
+    )
+    body,
   ) {
     fakeAsync((async) {
       var now = DateTime.utc(2026, 9, 23, 6);
@@ -156,7 +157,8 @@ void main() {
         expect(
           engine.state.status,
           RideStatus.riding,
-          reason: 'the countdown must expire into a recording ride, not a block',
+          reason:
+              'the countdown must expire into a recording ride, not a block',
         );
 
         engine.dispose();
@@ -175,8 +177,11 @@ void main() {
         advance(const Duration(seconds: 30));
 
         final paused = engine.state.stats;
-        expect(paused.moving, afterRiding.moving,
-            reason: 'a manual pause must freeze moving time');
+        expect(
+          paused.moving,
+          afterRiding.moving,
+          reason: 'a manual pause must freeze moving time',
+        );
         expect(
           paused.elapsed,
           greaterThan(afterRiding.elapsed + const Duration(seconds: 25)),
@@ -271,6 +276,20 @@ void main() {
   });
 
   group('auto-pause (spec §14)', () {
+    test('stationary GPS at the start does not auto-pause before moving', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        for (var i = 0; i < 12; i++) {
+          advance(const Duration(seconds: 1));
+          engine.onLocation(fixAt(origin, 0, clock(), speed: 0));
+        }
+        expect(engine.state.speedAvailable, isTrue);
+        expect(engine.state.autoPaused, isFalse);
+        expect(engine.state.status, RideStatus.riding);
+        engine.dispose();
+      });
+    });
+
     test('pauses after the delay below the threshold, resumes above it', () {
       withRide((advance, clock, starve) {
         final engine = startRiding(clock: clock);
@@ -399,6 +418,85 @@ void main() {
   });
 
   group('sensors', () {
+    test('fresh wheel speed remains visible through new GPS fixes', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        var travelled = ride(advance, clock, engine, 5, 3);
+        engine.onSensorReading(
+          SensorReading(
+            type: SensorType.speed,
+            value: 25.2,
+            timestamp: clock(),
+          ),
+        );
+        expect(engine.state.stats.currentSpeedMps, closeTo(7, 0.01));
+
+        advance(const Duration(seconds: 1));
+        travelled += 5;
+        engine.onLocation(fixAt(origin, travelled, clock(), speed: 5));
+        expect(engine.state.stats.currentSpeedMps, closeTo(7, 0.01));
+
+        advance(const Duration(seconds: 6));
+        expect(engine.state.stats.currentSpeedMps, closeTo(5, 0.01));
+        engine.dispose();
+      });
+    });
+
+    test('wheel speed takes over when GPS is stale, then expires', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        ride(advance, clock, engine, 5, 3);
+
+        advance(const Duration(seconds: 16));
+        engine.onSensorReading(
+          SensorReading(type: SensorType.speed, value: 7.2, timestamp: clock()),
+        );
+        expect(engine.state.stats.currentSpeedMps, closeTo(2, 0.01));
+        expect(engine.state.speedAvailable, isTrue);
+        expect(engine.state.sensors.wheelSpeedMps, closeTo(2, 0.01));
+
+        advance(const Duration(seconds: 6));
+        expect(engine.state.speedAvailable, isFalse);
+        expect(engine.state.sensors.wheelSpeedMps, isNull);
+        engine.dispose();
+      });
+    });
+
+    test('wheel speed alone can pause and resume a ride', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        engine.onSensorReading(
+          SensorReading(
+            type: SensorType.speed,
+            value: 14.4,
+            timestamp: clock(),
+          ),
+        );
+        for (var i = 0; i < 6; i++) {
+          engine.onSensorReading(
+            SensorReading(type: SensorType.speed, value: 0, timestamp: clock()),
+          );
+          advance(const Duration(seconds: 1));
+        }
+        expect(engine.state.autoPaused, isTrue);
+        expect(engine.state.status, RideStatus.riding);
+
+        for (var i = 0; i < 3; i++) {
+          engine.onSensorReading(
+            SensorReading(
+              type: SensorType.speed,
+              value: 14.4,
+              timestamp: clock(),
+            ),
+          );
+          advance(const Duration(seconds: 1));
+        }
+        expect(engine.state.autoPaused, isFalse);
+        expect(engine.state.stats.currentSpeedMps, closeTo(4, 0.01));
+        engine.dispose();
+      });
+    });
+
     test('heart rate, cadence and power reach the state and the trace', () {
       withRide((advance, clock, starve) {
         final points = <TrackPoint>[];
@@ -542,7 +640,8 @@ void main() {
         expect(
           distance,
           lessThan(8150),
-          reason: 'the gap between the checkpoint and the resume must not count',
+          reason:
+              'the gap between the checkpoint and the resume must not count',
         );
         expect(distance, greaterThan(8000));
 
@@ -677,8 +776,11 @@ void main() {
         }
 
         expect(engine.state.gpsPoor, isTrue);
-        expect(engine.state.gpsSignalLost, isFalse,
-            reason: 'a bad fix is not the same as silence');
+        expect(
+          engine.state.gpsSignalLost,
+          isFalse,
+          reason: 'a bad fix is not the same as silence',
+        );
 
         engine.dispose();
       });
@@ -714,30 +816,32 @@ void main() {
       });
     });
 
-    test('reports signal lost when fixes stop, and keeps the clock running',
-        () {
-      withRide((advance, clock, starve) {
-        final engine = startRiding(
-          clock: clock,
-          config: const RideEngineConfig(
-            gpsSignalLostAfter: Duration(seconds: 5),
-          ),
-        );
+    test(
+      'reports signal lost when fixes stop, and keeps the clock running',
+      () {
+        withRide((advance, clock, starve) {
+          final engine = startRiding(
+            clock: clock,
+            config: const RideEngineConfig(
+              gpsSignalLostAfter: Duration(seconds: 5),
+            ),
+          );
 
-        ride(advance, clock, engine, 5, 10);
+          ride(advance, clock, engine, 5, 10);
 
-        // A tunnel: no fixes at all for 30 s.
-        advance(const Duration(seconds: 30));
+          // A tunnel: no fixes at all for 30 s.
+          advance(const Duration(seconds: 30));
 
-        expect(engine.state.gpsSignalLost, isTrue);
-        expect(
-          engine.state.stats.elapsed.inSeconds,
-          greaterThan(35),
-          reason: 'the clock keeps running with no signal',
-        );
+          expect(engine.state.gpsSignalLost, isTrue);
+          expect(
+            engine.state.stats.elapsed.inSeconds,
+            greaterThan(35),
+            reason: 'the clock keeps running with no signal',
+          );
 
-        engine.dispose();
-      });
-    });
+          engine.dispose();
+        });
+      },
+    );
   });
 }

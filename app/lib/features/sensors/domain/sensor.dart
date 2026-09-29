@@ -39,14 +39,17 @@ class PairedSensor {
   final bool enabled;
   final DateTime? lastConnectedAt;
 
-  PairedSensor copyWith({String? name, bool? enabled, DateTime? lastConnectedAt}) =>
-      PairedSensor(
-        id: id,
-        name: name ?? this.name,
-        type: type,
-        enabled: enabled ?? this.enabled,
-        lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
-      );
+  PairedSensor copyWith({
+    String? name,
+    bool? enabled,
+    DateTime? lastConnectedAt,
+  }) => PairedSensor(
+    id: id,
+    name: name ?? this.name,
+    type: type,
+    enabled: enabled ?? this.enabled,
+    lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
+  );
 }
 
 /// A single value from a sensor, normalized across devices.
@@ -75,15 +78,14 @@ class SensorReading {
   int? get power => type == SensorType.power ? value.round() : null;
 
   /// Speed sensors report km/h; the engine works in m/s throughout.
-  double? get speedMps =>
-      type == SensorType.speed ? value / 3.6 : null;
+  double? get speedMps => type == SensorType.speed ? value / 3.6 : null;
 
   Map<String, dynamic> toJson() => {
-        'type': type.id,
-        'value': value,
-        'timestamp': timestamp.toUtc().millisecondsSinceEpoch ~/ 1000,
-        if (sensorId != null) 'sensor_id': sensorId,
-      };
+    'type': type.id,
+    'value': value,
+    'timestamp': timestamp.toUtc().millisecondsSinceEpoch ~/ 1000,
+    if (sensorId != null) 'sensor_id': sensorId,
+  };
 }
 
 /// Connection state of one sensor, for the settings list.
@@ -106,16 +108,17 @@ class SensorStatus {
   final String? error;
 
   SensorStatus copyWith({
+    PairedSensor? sensor,
     SensorConnectionState? state,
     int? batteryPercent,
     double? lastValue,
     String? error,
-  }) =>
-      SensorStatus(
-        sensor: sensor,
-        state: state ?? this.state,
-        batteryPercent: batteryPercent ?? this.batteryPercent,
-        lastValue: lastValue ?? this.lastValue,
-        error: error ?? this.error,
-      );
+    bool clearError = false,
+  }) => SensorStatus(
+    sensor: sensor ?? this.sensor,
+    state: state ?? this.state,
+    batteryPercent: batteryPercent ?? this.batteryPercent,
+    lastValue: lastValue ?? this.lastValue,
+    error: clearError ? null : (error ?? this.error),
+  );
 }

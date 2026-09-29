@@ -85,7 +85,8 @@ class RideStatusBar extends StatelessWidget {
               tooltip: isMapMode ? '极简导航' : '地图导航',
             ),
 
-          if (batteryPercent != null) _BatteryIndicator(percent: batteryPercent!),
+          if (batteryPercent != null)
+            _BatteryIndicator(percent: batteryPercent!),
           const SizedBox(width: 6),
         ],
       ),
@@ -109,25 +110,30 @@ class _GpsIndicator extends StatelessWidget {
   Widget build(BuildContext context) {
     final (icon, color, label) = switch (ride) {
       _ when ride.gpsSignalLost => (
-          Icons.gps_off,
-          AppColors.danger,
-          'GPS 信号丢失',
-        ),
+        Icons.gps_off,
+        AppColors.danger,
+        'GPS 信号丢失',
+      ),
+      _ when ride.gpsAccuracyMeters <= 0 => (
+        Icons.gps_not_fixed,
+        AppColors.warning,
+        '等待 GPS 定位',
+      ),
       _ when ride.gpsPoor => (
-          Icons.gps_not_fixed,
-          AppColors.warning,
-          'GPS 信号较弱 ±${ride.gpsAccuracyMeters.round()}m',
-        ),
+        Icons.gps_not_fixed,
+        AppColors.warning,
+        'GPS 信号较弱 ±${ride.gpsAccuracyMeters.round()}m',
+      ),
       _ when ride.gpsAccuracyMeters > 20 => (
-          Icons.gps_fixed,
-          AppColors.warning,
-          'GPS ±${ride.gpsAccuracyMeters.round()}m',
-        ),
+        Icons.gps_fixed,
+        AppColors.warning,
+        'GPS ±${ride.gpsAccuracyMeters.round()}m',
+      ),
       _ => (
-          Icons.gps_fixed,
-          AppColors.success,
-          'GPS ±${ride.gpsAccuracyMeters.round()}m',
-        ),
+        Icons.gps_fixed,
+        AppColors.success,
+        'GPS ±${ride.gpsAccuracyMeters.round()}m',
+      ),
     };
 
     return Tooltip(
@@ -138,7 +144,7 @@ class _GpsIndicator extends StatelessWidget {
           Icon(icon, size: 18, color: color),
           const SizedBox(width: 4),
           Text(
-            ride.gpsSignalLost
+            ride.gpsSignalLost || ride.gpsAccuracyMeters <= 0
                 ? '--'
                 : '±${ride.gpsAccuracyMeters.round()}m',
             style: AppText.caption.copyWith(color: color),
@@ -161,19 +167,24 @@ class _SensorChip extends StatelessWidget {
       if (sensors.heartRate != null) '${sensors.heartRate} bpm',
       if (sensors.cadence != null) '${sensors.cadence} rpm',
       if (sensors.power != null) '${sensors.power} W',
+      if (sensors.wheelSpeedMps != null)
+        '轮速 ${(sensors.wheelSpeedMps! * 3.6).toStringAsFixed(1)} km/h',
     ];
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Icon(
-          Icons.bluetooth_connected,
-          size: 15,
-          color: AppColors.textTertiary,
-        ),
-        const SizedBox(width: 4),
-        Text(parts.join(' · '), style: AppText.caption),
-      ],
+    return Tooltip(
+      message: parts.join(' · '),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.bluetooth_connected,
+            size: 15,
+            color: AppColors.textTertiary,
+          ),
+          const SizedBox(width: 4),
+          Text(parts.first, style: AppText.caption),
+        ],
+      ),
     );
   }
 }
@@ -188,8 +199,8 @@ class _BatteryIndicator extends StatelessWidget {
     final color = percent <= 15
         ? AppColors.danger
         : percent <= 30
-            ? AppColors.warning
-            : AppColors.textTertiary;
+        ? AppColors.warning
+        : AppColors.textTertiary;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -200,18 +211,17 @@ class _BatteryIndicator extends StatelessWidget {
           color: color,
         ),
         const SizedBox(width: 2),
-        Text('${percent.round()}%', style: AppText.caption.copyWith(color: color)),
+        Text(
+          '${percent.round()}%',
+          style: AppText.caption.copyWith(color: color),
+        ),
       ],
     );
   }
 }
 
 class _Chip extends StatelessWidget {
-  const _Chip({
-    required this.icon,
-    required this.label,
-    required this.color,
-  });
+  const _Chip({required this.icon, required this.label, required this.color});
 
   final IconData icon;
   final String label;

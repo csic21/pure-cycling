@@ -56,10 +56,7 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
         title: const Text('传感器'),
         actions: [
           if (manager.isScanning)
-            TextButton(
-              onPressed: manager.stopScan,
-              child: const Text('停止'),
-            )
+            TextButton(onPressed: manager.stopScan, child: const Text('停止'))
           else
             IconButton(
               tooltip: '搜索设备',
@@ -77,7 +74,8 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
               rows: const [
                 SettingsTile(
                   title: '请打开蓝牙',
-                  subtitle: '心率带、踏频器和功率计需要通过蓝牙连接。'
+                  subtitle:
+                      '心率带、踏频器和功率计需要通过蓝牙连接。'
                       '未连接传感器时，骑行记录和其他功能完全正常。',
                   leading: Icon(Icons.bluetooth_disabled),
                 ),
@@ -110,16 +108,17 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                           SizedBox(height: 14),
-                          Text('正在搜索附近的心率带、踏频器和功率计…',
-                              style: AppText.caption),
+                          Text('正在搜索附近的心率带、踏频器和功率计…', style: AppText.caption),
                         ],
                       ),
                     ),
                   ),
                 for (final device in discovered)
                   ListTile(
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 4,
+                    ),
                     leading: Icon(_iconFor(device.type)),
                     title: Text(device.name, style: AppText.body),
                     subtitle: Text(
@@ -144,7 +143,8 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
               rows: [
                 SettingsTile(
                   title: '点击右上角搜索设备',
-                  subtitle: '确保传感器的电池已装好，并且没有被其他设备（例如手机上的其他骑行 App）占用。'
+                  subtitle:
+                      '确保传感器的电池已装好，并且没有被其他设备（例如手机上的其他骑行 App）占用。'
                       '大多数心率带在未被连接时才会广播。',
                   leading: const Icon(Icons.bluetooth),
                   onTap: manager.startScan,
@@ -171,7 +171,8 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
                 leading: Icon(Icons.bolt_outlined),
               ),
             ],
-            footnote: '只使用标准 GATT 服务，不区分品牌。'
+            footnote:
+                '只使用标准 GATT 服务，不区分品牌。'
                 'ANT+ 设备需要额外的硬件，暂不支持。',
           ),
 
@@ -182,11 +183,11 @@ class _SensorsScreenState extends ConsumerState<SensorsScreen> {
   }
 
   static IconData _iconFor(SensorType type) => switch (type) {
-        SensorType.heartRate => Icons.favorite_outline,
-        SensorType.cadence => Icons.rotate_right,
-        SensorType.speed => Icons.speed,
-        SensorType.power => Icons.bolt_outlined,
-      };
+    SensorType.heartRate => Icons.favorite_outline,
+    SensorType.cadence => Icons.rotate_right,
+    SensorType.speed => Icons.speed,
+    SensorType.power => Icons.bolt_outlined,
+  };
 
   static String _rssiLabel(int rssi) {
     if (rssi >= -60) return '强';
@@ -220,8 +221,9 @@ class _PhoneSensorsSection extends ConsumerWidget {
           subtitle: switch (hasBarometer) {
             null => '正在检查…',
             true => '有此设备。爬升和坡度按气压变化测量，不会标注为估算',
-            false => '这台手机没有气压计。爬升来自 GPS 高度，是估算值 —— '
-                '平路可能虚报十几米，长爬坡几乎无损',
+            false =>
+              '这台手机没有气压计。爬升来自 GPS 高度，是估算值 —— '
+                  '平路可能虚报十几米，长爬坡几乎无损',
           },
           leading: Icon(
             hasBarometer == false
@@ -233,10 +235,12 @@ class _PhoneSensorsSection extends ConsumerWidget {
           title: '指南针',
           subtitle: switch (hasCompass) {
             null => '正在检查…',
-            true => '有此设备。GPS 航向在约 11 km/h 以下不会更新，'
-                '此时方向由指南针给出',
-            false => '这台手机没有指南针（或没有磁力计）。'
-                '低速和停车时方向会停在最后一次 GPS 航向',
+            true =>
+              '有此设备。GPS 航向在约 11 km/h 以下不会更新，'
+                  '此时方向由指南针给出',
+            false =>
+              '这台手机没有指南针（或没有磁力计）。'
+                  '低速和停车时方向会停在最后一次 GPS 航向',
           },
           leading: Icon(
             hasCompass == false
@@ -248,10 +252,12 @@ class _PhoneSensorsSection extends ConsumerWidget {
           title: '运动检测',
           subtitle: switch (hasMotion) {
             null => '正在检查…',
-            true => '有此设备。停车时用加速度判断车是否真的停下了，'
-                '自动暂停因此更快，采样也更省电',
-            false => '这台手机没有加速度计。自动暂停只按速度判断，'
-                '和以前一样可用',
+            true =>
+              '有此设备。停车时用加速度判断车是否真的停下了，'
+                  '自动暂停因此更快，采样也更省电',
+            false =>
+              '这台手机没有加速度计。自动暂停只按速度判断，'
+                  '和以前一样可用',
           },
           leading: Icon(
             hasMotion == false
@@ -310,6 +316,9 @@ class _PairedTile extends StatelessWidget {
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+      onTap: sensor.enabled && state == SensorConnectionState.disconnected
+          ? () => manager.connect(sensor.id)
+          : null,
       leading: Icon(
         _SensorsScreenState._iconFor(sensor.type),
         color: state == SensorConnectionState.connected
@@ -345,17 +354,16 @@ class _PairedTile extends StatelessWidget {
     );
   }
 
-  static String _subtitle(
-    SensorStatus? status,
-    SensorConnectionState state,
-  ) {
-    if (status?.error != null) return status!.error!;
+  static String _subtitle(SensorStatus? status, SensorConnectionState state) {
+    if (status?.sensor.enabled == false) return '已关闭';
+    if (status?.error != null) return '${status!.error!} · 点击重试';
     return switch (state) {
-      SensorConnectionState.connected => status?.lastValue == null
-          ? '已连接'
-          : '已连接 · 当前 ${status!.lastValue!.round()}',
+      SensorConnectionState.connected =>
+        status?.lastValue == null
+            ? '已连接'
+            : '已连接 · 当前 ${status!.lastValue!.round()}',
       SensorConnectionState.connecting => '连接中…',
-      SensorConnectionState.disconnected => '未连接',
+      SensorConnectionState.disconnected => '未连接 · 点击重试',
     };
   }
 

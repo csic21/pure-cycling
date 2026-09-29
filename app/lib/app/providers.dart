@@ -382,9 +382,7 @@ final mapServicesProvider = Provider<MapServices>((ref) {
         places: const NullPlaceProvider(),
         routes: const OfflineRouteProvider(),
         trafficLights: const AmapTrafficLightProvider(),
-        tileSource: tiles(
-          dark ? MapTileSource.cartoDark : MapTileSource.osm,
-        ),
+        tileSource: tiles(dark ? MapTileSource.cartoDark : MapTileSource.osm),
       );
     }
     final client = AmapRelayClient(
@@ -408,9 +406,7 @@ final mapServicesProvider = Provider<MapServices>((ref) {
       places: const NullPlaceProvider(),
       routes: const OfflineRouteProvider(),
       trafficLights: const AmapTrafficLightProvider(),
-      tileSource: tiles(
-        dark ? MapTileSource.cartoDark : MapTileSource.osm,
-      ),
+      tileSource: tiles(dark ? MapTileSource.cartoDark : MapTileSource.osm),
     );
   }
 
@@ -612,6 +608,7 @@ class RideSessionNotifier extends Notifier<RideSessionState> {
   }
 
   Future<bool> start({Route? route, RideCheckpoint? resumeFrom}) {
+    unawaited(ref.read(sensorManagerProvider).reconnectEnabled());
     return _session.start(
       settings: ref.read(currentSettingsProvider),
       route: route,
@@ -664,6 +661,7 @@ final dashboardDataProvider = Provider<DashboardData>((ref) {
     headingDegrees: ride.bearing,
     gpsAccuracyMeters: ride.gpsAccuracyMeters,
     gpsSignalLost: ride.gpsSignalLost,
+    speedAvailable: ride.speedAvailable,
     batteryPercent: ref.watch(batteryPercentProvider).valueOrNull,
     now: DateTime.now(),
   );

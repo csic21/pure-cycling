@@ -65,6 +65,7 @@ class UniversalBleBackend implements BleBackend {
 
   final Map<String, BluetoothDeviceHandle> _devices = {};
   final Map<String, List<StreamSubscription<dynamic>>> _subscriptions = {};
+  final Map<String, StreamController<SensorReading>> _controllers = {};
   final Map<String, int> _battery = {};
 
   @override
@@ -146,174 +147,196 @@ class UniversalBleBackend implements BleBackend {
 
   @override
   Future<Stream<SensorReading>> connect(DiscoveredDevice device) async {
-    final handle = _devices[device.id];
-    if (handle == null) {
-      throw StateError('设备已不在范围内：${device.name}');
-    }
+    // Paired devices reconnect by their saved id on the next launch. They do
+    // not have to appear in this process's scan cache first.
+    // Unlike scanning, a direct connection does not ask for Android's runtime
+    // Bluetooth grant, so a restored pairing needs this check of its own.
+    await UniversalBle.requestPermissions();
+    await UniversalBle.connect(device.id, timeout: const Duration(seconds: 20));
 
-    await UniversalBle.connect(
-      device.id,
-      timeout: const Duration(seconds: 20),
-    );
+    try {
+      final services = await UniversalBle.discoverServices(device.id);
+      final tracker = BluetoothDeviceHandle(
+        id: device.id,
+        services: _devices[device.id]?.services ?? const [],
+      );
+      _devices[device.id] = tracker;
 
-    final services = await UniversalBle.discoverServices(device.id);
-    final tracker = BluetoothDeviceHandle(id: device.id, services: handle.services);
-    _devices[device.id] = tracker;
+      await _cancelSubscriptions(device.id);
+      final subs = <StreamSubscription<dynamic>>[];
+      final controller = StreamController<SensorReading>();
+      _subscriptions[device.id] = subs;
+      _controllers[device.id] = controller;
 
-    await _cancelSubscriptions(device.id);
-    final subs = <StreamSubscription<dynamic>>[];
-    final controller = StreamController<SensorReading>();
+      // A BLE value stream does not complete when the radio connection drops.
+      // Close our reading stream so SensorManager can mark the device offline
+      // and reconnect it instead of showing a stale "已连接" forever.
+      subs.add(
+        UniversalBle.connectionStream(device.id).listen((connected) {
+          if (!connected) unawaited(_cancelSubscriptions(device.id));
+        }),
+      );
 
-    // Heart rate and CSC counters are cumulative, so each characteristic
-    // needs its own accumulator to turn them into rates.
-    final csc = CscAccumulator();
+      // Heart rate and CSC counters are cumulative, so each characteristic
+      // needs its own accumulator to turn them into rates.
+      final csc = CscAccumulator();
 
-    for (final service in services) {
-      handle.service(service);
+      for (final service in services) {
+        tracker.service(service);
 
-      if (GattParsers.matches(service.uuid, GattParsers.heartRateService)) {
-        final hr = handle.characteristic(
-          service,
-          GattParsers.heartRateMeasurement,
-        );
-        if (hr != null) {
-          subs.add(
-            hr.onValueReceived.listen((value) {
-              final bpm = GattParsers.parseHeartRate(value);
-              if (bpm != null) {
+        if (GattParsers.matches(service.uuid, GattParsers.heartRateService)) {
+          final hr = tracker.characteristic(
+            service,
+            GattParsers.heartRateMeasurement,
+          );
+          if (hr != null) {
+            subs.add(
+              hr.onValueReceived.listen((value) {
+                final bpm = GattParsers.parseHeartRate(value);
+                if (bpm != null) {
+                  controller.add(
+                    SensorReading(
+                      type: SensorType.heartRate,
+                      value: bpm.toDouble(),
+                      timestamp: DateTime.now().toUtc(),
+                      sensorId: device.id,
+                    ),
+                  );
+                }
+              }),
+            );
+            await hr.notifications.subscribe();
+          }
+        }
+
+        if (GattParsers.matches(service.uuid, GattParsers.cscService)) {
+          final cscChar = tracker.characteristic(
+            service,
+            GattParsers.cscMeasurement,
+          );
+          if (cscChar != null) {
+            subs.add(
+              cscChar.onValueReceived.listen((value) {
+                final measurement = GattParsers.parseCsc(value);
+                if (measurement == null) return;
+                final now = DateTime.now().toUtc();
+
+                if (measurement.hasCrank) {
+                  final rpm = csc.addCrank(
+                    measurement.crankRevolutions!,
+                    measurement.crankEventTimeUnits!,
+                  );
+                  if (rpm != null) {
+                    controller.add(
+                      SensorReading(
+                        type: SensorType.cadence,
+                        value: rpm.toDouble(),
+                        timestamp: now,
+                        sensorId: device.id,
+                      ),
+                    );
+                  }
+                }
+
+                if (measurement.hasWheel) {
+                  final kph = csc.addWheel(
+                    measurement.wheelRevolutions!,
+                    measurement.wheelEventTimeUnits!,
+                  );
+                  if (kph != null) {
+                    controller.add(
+                      SensorReading(
+                        type: SensorType.speed,
+                        value: kph,
+                        timestamp: now,
+                        sensorId: device.id,
+                      ),
+                    );
+                  }
+                }
+              }),
+            );
+            await cscChar.notifications.subscribe();
+          }
+        }
+
+        if (GattParsers.matches(
+          service.uuid,
+          GattParsers.cyclingPowerService,
+        )) {
+          final powerChar = tracker.characteristic(
+            service,
+            GattParsers.cyclingPowerMeasurement,
+          );
+          if (powerChar != null) {
+            final crank = CscAccumulator();
+            subs.add(
+              powerChar.onValueReceived.listen((value) {
+                final measurement = GattParsers.parsePower(value);
+                if (measurement == null) return;
+                final now = DateTime.now().toUtc();
+
                 controller.add(
                   SensorReading(
-                    type: SensorType.heartRate,
-                    value: bpm.toDouble(),
-                    timestamp: DateTime.now().toUtc(),
+                    type: SensorType.power,
+                    value: measurement.watts.toDouble(),
+                    timestamp: now,
                     sensorId: device.id,
                   ),
                 );
-              }
-            }),
-          );
-          await hr.notifications.subscribe();
-        }
-      }
 
-      if (GattParsers.matches(service.uuid, GattParsers.cscService)) {
-        final cscChar = handle.characteristic(
-          service,
-          GattParsers.cscMeasurement,
-        );
-        if (cscChar != null) {
-          subs.add(
-            cscChar.onValueReceived.listen((value) {
-              final measurement = GattParsers.parseCsc(value);
-              if (measurement == null) return;
-              final now = DateTime.now().toUtc();
-
-              if (measurement.hasCrank) {
-                final rpm = csc.addCrank(
-                  measurement.crankRevolutions!,
-                  measurement.crankEventTimeUnits!,
-                );
-                if (rpm != null) {
-                  controller.add(
-                    SensorReading(
-                      type: SensorType.cadence,
-                      value: rpm.toDouble(),
-                      timestamp: now,
-                      sensorId: device.id,
-                    ),
+                // A power meter usually carries crank data too, which is a more
+                // reliable cadence source than a separate sensor.
+                if (measurement.crankRevolutions != null &&
+                    measurement.crankEventTimeUnits != null) {
+                  final rpm = crank.addCrank(
+                    measurement.crankRevolutions!,
+                    measurement.crankEventTimeUnits!,
                   );
+                  if (rpm != null) {
+                    controller.add(
+                      SensorReading(
+                        type: SensorType.cadence,
+                        value: rpm.toDouble(),
+                        timestamp: now,
+                        sensorId: device.id,
+                      ),
+                    );
+                  }
                 }
-              }
-
-              if (measurement.hasWheel) {
-                final kph = csc.addWheel(
-                  measurement.wheelRevolutions!,
-                  measurement.wheelEventTimeUnits!,
-                );
-                if (kph != null) {
-                  controller.add(
-                    SensorReading(
-                      type: SensorType.speed,
-                      value: kph,
-                      timestamp: now,
-                      sensorId: device.id,
-                    ),
-                  );
-                }
-              }
-            }),
-          );
-          await cscChar.notifications.subscribe();
+              }),
+            );
+            await powerChar.notifications.subscribe();
+          }
         }
-      }
 
-      if (GattParsers.matches(service.uuid, GattParsers.cyclingPowerService)) {
-        final powerChar = handle.characteristic(
-          service,
-          GattParsers.cyclingPowerMeasurement,
-        );
-        if (powerChar != null) {
-          final crank = CscAccumulator();
-          subs.add(
-            powerChar.onValueReceived.listen((value) {
-              final measurement = GattParsers.parsePower(value);
-              if (measurement == null) return;
-              final now = DateTime.now().toUtc();
-
-              controller.add(
-                SensorReading(
-                  type: SensorType.power,
-                  value: measurement.watts.toDouble(),
-                  timestamp: now,
-                  sensorId: device.id,
-                ),
-              );
-
-              // A power meter usually carries crank data too, which is a more
-              // reliable cadence source than a separate sensor.
-              if (measurement.crankRevolutions != null &&
-                  measurement.crankEventTimeUnits != null) {
-                final rpm = crank.addCrank(
-                  measurement.crankRevolutions!,
-                  measurement.crankEventTimeUnits!,
-                );
-                if (rpm != null) {
-                  controller.add(
-                    SensorReading(
-                      type: SensorType.cadence,
-                      value: rpm.toDouble(),
-                      timestamp: now,
-                      sensorId: device.id,
-                    ),
-                  );
-                }
-              }
-            }),
+        if (GattParsers.matches(service.uuid, GattParsers.batteryService)) {
+          final batteryChar = tracker.characteristic(
+            service,
+            GattParsers.batteryLevel,
           );
-          await powerChar.notifications.subscribe();
-        }
-      }
-
-      if (GattParsers.matches(service.uuid, GattParsers.batteryService)) {
-        final batteryChar = handle.characteristic(
-          service,
-          GattParsers.batteryLevel,
-        );
-        if (batteryChar != null) {
-          try {
-            final value = await batteryChar.read();
-            _battery[device.id] =
-                GattParsers.parseBatteryLevel(value) ?? -1;
-          } catch (_) {
-            // Battery level is optional and often unreadable on the first
-            // attempt while the device is still settling.
+          if (batteryChar != null) {
+            try {
+              final value = await batteryChar.read();
+              _battery[device.id] = GattParsers.parseBatteryLevel(value) ?? -1;
+            } catch (_) {
+              // Battery level is optional and often unreadable on the first
+              // attempt while the device is still settling.
+            }
           }
         }
       }
-    }
 
-    _subscriptions[device.id] = subs;
-    return controller.stream;
+      return controller.stream;
+    } catch (_) {
+      await _cancelSubscriptions(device.id);
+      try {
+        await UniversalBle.disconnect(device.id);
+      } catch (_) {
+        // Preserve the service or notification error that caused the failure.
+      }
+      rethrow;
+    }
   }
 
   /// Last known battery percentage, or null.
@@ -343,10 +366,13 @@ class UniversalBleBackend implements BleBackend {
 
   Future<void> _cancelSubscriptions(String deviceId) async {
     final subs = _subscriptions.remove(deviceId);
-    if (subs == null) return;
-    for (final sub in subs) {
-      await sub.cancel();
+    if (subs != null) {
+      for (final sub in subs) {
+        await sub.cancel();
+      }
     }
+    final controller = _controllers.remove(deviceId);
+    if (controller != null && !controller.isClosed) await controller.close();
   }
 
   /// Works out what a scanned device is from the services it advertises.

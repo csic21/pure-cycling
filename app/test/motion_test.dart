@@ -9,6 +9,7 @@ import 'package:cycling_app/features/ride/data/ride_recorder.dart';
 import 'package:cycling_app/features/ride/data/ride_repository.dart';
 import 'package:cycling_app/features/ride/domain/auto_pause.dart';
 import 'package:cycling_app/features/ride/domain/ride_engine.dart';
+import 'package:cycling_app/features/sensors/domain/sensor.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -38,10 +39,7 @@ class FakeMotionSource implements MotionSource {
   void emit(double magnitudeG) {
     if (_controller.isClosed) return;
     _controller.add(
-      MotionSample(
-        magnitudeG: magnitudeG,
-        timestamp: DateTime.now().toUtc(),
-      ),
+      MotionSample(magnitudeG: magnitudeG, timestamp: DateTime.now().toUtc()),
     );
   }
 
@@ -95,11 +93,7 @@ void main() {
             start.add(Duration(milliseconds: i * 66)),
           );
         }
-        expect(
-          detector.moving,
-          isFalse,
-          reason: '静止判定不能取决于手机怎么放的',
-        );
+        expect(detector.moving, isFalse, reason: '静止判定不能取决于手机怎么放的');
       }
     });
 
@@ -110,21 +104,13 @@ void main() {
       }
       // A pothole: a single large sample, then still again.
       detector.add(1.6, start.add(const Duration(milliseconds: 2000)));
-      expect(
-        detector.moving,
-        isFalse,
-        reason: 'RMS 是对窗口取的，一个坑不该把判定翻过来',
-      );
+      expect(detector.moving, isFalse, reason: 'RMS 是对窗口取的，一个坑不该把判定翻过来');
     });
 
     test('enough history is required before the verdict counts', () {
       final detector = MotionDetector();
       detector.add(1.0, start);
-      expect(
-        detector.hasReading,
-        isFalse,
-        reason: '一个样本没有窗口可测，不能就此断定车是停着的',
-      );
+      expect(detector.hasReading, isFalse, reason: '一个样本没有窗口可测，不能就此断定车是停着的');
 
       for (var i = 1; i < 6; i++) {
         detector.add(1.0, start.add(Duration(milliseconds: i * 66)));
@@ -138,7 +124,10 @@ void main() {
         detector.add(rolling.next(), start.add(Duration(milliseconds: i * 66)));
       }
       detector.add(double.nan, start.add(const Duration(milliseconds: 2000)));
-      detector.add(rolling.next(), start.add(const Duration(milliseconds: 2066)));
+      detector.add(
+        rolling.next(),
+        start.add(const Duration(milliseconds: 2066)),
+      );
 
       expect(detector.moving, isTrue, reason: '一个 NaN 不能污染判定');
     });
@@ -153,7 +142,10 @@ void main() {
       // Now a middling amplitude — not enough evidence to say "moving".
       final middling = _Signature(amplitude: 0.022, seed: 3);
       for (var i = 0; i < 60; i++) {
-        quiet.add(middling.next(), start.add(Duration(milliseconds: 4000 + i * 66)));
+        quiet.add(
+          middling.next(),
+          start.add(Duration(milliseconds: 4000 + i * 66)),
+        );
       }
       expect(quiet.moving, isFalse, reason: '证据不够就不改口');
     });
@@ -225,18 +217,12 @@ void main() {
       final alone = SamplingPolicy(chosen: GpsAccuracyMode.high);
       alone.update(speedMps: 0, at: start);
       expect(
-        alone.update(
-          speedMps: 0,
-          at: start.add(const Duration(seconds: 10)),
-        ),
+        alone.update(speedMps: 0, at: start.add(const Duration(seconds: 10))),
         isFalse,
         reason: '只靠速度要等满 30 秒',
       );
       expect(
-        alone.update(
-          speedMps: 0,
-          at: start.add(const Duration(seconds: 30)),
-        ),
+        alone.update(speedMps: 0, at: start.add(const Duration(seconds: 30))),
         isTrue,
       );
 
@@ -257,10 +243,7 @@ void main() {
       final policy = SamplingPolicy(chosen: GpsAccuracyMode.high);
       policy.update(speedMps: 0, at: start);
       expect(
-        policy.update(
-          speedMps: 0,
-          at: start.add(const Duration(seconds: 30)),
-        ),
+        policy.update(speedMps: 0, at: start.add(const Duration(seconds: 30))),
         isTrue,
       );
       expect(policy.isRelaxed, isTrue);
@@ -295,6 +278,15 @@ void main() {
   });
 
   group('the engine', () {
+    void armThenStop(RideEngine engine) {
+      engine.onSensorReading(
+        SensorReading(type: SensorType.speed, value: 14.4, timestamp: start),
+      );
+      engine.onSensorReading(
+        SensorReading(type: SensorType.speed, value: 0, timestamp: start),
+      );
+    }
+
     /// Runs a started engine on a clock and timer queue the test controls.
     void withRidingEngine(
       void Function(RideEngine engine, void Function(Duration) advance) body,
@@ -337,22 +329,19 @@ void main() {
 
     test('a confirmed stop pauses in two seconds, not five', () {
       withRidingEngine((engine, advance) {
-        // Parked, with no fixes at all — which is the state GPS speed is least
-        // able to describe, and the state the sensor is for.
+        // A real movement arms auto-pause; a wheel reading confirms the stop.
+        armThenStop(engine);
         for (var i = 0; i < 45; i++) {
           advance(const Duration(milliseconds: 66));
           engine.onMotionSample(still.next());
         }
-        expect(
-          engine.state.autoPaused,
-          isTrue,
-          reason: '传感器确认停着，就不必再等速度那 5 秒',
-        );
+        expect(engine.state.autoPaused, isTrue, reason: '传感器确认停着，就不必再等速度那 5 秒');
       });
     });
 
     test('a motion reading never resumes a stop on its own', () {
       withRidingEngine((engine, advance) {
+        armThenStop(engine);
         for (var i = 0; i < 45; i++) {
           advance(const Duration(milliseconds: 66));
           engine.onMotionSample(still.next());
@@ -370,9 +359,22 @@ void main() {
         expect(
           engine.state.autoPaused,
           isTrue,
-          reason: '振动不能说明骑手出发了；恢复仍然要等速度，'
+          reason:
+              '振动不能说明骑手出发了；恢复仍然要等速度，'
               '否则一辆停着的车就能把整段骑行卡在 riding 状态',
         );
+      });
+    });
+
+    test('no speed source never auto-pauses the new ride', () {
+      withRidingEngine((engine, advance) {
+        for (var i = 0; i < 120; i++) {
+          advance(const Duration(milliseconds: 66));
+          engine.onMotionSample(still.next());
+        }
+        expect(engine.state.status, RideStatus.riding);
+        expect(engine.state.autoPaused, isFalse);
+        expect(engine.state.speedAvailable, isFalse);
       });
     });
   });
@@ -445,7 +447,7 @@ void main() {
 /// `MotionDetector` are documented against: its RMS is `amplitude/√3`.
 class _Signature {
   _Signature({required this.amplitude, required int seed})
-      : _random = math.Random(seed);
+    : _random = math.Random(seed);
 
   final double amplitude;
   final math.Random _random;

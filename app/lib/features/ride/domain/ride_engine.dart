@@ -27,8 +27,7 @@ enum RideStatus {
       this == RideStatus.riding ||
       this == RideStatus.paused;
 
-  bool get countsTime =>
-      this == RideStatus.riding || this == RideStatus.paused;
+  bool get countsTime => this == RideStatus.riding || this == RideStatus.paused;
 }
 
 /// Live sensor values plus their ride averages.
@@ -37,6 +36,7 @@ class SensorSnapshot {
     this.heartRate,
     this.cadence,
     this.power,
+    this.wheelSpeedMps,
     this.avgHeartRate,
     this.avgCadence,
     this.avgPower,
@@ -47,9 +47,14 @@ class SensorSnapshot {
   final int? cadence;
   final int? avgCadence;
   final int? power;
+  final double? wheelSpeedMps;
   final int? avgPower;
 
-  bool get hasAny => heartRate != null || cadence != null || power != null;
+  bool get hasAny =>
+      heartRate != null ||
+      cadence != null ||
+      power != null ||
+      wheelSpeedMps != null;
 }
 
 /// Everything the UI is allowed to know about the ride in progress.
@@ -66,6 +71,7 @@ class RideState {
     this.gpsAccuracyMeters = 0,
     this.gpsSignalLost = false,
     this.gpsPoor = false,
+    this.speedAvailable = false,
     this.acceptedPointCount = 0,
     this.motionDetected,
     this.autoPaused = false,
@@ -87,6 +93,9 @@ class RideState {
 
   /// A fix is arriving, but it is too imprecise to trust for distance.
   final bool gpsPoor;
+
+  /// A recent accepted GPS speed or wheel sensor reading is available.
+  final bool speedAvailable;
 
   final int acceptedPointCount;
 
@@ -124,6 +133,7 @@ class RideState {
     double? gpsAccuracyMeters,
     bool? gpsSignalLost,
     bool? gpsPoor,
+    bool? speedAvailable,
     int? acceptedPointCount,
     bool? motionDetected,
     bool? autoPaused,
@@ -140,6 +150,7 @@ class RideState {
       gpsAccuracyMeters: gpsAccuracyMeters ?? this.gpsAccuracyMeters,
       gpsSignalLost: gpsSignalLost ?? this.gpsSignalLost,
       gpsPoor: gpsPoor ?? this.gpsPoor,
+      speedAvailable: speedAvailable ?? this.speedAvailable,
       acceptedPointCount: acceptedPointCount ?? this.acceptedPointCount,
       motionDetected: motionDetected ?? this.motionDetected,
       autoPaused: autoPaused ?? this.autoPaused,
@@ -253,19 +264,18 @@ class RideEngineConfig {
     bool? autoPauseEnabled,
     Duration? checkpointInterval,
     Duration? gpsSignalLostAfter,
-  }) =>
-      RideEngineConfig(
-        filter: filter ?? this.filter,
-        autoPauseEnabled: autoPauseEnabled ?? this.autoPauseEnabled,
-        autoPauseSpeedKph: autoPauseSpeedKph,
-        autoPauseDelay: autoPauseDelay,
-        autoResumeSpeedKph: autoResumeSpeedKph,
-        autoResumeDelay: autoResumeDelay,
-        checkpointInterval: checkpointInterval ?? this.checkpointInterval,
-        gpsSignalLostAfter: gpsSignalLostAfter ?? this.gpsSignalLostAfter,
-        preparingTimeout: preparingTimeout,
-        tickInterval: tickInterval,
-      );
+  }) => RideEngineConfig(
+    filter: filter ?? this.filter,
+    autoPauseEnabled: autoPauseEnabled ?? this.autoPauseEnabled,
+    autoPauseSpeedKph: autoPauseSpeedKph,
+    autoPauseDelay: autoPauseDelay,
+    autoResumeSpeedKph: autoResumeSpeedKph,
+    autoResumeDelay: autoResumeDelay,
+    checkpointInterval: checkpointInterval ?? this.checkpointInterval,
+    gpsSignalLostAfter: gpsSignalLostAfter ?? this.gpsSignalLostAfter,
+    preparingTimeout: preparingTimeout,
+    tickInterval: tickInterval,
+  );
 }
 
 /// Called for every validated track point, in order.
@@ -293,8 +303,8 @@ class RideEngine {
     this.onCheckpoint,
     this.onRideFinished,
     NowProvider? now,
-  })  : _config = config,
-        _now = now ?? (() => DateTime.now().toUtc()) {
+  }) : _config = config,
+       _now = now ?? (() => DateTime.now().toUtc()) {
     _autoPause = AutoPauseController(
       enabled: config.autoPauseEnabled,
       pauseSpeedMps: config.autoPauseSpeedKph / 3.6,
@@ -319,6 +329,7 @@ class RideEngine {
   Stream<RideState> get states => _stateController.stream;
 
   late AutoPauseController _autoPause;
+  bool _autoPauseArmed = false;
   final _filter = GpsFilter();
   final _motion = MotionDetector();
   DateTime? _motionAt;
@@ -342,9 +353,14 @@ class RideEngine {
   double _maxSpeed = 0;
   int _sequence = 0;
   double _currentSpeed = 0;
+  double? _gpsSpeedMps;
+  double? _wheelSpeedMps;
+  DateTime? _lastWheelSpeedAt;
+  DateTime? _lastGpsSpeedAt;
   double? _grade;
 
   double _gpsAccuracy = 0;
+
   /// The timestamp the *platform* put on the last fix.
   ///
   /// The right clock for anything about continuity of position: the gap between
@@ -431,6 +447,10 @@ class RideEngine {
     _elapsed = Duration.zero;
     _moving = Duration.zero;
     _status = RideStatus.riding;
+    // Preparation may receive motion samples and slow or missing GPS fixes.
+    // None of those should make the new ride start already auto-paused.
+    _autoPause.reset();
+    _autoPauseArmed = false;
     _publish(force: true);
   }
 
@@ -506,6 +526,7 @@ class RideEngine {
       // Even a rejected sample refreshes the GPS indicator — the rider needs
       // to know a signal exists but is poor, which is different from silence.
       _gpsPoor = processing.rejection == FixRejection.accuracyTooPoor;
+      if (_freshWheelSpeed) _currentSpeed = _wheelSpeedMps!;
       _publish();
       return;
     }
@@ -514,9 +535,17 @@ class RideEngine {
 
     // Timing and speed update even while auto-paused: the rider is moving
     // slowly, and the resume rule needs a current speed to fire on.
-    final speed = processing.speedMps ?? 0;
+    final gpsSpeed = processing.speedMps ?? 0;
 
-    final transition = _applyAutoPause(speed, _now());
+    _gpsSpeedMps = gpsSpeed;
+    _lastGpsSpeedAt = _now();
+    // A fresh wheel reading is the direct measurement of bicycle speed.
+    // Keep using it when GPS also reports fixes; otherwise every GPS update
+    // overwrites the sensor and the speed display appears unresponsive.
+    final speed = _freshWheelSpeed ? _wheelSpeedMps! : gpsSpeed;
+    final transition = _status == RideStatus.riding
+        ? _applyAutoPause(speed, _now())
+        : (pausing: false, resuming: false);
     final isAutoPausing = transition.pausing;
     final isAutoResuming = transition.resuming;
     final autoPaused = _autoPause.isAutoPaused;
@@ -594,10 +623,7 @@ class RideEngine {
   ///
   /// Before any GPS altitude exists there is nothing to anchor to, so samples
   /// are dropped rather than invented.
-  void onBarometricAltitude(
-    double relativeAltitudeMeters, {
-    DateTime? at,
-  }) {
+  void onBarometricAltitude(double relativeAltitudeMeters, {DateTime? at}) {
     if (!_status.isActive) return;
     if (!relativeAltitudeMeters.isFinite) return;
 
@@ -656,6 +682,14 @@ class RideEngine {
     double speedMps,
     DateTime now,
   ) {
+    // The rider may still be mounting the phone or waiting for a GPS fix at
+    // the start. A first real movement arms auto-pause for later stops.
+    if (!_autoPauseArmed) {
+      if (speedMps <= _config.autoResumeSpeedKph / 3.6) {
+        return (pausing: false, resuming: false);
+      }
+      _autoPauseArmed = true;
+    }
     final wasAutoPaused = _autoPause.isAutoPaused;
     final autoPaused = _autoPause.update(
       speedMps,
@@ -685,6 +719,22 @@ class RideEngine {
   /// died.
   static const Duration _motionStaleAfter = Duration(seconds: 3);
 
+  static const Duration _wheelSpeedStaleAfter = Duration(seconds: 5);
+
+  bool get _freshGpsSpeed {
+    final at = _lastGpsSpeedAt;
+    return !_gpsPoor &&
+        at != null &&
+        _now().difference(at) <= _config.gpsSignalLostAfter;
+  }
+
+  bool get _freshWheelSpeed {
+    final at = _lastWheelSpeedAt;
+    return at != null && _now().difference(at) <= _wheelSpeedStaleAfter;
+  }
+
+  bool get _speedAvailable => _freshGpsSpeed || _freshWheelSpeed;
+
   /// The accelerometer's verdict, or null when there is nothing current to go
   /// on. See [RideState.motionDetected] for what null means downstream.
   bool? get motionDetected {
@@ -712,10 +762,15 @@ class RideEngine {
     _motion.add(magnitudeG, stamp);
     _motionAt = stamp;
 
-    // A motion reading can end a stop on its own, which is the point of
-    // feeding it to the rule rather than only to the display.
-    final transition = _applyAutoPause(_currentSpeed, stamp);
-    if (transition.pausing || transition.resuming || _motion.moving != wasMoving) {
+    // Motion confirms a low speed; it cannot invent one while GPS and the
+    // wheel sensor are both silent. Otherwise a ride auto-pauses seconds after
+    // starting even though the speed is simply unknown.
+    final transition = _status == RideStatus.riding && _speedAvailable
+        ? _applyAutoPause(_currentSpeed, stamp)
+        : (pausing: false, resuming: false);
+    if (transition.pausing ||
+        transition.resuming ||
+        _motion.moving != wasMoving) {
       _publish(force: transition.pausing || transition.resuming);
     }
   }
@@ -778,14 +833,17 @@ class RideEngine {
           _avg(SensorType.power).add(v.toDouble());
         }
       case SensorType.speed:
-        // A wheel sensor is more precise than GPS at low speed, and it keeps
-        // working in a tunnel. Trust it only while the GPS is weak, so a
-        // mis-calibrated wheel radius cannot corrupt a normal ride.
+        // The wheel is the direct speed source while it reports. GPS remains
+        // responsible for trace and distance, including through a stale or
+        // mis-calibrated wheel sensor.
         final v = reading.speedMps;
         if (v != null && v >= 0 && v < _config.filter.maxSpeedMps) {
-          if (_gpsPoor || _lastFixArrivedAt == null) {
-            _currentSpeed = v;
-            if (v > _maxSpeed) _maxSpeed = v;
+          _wheelSpeedMps = v;
+          _lastWheelSpeedAt = _now();
+          _currentSpeed = v;
+          if (v > _maxSpeed) _maxSpeed = v;
+          if (_status == RideStatus.riding) {
+            _applyAutoPause(v, _now());
           }
         }
     }
@@ -812,6 +870,7 @@ class RideEngine {
     _sequence = resumeSequence;
     _status = RideStatus.paused;
     _lastTick = _now();
+    _autoPauseArmed = checkpoint.maxSpeedMps > _config.autoResumeSpeedKph / 3.6;
 
     _distance.seed(
       totalMeters: checkpoint.distanceMeters,
@@ -944,11 +1003,12 @@ class RideEngine {
     // The arrival clock, not the platform's: a replayed or cached fix is not
     // evidence that updates are arriving, and one is not evidence that the
     // receiver has gone quiet either.
-    final fixAge =
-        _lastFixArrivedAt == null ? null : now.difference(_lastFixArrivedAt!);
-    if (fixAge != null && fixAge > _config.gpsSignalLostAfter) {
-      // No fix for a while: decay the displayed speed to zero rather than
-      // freezing it at the last value, which would look like the app had hung.
+    if (_freshWheelSpeed) {
+      _currentSpeed = _wheelSpeedMps!;
+    } else if (_freshGpsSpeed && _gpsSpeedMps != null) {
+      _currentSpeed = _gpsSpeedMps!;
+    } else if (!_speedAvailable) {
+      // Neither source is current: don't freeze the last displayed speed.
       _currentSpeed = _currentSpeed * 0.5 < 0.3 ? 0 : _currentSpeed * 0.5;
     }
 
@@ -963,57 +1023,55 @@ class RideEngine {
   /// Current checkpoint state, also exposed for tests and for an explicit
   /// save before the app is backgrounded or terminated.
   RideCheckpoint buildCheckpoint() => RideCheckpoint(
-        rideId: _rideId,
-        status: _status.name,
-        startedAt: _startedAt ?? _now(),
-        elapsed: _elapsed,
-        moving: _moving,
-        distanceMeters: _distance.totalMeters,
-        maxSpeedMps: _maxSpeed,
-        elevationGainMeters: _elevation.gainMeters,
-        elevationLossMeters: _elevation.lossMeters,
-        lastLat: _lastPoint?.lat,
-        lastLng: _lastPoint?.lng,
-        lastAltitude: _lastAcceptedFix?.altitude,
-        lastSequence: _sequence,
-        smoothedSpeedMps: _currentSpeed,
-        smoothedAltitudeMeters: _filter.smoothedAltitude,
-        anchorLat: _distance.anchor?.lat,
-        anchorLng: _distance.anchor?.lng,
-        anchorTimestampMs:
-            _distance.anchorTime?.millisecondsSinceEpoch,
-      );
+    rideId: _rideId,
+    status: _status.name,
+    startedAt: _startedAt ?? _now(),
+    elapsed: _elapsed,
+    moving: _moving,
+    distanceMeters: _distance.totalMeters,
+    maxSpeedMps: _maxSpeed,
+    elevationGainMeters: _elevation.gainMeters,
+    elevationLossMeters: _elevation.lossMeters,
+    lastLat: _lastPoint?.lat,
+    lastLng: _lastPoint?.lng,
+    lastAltitude: _lastAcceptedFix?.altitude,
+    lastSequence: _sequence,
+    smoothedSpeedMps: _currentSpeed,
+    smoothedAltitudeMeters: _filter.smoothedAltitude,
+    anchorLat: _distance.anchor?.lat,
+    anchorLng: _distance.anchor?.lng,
+    anchorTimestampMs: _distance.anchorTime?.millisecondsSinceEpoch,
+  );
 
   Ride _buildRide({required DateTime endedAt}) => Ride(
-        id: _rideId,
-        startedAt: _startedAt ?? endedAt,
-        endedAt: endedAt,
-        stats: _buildStats(),
-        startPoint: _firstPoint,
-        endPoint: _lastPoint,
-      );
+    id: _rideId,
+    startedAt: _startedAt ?? endedAt,
+    endedAt: endedAt,
+    stats: _buildStats(),
+    startPoint: _firstPoint,
+    endPoint: _lastPoint,
+  );
 
   GeoPoint? _firstPoint;
 
   RideStats _buildStats() => RideStats(
-        distanceMeters: _distance.totalMeters,
-        elapsed: _elapsed,
-        moving: _moving,
-        currentSpeedMps: _status.isActive ? _currentSpeed : 0,
-        avgSpeedMps:
-            RideStats.computeAvgSpeed(_distance.totalMeters, _moving),
-        maxSpeedMps: _maxSpeed,
-        altitudeMeters: _filter.smoothedAltitude ?? 0,
-        elevationGainMeters: _elevation.gainMeters,
-        elevationLossMeters: _elevation.lossMeters,
-        gradePercent: _grade ?? 0,
-        heartRate: _heartRate,
-        avgHeartRate: _avg(SensorType.heartRate).rounded,
-        cadence: _cadence,
-        avgCadence: _avg(SensorType.cadence).rounded,
-        power: _power,
-        avgPower: _avg(SensorType.power).rounded,
-      );
+    distanceMeters: _distance.totalMeters,
+    elapsed: _elapsed,
+    moving: _moving,
+    currentSpeedMps: _status.isActive ? _currentSpeed : 0,
+    avgSpeedMps: RideStats.computeAvgSpeed(_distance.totalMeters, _moving),
+    maxSpeedMps: _maxSpeed,
+    altitudeMeters: _filter.smoothedAltitude ?? 0,
+    elevationGainMeters: _elevation.gainMeters,
+    elevationLossMeters: _elevation.lossMeters,
+    gradePercent: _grade ?? 0,
+    heartRate: _heartRate,
+    avgHeartRate: _avg(SensorType.heartRate).rounded,
+    cadence: _cadence,
+    avgCadence: _avg(SensorType.cadence).rounded,
+    power: _power,
+    avgPower: _avg(SensorType.power).rounded,
+  );
 
   _RunningAverage _avg(SensorType type) =>
       _averages.putIfAbsent(type, _RunningAverage.new);
@@ -1026,11 +1084,12 @@ class RideEngine {
       startedAt: _startedAt,
       stats: _buildStats(),
       gpsAccuracyMeters: _gpsAccuracy,
-      gpsSignalLost: _status.isActive &&
-          _lastFixArrivedAt != null &&
-          _now().difference(_lastFixArrivedAt!) >
+      gpsSignalLost:
+          _status.isActive &&
+          _now().difference(_lastFixArrivedAt ?? _startedAt ?? _now()) >
               _config.gpsSignalLostAfter,
       gpsPoor: _gpsPoor,
+      speedAvailable: _speedAvailable,
       acceptedPointCount: _sequence,
       motionDetected: motionDetected,
       autoPaused: _autoPause.isAutoPaused,
@@ -1042,6 +1101,7 @@ class RideEngine {
         cadence: _cadence,
         avgCadence: _avg(SensorType.cadence).rounded,
         power: _power,
+        wheelSpeedMps: _freshWheelSpeed ? _wheelSpeedMps : null,
         avgPower: _avg(SensorType.power).rounded,
       ),
     );
@@ -1063,6 +1123,10 @@ class RideEngine {
     _maxSpeed = 0;
     _sequence = 0;
     _currentSpeed = 0;
+    _gpsSpeedMps = null;
+    _wheelSpeedMps = null;
+    _lastWheelSpeedAt = null;
+    _lastGpsSpeedAt = null;
     _grade = null;
     _gpsAccuracy = 0;
     _lastFixAt = null;
@@ -1078,8 +1142,8 @@ class RideEngine {
     _motionAt = null;
     _motion.reset();
     _autoPause.reset();
+    _autoPauseArmed = false;
   }
-
 }
 
 /// Mean of samples seen so far, or null before the first one.

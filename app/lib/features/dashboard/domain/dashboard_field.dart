@@ -14,6 +14,7 @@ class DashboardData {
     this.headingDegrees,
     this.gpsAccuracyMeters = 0,
     this.gpsSignalLost = false,
+    this.speedAvailable = true,
     this.batteryPercent,
     this.now,
   });
@@ -36,6 +37,7 @@ class DashboardData {
   /// True when no fix has arrived for a while — shown distinctly from a merely
   /// imprecise one, because the rider's response differs.
   final bool gpsSignalLost;
+  final bool speedAvailable;
 
   final double? batteryPercent;
   final DateTime? now;
@@ -46,6 +48,7 @@ class DashboardData {
     double? headingDegrees,
     double? gpsAccuracyMeters,
     bool? gpsSignalLost,
+    bool? speedAvailable,
     double? batteryPercent,
     DateTime? now,
   }) {
@@ -55,6 +58,7 @@ class DashboardData {
       headingDegrees: headingDegrees ?? this.headingDegrees,
       gpsAccuracyMeters: gpsAccuracyMeters ?? this.gpsAccuracyMeters,
       gpsSignalLost: gpsSignalLost ?? this.gpsSignalLost,
+      speedAvailable: speedAvailable ?? this.speedAvailable,
       batteryPercent: batteryPercent ?? this.batteryPercent,
       now: now ?? this.now,
     );
@@ -127,15 +131,18 @@ enum DashboardField {
   String format(DashboardData d, UnitFormatter u) {
     final s = d.stats;
     return switch (this) {
-      DashboardField.speed => u.speed(s.currentSpeedMps),
+      DashboardField.speed =>
+        d.speedAvailable ? u.speed(s.currentSpeedMps) : '--',
       DashboardField.avgSpeed => u.speed(s.avgSpeedMps),
       DashboardField.maxSpeed => u.speed(s.maxSpeedMps),
       DashboardField.distance => u.distance(s.distanceMeters),
       DashboardField.elapsedTime => UnitFormatter.duration(s.elapsed),
       DashboardField.movingTime => UnitFormatter.duration(s.moving),
       DashboardField.altitude => u.elevation(s.altitudeMeters),
-      DashboardField.elevationGain =>
-        u.elevation(s.elevationGainMeters, withSign: true),
+      DashboardField.elevationGain => u.elevation(
+        s.elevationGainMeters,
+        withSign: true,
+      ),
       DashboardField.elevationLoss => u.elevation(s.elevationLossMeters),
       DashboardField.grade => u.grade(s.gradePercent),
       DashboardField.heading => _degreesOrDash(d.headingDegrees),
@@ -145,24 +152,26 @@ enum DashboardField {
       DashboardField.avgCadence => _intOrDash(s.avgCadence),
       DashboardField.power => _intOrDash(s.power),
       DashboardField.avgPower => _intOrDash(s.avgPower),
-      DashboardField.gpsAccuracy => d.gpsSignalLost
-          ? '--'
-          : '±${d.gpsAccuracyMeters.round()}',
-      DashboardField.battery => d.batteryPercent == null
-          ? '--'
-          : d.batteryPercent!.round().toString(),
+      DashboardField.gpsAccuracy =>
+        d.gpsSignalLost || d.gpsAccuracyMeters <= 0
+            ? '--'
+            : '±${d.gpsAccuracyMeters.round()}',
+      DashboardField.battery =>
+        d.batteryPercent == null ? '--' : d.batteryPercent!.round().toString(),
       DashboardField.currentTime =>
         d.now == null ? '--' : UnitFormatter.clock(d.now!),
-      DashboardField.distanceToDestination => d.navigation == null
-          ? '--'
-          : u.distanceKm(d.navigation!.distanceToDestinationMeters),
-      DashboardField.eta => (d.navigation?.eta) == null
-          ? '--'
-          : UnitFormatter.clock(d.navigation!.eta!),
+      DashboardField.distanceToDestination =>
+        d.navigation == null
+            ? '--'
+            : u.distanceKm(d.navigation!.distanceToDestinationMeters),
+      DashboardField.eta =>
+        (d.navigation?.eta) == null
+            ? '--'
+            : UnitFormatter.clock(d.navigation!.eta!),
       DashboardField.distanceToNextTurn => _formatDistanceToTurn(
-          d.navigation?.distanceToNextTurnMeters,
-          u,
-        ),
+        d.navigation?.distanceToNextTurnMeters,
+        u,
+      ),
     };
   }
 
@@ -196,16 +205,14 @@ enum DashboardField {
     return switch (this) {
       DashboardField.speed ||
       DashboardField.avgSpeed ||
-      DashboardField.maxSpeed =>
-        u.system.speedSuffix,
+      DashboardField.maxSpeed => u.system.speedSuffix,
       // Adaptive, not fixed: `format` renders 135 metres as `135`, and a
       // fixed `km` label turns that into "135 km".
       DashboardField.distance => u.distanceUnit(d.stats.distanceMeters),
       DashboardField.elapsedTime || DashboardField.movingTime => '',
       DashboardField.altitude ||
       DashboardField.elevationGain ||
-      DashboardField.elevationLoss =>
-        u.system.elevationSuffix,
+      DashboardField.elevationLoss => u.system.elevationSuffix,
       DashboardField.grade => '',
       DashboardField.heading => '°',
       DashboardField.heartRate || DashboardField.avgHeartRate => 'bpm',
@@ -214,8 +221,7 @@ enum DashboardField {
       DashboardField.gpsAccuracy => 'm',
       DashboardField.battery => '%',
       DashboardField.currentTime => '',
-      DashboardField.distanceToDestination =>
-        u.system.isMetric ? 'km' : 'mi',
+      DashboardField.distanceToDestination => u.system.isMetric ? 'km' : 'mi',
       DashboardField.eta => '',
       DashboardField.distanceToNextTurn => 'm',
     };
@@ -227,22 +233,25 @@ enum DashboardField {
     if (requiresSensor) {
       final s = d.stats;
       final has = switch (this) {
-        DashboardField.heartRate ||
-        DashboardField.avgHeartRate =>
+        DashboardField.heartRate || DashboardField.avgHeartRate =>
           s.heartRate != null || s.avgHeartRate != null,
-        DashboardField.cadence || DashboardField.avgCadence =>
-          s.cadence != null || s.avgCadence != null,
-        DashboardField.power || DashboardField.avgPower =>
-          s.power != null || s.avgPower != null,
+        DashboardField.cadence ||
+        DashboardField.avgCadence => s.cadence != null || s.avgCadence != null,
+        DashboardField.power ||
+        DashboardField.avgPower => s.power != null || s.avgPower != null,
         _ => false,
       };
       if (!has) return false;
     }
     if (requiresRoute && d.navigation == null) return false;
-    if (this == DashboardField.battery && d.batteryPercent == null) return false;
+    if (this == DashboardField.battery && d.batteryPercent == null) {
+      return false;
+    }
     // No direction has been established yet — the usual case in the first
     // seconds of a ride, before any fix has said which way the bike is going.
-    if (this == DashboardField.heading && d.headingDegrees == null) return false;
+    if (this == DashboardField.heading && d.headingDegrees == null) {
+      return false;
+    }
     return true;
   }
 

@@ -23,19 +23,27 @@ class SensorManager extends ChangeNotifier {
   SensorManager({
     required AppDatabase db,
     BleBackend? backend,
-  })  : _db = db,
-        _backend = backend ?? UniversalBleBackend() {
-    _loadPaired();
+    this.retryInitialDelay = const Duration(seconds: 15),
+  }) : _db = db,
+       _backend = backend ?? UniversalBleBackend() {
+    _ready = _loadPaired();
   }
 
   final AppDatabase _db;
   final BleBackend _backend;
+  final Duration retryInitialDelay;
+  late final Future<void> _ready;
 
   SensorDao get _dao => _db.sensorDao;
 
   final List<PairedSensor> _paired = [];
   final Map<String, SensorStatus> _statuses = {};
   final Map<String, StreamSubscription<SensorReading>> _connections = {};
+  final Set<String> _connecting = {};
+  final Set<String> _blockedConnections = {};
+  final Map<String, Timer> _retryTimers = {};
+  final Map<String, Duration> _retryDelays = {};
+  bool _disposed = false;
 
   final _readings = StreamController<SensorReading>.broadcast();
 
@@ -65,10 +73,21 @@ class SensorManager extends ChangeNotifier {
   bool get hasAnyConnected =>
       _statuses.values.any((s) => s.state == SensorConnectionState.connected);
 
+  /// Give enabled sensors a fresh connection attempt when a ride starts.
+  /// A sensor switched on after app launch may have missed the first attempt.
+  Future<void> reconnectEnabled() async {
+    await _ready;
+    if (_disposed) return;
+    for (final sensor in _paired.where((s) => s.enabled)) {
+      unawaited(connect(sensor.id));
+    }
+  }
+
   // ---- Pairing ----
 
   Future<void> _loadPaired() async {
     final rows = await _dao.all();
+    if (_disposed) return;
     _paired
       ..clear()
       ..addAll(rows);
@@ -107,18 +126,20 @@ class SensorManager extends ChangeNotifier {
       final completer = Completer<List<DiscoveredDevice>>();
       late StreamSubscription<List<DiscoveredDevice>> sub;
 
-      sub = _backend.scan(timeout: timeout).listen(
-        (devices) {
-          _discovered = devices;
-          notifyListeners();
-        },
-        onError: (Object _) {
-          if (!completer.isCompleted) completer.complete(_discovered);
-        },
-        onDone: () {
-          if (!completer.isCompleted) completer.complete(_discovered);
-        },
-      );
+      sub = _backend
+          .scan(timeout: timeout)
+          .listen(
+            (devices) {
+              _discovered = devices;
+              notifyListeners();
+            },
+            onError: (Object _) {
+              if (!completer.isCompleted) completer.complete(_discovered);
+            },
+            onDone: () {
+              if (!completer.isCompleted) completer.complete(_discovered);
+            },
+          );
 
       await completer.future;
       await sub.cancel();
@@ -170,8 +191,10 @@ class SensorManager extends ChangeNotifier {
     if (index >= 0) {
       final updated = _paired[index].copyWith(enabled: enabled);
       _paired[index] = updated;
-      _statuses[deviceId] = (_statuses[deviceId] ?? SensorStatus(sensor: updated))
-          .copyWith();
+      _statuses[deviceId] =
+          (_statuses[deviceId] ?? SensorStatus(sensor: updated)).copyWith(
+            sensor: updated,
+          );
       notifyListeners();
     }
 
@@ -194,7 +217,13 @@ class SensorManager extends ChangeNotifier {
       ),
     );
 
-    if (_connections.containsKey(deviceId)) return;
+    if (_connections.containsKey(deviceId) || _connecting.contains(deviceId)) {
+      return;
+    }
+
+    _blockedConnections.remove(deviceId);
+    _retryTimers.remove(deviceId)?.cancel();
+    _connecting.add(deviceId);
 
     _setState(deviceId, SensorConnectionState.connecting);
 
@@ -208,34 +237,59 @@ class SensorManager extends ChangeNotifier {
         ),
       );
 
+      if (_disposed ||
+          _blockedConnections.contains(deviceId) ||
+          !_isEnabled(deviceId)) {
+        try {
+          await _backend.disconnect(deviceId);
+        } catch (_) {
+          // This connection was cancelled while it was opening.
+        }
+        return;
+      }
+
       _connections[deviceId] = stream.listen(
         (reading) {
+          if (_disposed) return;
           _readings.add(reading);
-          _statuses[deviceId] = (_statuses[deviceId] ??
-                  SensorStatus(sensor: sensor))
-              .copyWith(
-            lastValue: reading.value,
-            state: SensorConnectionState.connected,
-          );
+          _statuses[deviceId] =
+              (_statuses[deviceId] ?? SensorStatus(sensor: sensor)).copyWith(
+                lastValue: reading.value,
+                state: SensorConnectionState.connected,
+              );
           notifyListeners();
         },
         onError: (Object e) {
           _setError(deviceId, _describe(e));
+          unawaited(_backend.disconnect(deviceId).catchError((Object _) {}));
+          _scheduleRetry(deviceId);
         },
         onDone: () {
           _connections.remove(deviceId);
           _setState(deviceId, SensorConnectionState.disconnected);
+          _scheduleRetry(deviceId);
         },
       );
 
+      _retryDelays.remove(deviceId);
       _setState(deviceId, SensorConnectionState.connected);
-      await _dao.markConnected(deviceId);
+      try {
+        await _dao.markConnected(deviceId);
+      } catch (_) {
+        // A timestamp write must not drop an otherwise healthy BLE link.
+      }
     } catch (e) {
       _setError(deviceId, _describe(e));
+      _scheduleRetry(deviceId);
+    } finally {
+      _connecting.remove(deviceId);
     }
   }
 
   Future<void> disconnect(String deviceId) async {
+    _blockedConnections.add(deviceId);
+    _retryTimers.remove(deviceId)?.cancel();
+    _retryDelays.remove(deviceId);
     await _connections.remove(deviceId)?.cancel();
     try {
       await _backend.disconnect(deviceId);
@@ -253,6 +307,11 @@ class SensorManager extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    for (final timer in _retryTimers.values) {
+      timer.cancel();
+    }
+    _retryTimers.clear();
     for (final sub in _connections.values) {
       unawaited(sub.cancel());
     }
@@ -265,8 +324,10 @@ class SensorManager extends ChangeNotifier {
   // ---- Internals ----
 
   void _setState(String deviceId, SensorConnectionState state) {
+    if (_disposed) return;
     final existing = _statuses[deviceId];
-    final sensor = existing?.sensor ??
+    final sensor =
+        existing?.sensor ??
         _paired.firstWhere(
           (s) => s.id == deviceId,
           orElse: () => PairedSensor(
@@ -275,25 +336,47 @@ class SensorManager extends ChangeNotifier {
             type: SensorType.heartRate,
           ),
         );
-    _statuses[deviceId] = (existing ?? SensorStatus(sensor: sensor))
-        .copyWith(state: state);
+    _statuses[deviceId] = (existing ?? SensorStatus(sensor: sensor)).copyWith(
+      state: state,
+      clearError: state != SensorConnectionState.disconnected,
+    );
     notifyListeners();
   }
 
   void _setError(String deviceId, String message) {
     _connections.remove(deviceId)?.cancel();
+    if (_disposed) return;
     final existing = _statuses[deviceId];
-    final sensor = existing?.sensor ??
-        PairedSensor(
-          id: deviceId,
-          name: deviceId,
-          type: SensorType.heartRate,
-        );
+    final sensor =
+        existing?.sensor ??
+        PairedSensor(id: deviceId, name: deviceId, type: SensorType.heartRate);
     _statuses[deviceId] = (existing ?? SensorStatus(sensor: sensor)).copyWith(
       state: SensorConnectionState.disconnected,
       error: message,
     );
     notifyListeners();
+  }
+
+  bool _isEnabled(String deviceId) =>
+      _paired.any((sensor) => sensor.id == deviceId && sensor.enabled);
+
+  void _scheduleRetry(String deviceId) {
+    if (_disposed ||
+        _blockedConnections.contains(deviceId) ||
+        !_isEnabled(deviceId) ||
+        _retryTimers.containsKey(deviceId)) {
+      return;
+    }
+
+    final delay = _retryDelays[deviceId] ?? retryInitialDelay;
+    final doubled = delay * 2;
+    _retryDelays[deviceId] = doubled > const Duration(minutes: 2)
+        ? const Duration(minutes: 2)
+        : doubled;
+    _retryTimers[deviceId] = Timer(delay, () {
+      _retryTimers.remove(deviceId);
+      unawaited(connect(deviceId));
+    });
   }
 
   static String _describe(Object error) {

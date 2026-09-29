@@ -442,11 +442,13 @@ class RideRecorder {
 
       // One state per second is the policy's clock: it needs the smoothed
       // speed and nothing else, and the engine already decided what that is.
-      if (_sampling.update(
-        speedMps: s.stats.currentSpeedMps,
-        at: _now(),
-        motionDetected: s.motionDetected,
-      )) {
+      if (s.status == RideStatus.riding &&
+          s.speedAvailable &&
+          _sampling.update(
+            speedMps: s.stats.currentSpeedMps,
+            at: _now(),
+            motionDetected: s.motionDetected,
+          )) {
         _syncSamplingProfile();
       }
 

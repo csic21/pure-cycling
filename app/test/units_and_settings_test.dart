@@ -96,8 +96,14 @@ void main() {
 
     test('rounds to minutes for an arrival estimate', () {
       // Seconds of precision on an ETA would be false confidence.
-      expect(UnitFormatter.durationMinutes(const Duration(seconds: 100)), '2 min');
-      expect(UnitFormatter.durationMinutes(const Duration(minutes: 92)), '1h 32m');
+      expect(
+        UnitFormatter.durationMinutes(const Duration(seconds: 100)),
+        '2 min',
+      );
+      expect(
+        UnitFormatter.durationMinutes(const Duration(minutes: 92)),
+        '1h 32m',
+      );
       expect(UnitFormatter.durationMinutes(const Duration(hours: 2)), '2h');
     });
   });
@@ -134,6 +140,15 @@ void main() {
       expect(DashboardField.heartRate.isAvailable(data), isTrue);
     });
 
+    test('missing speed and GPS fix are not shown as measured zeroes', () {
+      const waiting = DashboardData(
+        stats: RideStats.empty,
+        speedAvailable: false,
+      );
+      expect(DashboardField.speed.format(waiting, metric), '--');
+      expect(DashboardField.gpsAccuracy.format(waiting, metric), '--');
+    });
+
     test('shows a dash for route fields when not navigating', () {
       expect(DashboardField.distanceToNextTurn.format(data, metric), '--');
       expect(DashboardField.eta.isAvailable(data), isFalse);
@@ -150,8 +165,14 @@ void main() {
         ),
       );
 
-      expect(DashboardField.distanceToDestination.format(navigating, metric), '8.20');
-      expect(DashboardField.distanceToNextTurn.format(navigating, metric), '180');
+      expect(
+        DashboardField.distanceToDestination.format(navigating, metric),
+        '8.20',
+      );
+      expect(
+        DashboardField.distanceToNextTurn.format(navigating, metric),
+        '180',
+      );
       expect(DashboardField.eta.format(navigating, metric), '14:05');
       expect(DashboardField.eta.isAvailable(navigating), isTrue);
     });
@@ -204,7 +225,8 @@ void main() {
     });
 
     test('drops unknown field ids without losing the page', () {
-      const raw = '{"pages":[{"layout":"hero_4",'
+      const raw =
+          '{"pages":[{"layout":"hero_4",'
           '"fields":["speed","from_a_future_version","distance"]}]}';
 
       final decoded = DashboardConfig.decode(raw);
