@@ -132,9 +132,11 @@ List<GeoPoint> simplifyPolyline(List<GeoPoint> points, double toleranceMeters) {
 
 /// Display simplification: keep the shape, but stop at [maxVertices].
 ///
-/// [minToleranceMeters] runs first, so a straight noisy trace collapses even
-/// when it is already under the cap. Anything still over the cap is thinned
-/// by raising the tolerance until it fits. Endpoints are preserved.
+/// [minToleranceMeters] runs once, so a straight noisy trace collapses even
+/// when it is already under the cap. Anything still over the cap is resampled
+/// in one pass: vertices are kept at even intervals, including both ends.
+/// Searching for a larger tolerance would run Douglas–Peucker again for every
+/// candidate, on the UI thread, each time a twisting overview spilled.
 List<GeoPoint> simplifyForDisplay(
   List<GeoPoint> points, {
   int maxVertices = 480,
@@ -145,25 +147,23 @@ List<GeoPoint> simplifyForDisplay(
   final floor = minToleranceMeters < 0 ? 0.0 : minToleranceMeters;
   final first = simplifyPolyline(points, floor);
   if (first.length <= cap) return first;
+  return _sampleToCap(first, cap);
+}
 
-  final box = GeoBounds.of(points);
-  var low = floor;
-  var high = box == null ? floor + 1 : box.diagonalMeters;
-  if (high <= low) high = low + 1;
-
-  var best = first;
-  for (var i = 0; i < 14; i++) {
-    final mid = (low + high) / 2;
-    final attempt = simplifyPolyline(points, mid);
-    if (attempt.length > cap) {
-      low = mid;
-    } else {
-      best = attempt;
-      high = mid;
-    }
+/// Keeps [cap] vertices of [points], spaced evenly by index.
+///
+/// Index spacing matches a trace whose vertices are already about a fixed
+/// distance apart. Both ends are exact, and a step greater than one index
+/// cannot pick the same vertex twice.
+List<GeoPoint> _sampleToCap(List<GeoPoint> points, int cap) {
+  final last = points.length - 1;
+  final out = List<GeoPoint>.filled(cap, points.first);
+  final spans = cap - 1;
+  for (var i = 1; i < spans; i++) {
+    out[i] = points[(i * last / spans).round()];
   }
-  if (best.length <= cap) return best;
-  return [points.first, points.last];
+  out[cap - 1] = points.last;
+  return out;
 }
 
 void _rdp(

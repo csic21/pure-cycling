@@ -97,9 +97,6 @@ void main() {
   });
 
   test('simplifyForDisplay caps a curving trace and keeps its ends', () {
-    // A sine, not a pure zigzag: every spike the same height collapses to the
-    // two endpoints the moment the tolerance exceeds that height, so there is
-    // no intermediate vertex count for the cap to land on.
     final points = <GeoPoint>[
       for (var i = 0; i < 2000; i++)
         offset(origin, i * 20.0, math.sin(i / 6) * (40 + i / 20)),
@@ -113,6 +110,26 @@ void main() {
 
     expect(simplified.length, lessThanOrEqualTo(80));
     expect(simplified.length, greaterThan(2));
+    expect(simplified.first, points.first);
+    expect(simplified.last, points.last);
+  });
+
+  test('simplifyForDisplay keeps a repeating bend under the cap', () {
+    // Equal spikes used to vanish together once the tolerance passed their
+    // height, leaving only the two endpoints. Even resampling keeps the bends.
+    final points = <GeoPoint>[
+      for (var i = 0; i < 800; i++)
+        offset(origin, i * 12.0, i.isEven ? 0 : 30),
+    ];
+
+    final simplified = simplifyForDisplay(
+      points,
+      maxVertices: 80,
+      minToleranceMeters: 8,
+    );
+
+    expect(simplified.length, lessThanOrEqualTo(80));
+    expect(simplified.length, greaterThan(10));
     expect(simplified.first, points.first);
     expect(simplified.last, points.last);
   });
