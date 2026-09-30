@@ -4,6 +4,7 @@ import '../../../app/theme.dart';
 import '../../../core/map/map_providers.dart';
 import '../../../core/utils/geo.dart';
 import '../../../core/utils/units.dart';
+import '../../../shared/layout/handlebar.dart';
 import '../../../shared/widgets/maneuver_icon.dart';
 import '../../../shared/widgets/route_map.dart';
 import '../../ride/domain/ride.dart';
@@ -45,14 +46,12 @@ class MinimalNavigationView extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       child: LayoutBuilder(
         builder: (context, constraints) {
-          // Mounted sideways, a phone is short and wide: three stacked bands
-          // (speed, turn, remaining) leave each one too little height, so the
-          // same information is laid out in three columns instead.
-          //
-          // The same 1.8 ratio as the dashboard: a wide-but-short *box* is not
-          // a wide-but-short *phone*.
-          final landscape =
-              constraints.maxWidth > constraints.maxHeight * 1.8;
+          // Three stacked bands leave each one too little height once the
+          // phone is mounted sideways, so the same information is three columns.
+          final landscape = isHandlebarLandscape(
+            constraints.maxWidth,
+            constraints.maxHeight,
+          );
 
           final speedBlock = Center(
             child: Row(
@@ -89,7 +88,9 @@ class MinimalNavigationView extends StatelessWidget {
           final remainingCells = <Widget>[
             _RemainingCell(
               label: '剩余',
-              value: formatter.distanceKm(navigation.distanceToDestinationMeters),
+              value: formatter.distanceKm(
+                navigation.distanceToDestinationMeters,
+              ),
               unit: formatter.system.distanceSuffix,
             ),
             _RemainingCell(
@@ -100,7 +101,9 @@ class MinimalNavigationView extends StatelessWidget {
             ),
             _RemainingCell(
               label: '剩余时间',
-              value: UnitFormatter.durationMinutes(navigation.remainingDuration),
+              value: UnitFormatter.durationMinutes(
+                navigation.remainingDuration,
+              ),
             ),
           ];
 
@@ -140,10 +143,7 @@ class MinimalNavigationView extends StatelessWidget {
                 const Divider(height: 1),
 
                 // ---- Remaining ----
-                Expanded(
-                  flex: 3,
-                  child: Row(children: remainingCells),
-                ),
+                Expanded(flex: 3, child: Row(children: remainingCells)),
               ],
             ),
           );
@@ -241,8 +241,11 @@ class _OffRouteNotice extends StatelessWidget {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        const Icon(Icons.wrong_location_outlined,
-            size: 44, color: AppColors.warning),
+        const Icon(
+          Icons.wrong_location_outlined,
+          size: 44,
+          color: AppColors.warning,
+        ),
         const SizedBox(height: 8),
         const Text('已偏离路线', style: AppText.maneuver),
         const SizedBox(height: 4),
@@ -259,11 +262,7 @@ class _OffRouteNotice extends StatelessWidget {
 }
 
 class _RemainingCell extends StatelessWidget {
-  const _RemainingCell({
-    required this.label,
-    required this.value,
-    this.unit,
-  });
+  const _RemainingCell({required this.label, required this.value, this.unit});
 
   final String label;
   final String value;
@@ -330,44 +329,76 @@ class MapNavigationView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        _MapTurnBanner(navigation: navigation),
-        Expanded(
-          child: Stack(
-            children: [
-              RouteMap(
-                tileSource: tileSource,
-                routePoints: route.points,
-                trackPoints: trackPoints,
-                position: position,
-                bearing: bearing,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // The banner on top of a sideways phone leaves the map a strip.
+        // Beside the map, the same banner keeps the next turn readable and
+        // gives the road the full height.
+        final landscape = isHandlebarLandscape(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
+        final banner = _MapTurnBanner(
+          navigation: navigation,
+          vertical: landscape,
+        );
+        final map = Stack(
+          children: [
+            RouteMap(
+              tileSource: tileSource,
+              routePoints: route.points,
+              trackPoints: trackPoints,
+              position: position,
+              bearing: bearing,
+              destination: route.points.isEmpty ? null : route.points.last,
+              followRider: true,
+              routeSnap: navigation.snappedPoint,
+              routeProgressMeters: navigation.distanceAlongRouteMeters,
+              offRoute: navigation.offRoute,
+              offRouteMeters: navigation.offRouteMeters,
+            ),
+            if (onDismiss != null)
+              Positioned(
+                right: 12,
+                bottom: 36,
+                child: _DismissMapButton(onDismiss: onDismiss!),
               ),
-              if (onDismiss != null)
-                Positioned(
-                  right: 12,
-                  bottom: 12,
-                  child: _DismissMapButton(onDismiss: onDismiss!),
-                ),
-              if (navigation.autoMapReason != MapAutoReason.userRequest &&
-                  navigation.autoMapReason != MapAutoReason.none)
-                Positioned(
-                  left: 12,
-                  bottom: 12,
-                  child: _AutoMapBadge(reason: navigation.autoMapReason),
-                ),
+            if (navigation.autoMapReason != MapAutoReason.userRequest &&
+                navigation.autoMapReason != MapAutoReason.none)
+              Positioned(
+                left: 12,
+                bottom: 36,
+                child: _AutoMapBadge(reason: navigation.autoMapReason),
+              ),
+          ],
+        );
+
+        if (landscape && navigation.currentInstruction != null) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(width: 168, child: banner),
+              Expanded(child: map),
             ],
-          ),
-        ),
-      ],
+          );
+        }
+
+        return Column(
+          children: [
+            banner,
+            Expanded(child: map),
+          ],
+        );
+      },
     );
   }
 }
 
 class _MapTurnBanner extends StatelessWidget {
-  const _MapTurnBanner({required this.navigation});
+  const _MapTurnBanner({required this.navigation, this.vertical = false});
 
   final NavigationSnapshot navigation;
+  final bool vertical;
 
   @override
   Widget build(BuildContext context) {
@@ -376,59 +407,85 @@ class _MapTurnBanner extends StatelessWidget {
 
     final distance = navigation.distanceToNextTurnMeters;
     final isComplex = instruction.maneuver.isComplex;
+    final distanceLabel = distance == null
+        ? null
+        : (distance < 1000
+              ? '${(distance / 10).round() * 10} 米'
+              : '${(distance / 1000).toStringAsFixed(1)} 公里');
+    const distanceStyle = TextStyle(
+      fontSize: 28,
+      fontWeight: FontWeight.w700,
+      color: Colors.black,
+      height: 1.05,
+    );
+    const roadStyle = TextStyle(
+      fontSize: 15,
+      fontWeight: FontWeight.w600,
+      color: Colors.black87,
+    );
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-      decoration: BoxDecoration(
-        color: isComplex ? AppColors.warning : AppColors.accent,
-      ),
-      child: Row(
-        children: [
-          Icon(
-            _iconFor(instruction.maneuver),
-            size: 40,
-            color: Colors.black,
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (distance != null)
-                  Text(
-                    distance < 1000
-                        ? '${(distance / 10).round() * 10} 米'
-                        : '${(distance / 1000).toStringAsFixed(1)} 公里',
-                    style: const TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.black,
-                      height: 1.05,
+    final icon = ManeuverIcon(
+      maneuver: instruction.maneuver,
+      size: vertical ? 48 : 40,
+      color: Colors.black,
+    );
+    final road = Text(
+      _bannerLabel(instruction),
+      style: roadStyle,
+      maxLines: vertical ? 3 : 1,
+      overflow: TextOverflow.ellipsis,
+      textAlign: vertical ? TextAlign.center : TextAlign.start,
+    );
+
+    return ColoredBox(
+      color: isComplex ? AppColors.warning : AppColors.accent,
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+          horizontal: vertical ? 12 : 20,
+          vertical: vertical ? 16 : 14,
+        ),
+        child: vertical
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  icon,
+                  const SizedBox(height: 10),
+                  if (distanceLabel != null)
+                    Text(
+                      distanceLabel,
+                      style: distanceStyle,
+                      textAlign: TextAlign.center,
+                    ),
+                  const SizedBox(height: 4),
+                  road,
+                ],
+              )
+            : Row(
+                children: [
+                  icon,
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (distanceLabel != null)
+                          Text(distanceLabel, style: distanceStyle),
+                        road,
+                      ],
                     ),
                   ),
-                Text(
-                  instruction.roadName?.isNotEmpty == true
-                      ? '${instruction.maneuver.label} · ${instruction.roadName}'
-                      : instruction.maneuver.label,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
+                ],
+              ),
       ),
     );
   }
 
-  static IconData _iconFor(Maneuver maneuver) =>
-      maneuverIconData(maneuver);
+  /// The arrow is the maneuver. The words are the road it turns onto.
+  static String _bannerLabel(RouteInstruction instruction) {
+    final road = instruction.roadName;
+    if (road != null && road.isNotEmpty) return road;
+    return instruction.maneuver.label;
+  }
 }
 
 /// The badge explaining why the map appeared on its own.
@@ -476,15 +533,28 @@ class _DismissMapButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Material(
       color: AppColors.scrim,
-      shape: const CircleBorder(
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(12)),
         side: BorderSide(color: AppColors.hairlineStrong),
       ),
       child: InkWell(
-        customBorder: const CircleBorder(),
+        customBorder: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(12)),
+        ),
         onTap: onDismiss,
-        child: const Padding(
-          padding: EdgeInsets.all(12),
-          child: Icon(Icons.map_outlined, size: 24),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.list_alt_outlined, size: 22),
+              const SizedBox(width: 6),
+              Text(
+                '码表',
+                style: AppText.button.copyWith(color: AppColors.textPrimary),
+              ),
+            ],
+          ),
         ),
       ),
     );

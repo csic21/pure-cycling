@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app/theme.dart';
 import '../../../core/utils/units.dart';
+import '../../../shared/layout/handlebar.dart';
 import '../../../shared/widgets/maneuver_icon.dart';
 import '../../../shared/widgets/metric_tile.dart';
 import '../../navigation/domain/navigation_state.dart';
@@ -39,17 +40,13 @@ class DashboardView extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // A phone on handlebars is often mounted sideways, and a phone in
-        // landscape is short and wide: a hero stacked over its supporting grid
-        // leaves the number about a third of the height it needs. Side by side
-        // is the shape every dedicated bike computer uses in this orientation.
-        //
-        // 1.8 rather than 1.4, deliberately: a *box* that happens to be wide
-        // and short is not a phone that way. The dashboard editor's preview
-        // pane is 358×238 — a 1.5 ratio — and a lower threshold would draw the
-        // landscape layout inside a portrait phone's editor.
-        final landscape =
-            constraints.maxWidth > constraints.maxHeight * 1.8;
+        // Side by side once the phone is mounted sideways. A hero stacked
+        // over its grid has about a third of the height it needs in that
+        // frame. The cut itself lives in [isHandlebarLandscape].
+        final landscape = isHandlebarLandscape(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
 
         if (minimal) {
           return _MinimalDashboard(
@@ -61,8 +58,8 @@ class DashboardView extends StatelessWidget {
 
         return switch (page.layout) {
           DashboardLayout.grid6 => _buildGrid(landscape),
-          DashboardLayout.hero2 || DashboardLayout.hero4 =>
-            _buildHero(landscape),
+          DashboardLayout.hero2 ||
+          DashboardLayout.hero4 => _buildHero(landscape),
         };
       },
     );
@@ -88,9 +85,7 @@ class DashboardView extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          HeroUnit(
-            text: hero.unitLabel(data, formatter),
-          ),
+          HeroUnit(text: hero.unitLabel(data, formatter)),
         ],
       ),
     );
@@ -254,7 +249,8 @@ class _MinimalDashboard extends StatelessWidget {
 
     final supporting = <Widget>[
       _CompactStat(
-        value: '${formatter.distanceKm(stats.distanceMeters, decimals: 1)}'
+        value:
+            '${formatter.distanceKm(stats.distanceMeters, decimals: 1)}'
             ' ${formatter.system.distanceSuffix}',
       ),
       _CompactStat(

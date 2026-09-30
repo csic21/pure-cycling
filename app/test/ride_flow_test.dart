@@ -383,6 +383,12 @@ void main() {
       expect(find.text('18.0'), findsOneWidget);
       expect(find.text('距离'), findsOneWidget);
       expect(find.text('暂停'), findsOneWidget);
+      // The pause control moves into the right rail, beside the readout,
+      // instead of taking a band under it.
+      expect(
+        tester.getRect(find.text('暂停')).left,
+        greaterThan(tester.getRect(find.text('18.0')).right),
+      );
 
       await shutdownApp(tester, database);
     });
@@ -418,9 +424,14 @@ void main() {
       await settle(tester);
 
       // The three bands become three columns: speed, next turn, remaining.
+      // Pause sits further right, in the control rail.
       expect(find.text('剩余'), findsOneWidget);
       expect(find.text('预计到达'), findsOneWidget);
       expect(find.text('暂停'), findsOneWidget);
+      expect(
+        tester.getRect(find.text('暂停')).left,
+        greaterThan(tester.getRect(find.text('剩余')).right),
+      );
 
       await shutdownApp(tester, database);
     });

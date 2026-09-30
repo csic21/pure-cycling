@@ -95,7 +95,7 @@ String trackToLineStringWkt(
   List<GeoPoint> points, {
   double simplifyToleranceMeters = 2.0,
 }) {
-  final coords = _simplify(points, simplifyToleranceMeters);
+  final coords = simplifyPolyline(points, simplifyToleranceMeters);
   final buf = StringBuffer('LINESTRING(');
   for (var i = 0; i < coords.length; i++) {
     if (i > 0) buf.write(',');
@@ -108,10 +108,12 @@ String trackToLineStringWkt(
   return buf.toString();
 }
 
-List<GeoPoint> _simplify(
-  List<GeoPoint> points,
-  double toleranceMeters,
-) {
+/// Drops points that sit within [toleranceMeters] of the chord between the
+/// points that are kept.
+///
+/// Ramer–Douglas–Peucker. Endpoints are always kept. A non-positive tolerance
+/// returns [points] unchanged.
+List<GeoPoint> simplifyPolyline(List<GeoPoint> points, double toleranceMeters) {
   if (points.length <= 2 || toleranceMeters <= 0) return points;
 
   // Ramer–Douglas–Peucker: keep the endpoints and any point that deviates
@@ -126,6 +128,42 @@ List<GeoPoint> _simplify(
     if (keep[i]) out.add(points[i]);
   }
   return out;
+}
+
+/// Display simplification: keep the shape, but stop at [maxVertices].
+///
+/// [minToleranceMeters] runs first, so a straight noisy trace collapses even
+/// when it is already under the cap. Anything still over the cap is thinned
+/// by raising the tolerance until it fits. Endpoints are preserved.
+List<GeoPoint> simplifyForDisplay(
+  List<GeoPoint> points, {
+  int maxVertices = 480,
+  double minToleranceMeters = 4,
+}) {
+  if (points.length <= 2) return points;
+  final cap = maxVertices < 2 ? 2 : maxVertices;
+  final floor = minToleranceMeters < 0 ? 0.0 : minToleranceMeters;
+  final first = simplifyPolyline(points, floor);
+  if (first.length <= cap) return first;
+
+  final box = GeoBounds.of(points);
+  var low = floor;
+  var high = box == null ? floor + 1 : box.diagonalMeters;
+  if (high <= low) high = low + 1;
+
+  var best = first;
+  for (var i = 0; i < 14; i++) {
+    final mid = (low + high) / 2;
+    final attempt = simplifyPolyline(points, mid);
+    if (attempt.length > cap) {
+      low = mid;
+    } else {
+      best = attempt;
+      high = mid;
+    }
+  }
+  if (best.length <= cap) return best;
+  return [points.first, points.last];
 }
 
 void _rdp(

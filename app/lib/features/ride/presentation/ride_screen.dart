@@ -11,6 +11,7 @@ import '../../../app/theme.dart';
 import '../../../core/map/map_providers.dart';
 import '../../../core/system/ride_fullscreen.dart';
 import '../../../core/utils/units.dart';
+import '../../../shared/layout/handlebar.dart';
 import '../../../shared/widgets/pixel_shift.dart';
 import '../../../shared/widgets/standstill_dimmer.dart';
 import '../../dashboard/domain/dashboard_config.dart';
@@ -101,6 +102,62 @@ class _RideScreenState extends ConsumerState<RideScreen> {
 
     final pages = dashboard.pages;
     final pageCount = pages.length + (isNavigating ? 1 : 0);
+    final screen = MediaQuery.sizeOf(context);
+    final landscape = isHandlebarLandscape(screen.width, screen.height);
+
+    final statusBar = RideStatusBar(
+      ride: ride,
+      navigating: isNavigating,
+      routeName: session.route?.name,
+      batteryPercent: battery,
+      onClose: () => _confirmLeave(ref, ride),
+      onToggleMinimal: navigation == null
+          ? null
+          : () {
+              if (navigation.mode == NavigationMode.map) {
+                ref.read(rideSessionProvider.notifier).requestMinimal();
+              } else {
+                ref.read(rideSessionProvider.notifier).requestMap();
+              }
+            },
+      isMapMode: navigation?.mode == NavigationMode.map,
+    );
+    final pager = Expanded(
+      child: StandstillDimmer(
+        enabled: settings.oledMode && settings.dimOnStandstill,
+        speedMps: ride.stats.currentSpeedMps,
+        child: _RidePager(
+          controller: _pageController,
+          page: _page,
+          pageCount: pageCount,
+          onPageChanged: (index) => setState(() => _page = index),
+          pages: pages,
+          ride: ride,
+          navigation: navigation,
+          session: session,
+          services: services,
+          formatter: formatter,
+          settings: settings,
+        ),
+      ),
+    );
+    final dots = pageCount > 1
+        ? _PageDots(
+            count: pageCount,
+            current: _page,
+            axis: landscape ? Axis.vertical : Axis.horizontal,
+          )
+        : const SizedBox(height: 8);
+    final controls = RideControls(
+      ride: ride,
+      axis: landscape ? Axis.vertical : Axis.horizontal,
+      onPause: () => ref.read(rideSessionProvider.notifier).pause(),
+      onResume: () => ref.read(rideSessionProvider.notifier).resume(),
+      onStop: () => _confirmStop(ref),
+      onReroute: isNavigating
+          ? () => ref.read(rideSessionProvider.notifier).reroute()
+          : null,
+    );
 
     return PopScope(
       // The system back gesture was the one exit from this screen that nobody
@@ -118,68 +175,47 @@ class _RideScreenState extends ConsumerState<RideScreen> {
           minimum: const EdgeInsets.all(2),
           child: PixelShiftScope(
             enabled: settings.oledMode && settings.pixelShift,
-            child: Column(
-              children: [
-                RideStatusBar(
-                  ride: ride,
-                  navigating: isNavigating,
-                  routeName: session.route?.name,
-                  batteryPercent: battery,
-                  onClose: () => _confirmLeave(ref, ride),
-                  onToggleMinimal: navigation == null
-                      ? null
-                      : () {
-                          if (navigation.mode == NavigationMode.map) {
-                            ref
-                                .read(rideSessionProvider.notifier)
-                                .requestMinimal();
-                          } else {
-                            ref.read(rideSessionProvider.notifier).requestMap();
-                          }
-                        },
-                  isMapMode: navigation?.mode == NavigationMode.map,
-                ),
-
-                // Only the data surface dims at a standstill. The entire
-                // column, including this status strip and the controls,
-                // participates in pixel shift.
-                Expanded(
-                  child: StandstillDimmer(
-                    enabled: settings.oledMode && settings.dimOnStandstill,
-                    speedMps: ride.stats.currentSpeedMps,
-                    child: _RidePager(
-                      controller: _pageController,
-                      page: _page,
-                      pageCount: pageCount,
-                      onPageChanged: (index) => setState(() => _page = index),
-                      pages: pages,
-                      ride: ride,
-                      navigation: navigation,
-                      session: session,
-                      services: services,
-                      formatter: formatter,
-                      settings: settings,
-                    ),
+            child: landscape
+                ? Column(
+                    children: [
+                      statusBar,
+                      Expanded(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            pager,
+                            DecoratedBox(
+                              decoration: const BoxDecoration(
+                                border: Border(
+                                  left: BorderSide(color: AppColors.hairline),
+                                ),
+                              ),
+                              child: SizedBox(
+                                width: 92,
+                                child: Column(
+                                  children: [
+                                    dots,
+                                    Expanded(child: controls),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  )
+                : Column(
+                    children: [
+                      statusBar,
+                      // Only the data surface dims at a standstill. The
+                      // status strip and the controls stay at full contrast,
+                      // and the whole column still pixel-shifts together.
+                      pager,
+                      dots,
+                      controls,
+                    ],
                   ),
-                ),
-
-                if (pageCount > 1)
-                  _PageDots(count: pageCount, current: _page)
-                else
-                  const SizedBox(height: 8),
-
-                RideControls(
-                  ride: ride,
-                  onPause: () => ref.read(rideSessionProvider.notifier).pause(),
-                  onResume: () =>
-                      ref.read(rideSessionProvider.notifier).resume(),
-                  onStop: () => _confirmStop(ref),
-                  onReroute: isNavigating
-                      ? () => ref.read(rideSessionProvider.notifier).reroute()
-                      : null,
-                ),
-              ],
-            ),
           ),
         ),
         // The countdown covers the whole screen while the first fix is being
@@ -425,11 +461,11 @@ class _RidePager extends ConsumerWidget {
 
 /// The map view fed from the recorder's in-memory trace.
 ///
-/// The trace is read through a [ValueListenable] on a revision counter rather
-/// than copied into the widget on every ride-state update: a state update
-/// arrives about once a second, and rebuilding a list of ten thousand
-/// coordinates each time would be pure waste. The map redraws when the counter
-/// changes and reads the list in place.
+/// The trace is read in place through a revision counter, not copied. [RouteMap]
+/// projects the display polyline once and rebuilds that layer only when a new
+/// vertex is committed. A fix that does not earn a vertex moves the rider and
+/// the short segment behind the dot. The camera keeps the rider centered, and
+/// the accent line is only the route still ahead.
 class _LiveMapNavigation extends ConsumerWidget {
   const _LiveMapNavigation({
     required this.navigation,
@@ -474,31 +510,40 @@ class _LiveMapNavigation extends ConsumerWidget {
 /// Kept at the bottom edge, small, and in the tertiary colour: they are
 /// orientation, not information.
 class _PageDots extends StatelessWidget {
-  const _PageDots({required this.count, required this.current});
+  const _PageDots({
+    required this.count,
+    required this.current,
+    this.axis = Axis.horizontal,
+  });
 
   final int count;
   final int current;
+  final Axis axis;
 
   @override
   Widget build(BuildContext context) {
+    final marks = [
+      for (var i = 0; i < count; i++)
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          margin: EdgeInsets.symmetric(
+            horizontal: axis == Axis.horizontal ? 3 : 0,
+            vertical: axis == Axis.vertical ? 3 : 0,
+          ),
+          width: axis == Axis.horizontal && i == current ? 16 : 6,
+          height: axis == Axis.vertical && i == current ? 16 : 6,
+          decoration: BoxDecoration(
+            color: i == current ? AppColors.accent : AppColors.textTertiary,
+            borderRadius: BorderRadius.circular(3),
+          ),
+        ),
+    ];
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          for (var i = 0; i < count; i++)
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              margin: const EdgeInsets.symmetric(horizontal: 3),
-              width: i == current ? 16 : 6,
-              height: 6,
-              decoration: BoxDecoration(
-                color: i == current ? AppColors.accent : AppColors.textTertiary,
-                borderRadius: BorderRadius.circular(3),
-              ),
-            ),
-        ],
-      ),
+      child: axis == Axis.vertical
+          ? Column(mainAxisSize: MainAxisSize.min, children: marks)
+          : Row(mainAxisAlignment: MainAxisAlignment.center, children: marks),
     );
   }
 }
