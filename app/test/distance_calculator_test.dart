@@ -188,4 +188,86 @@ void main() {
       expect(calc.totalMeters, 5000);
     });
   });
+
+  group('urban multipath soft gate', () {
+    test('heading/displacement disagreement with an accuracy spike holds the anchor', () {
+      final calc = fresh();
+      calc.add(origin, t0, accuracyMeters: 6);
+
+      // Clear the radius north at good accuracy first so we have a banked
+      // segment and a live heading reference.
+      final along = north(origin, 20);
+      expect(
+        calc.add(
+          along,
+          t0.add(const Duration(seconds: 2)),
+          accuracyMeters: 6,
+          headingDegrees: 0, // north
+        ),
+        closeTo(20, 1.5),
+      );
+
+      // A sideways multipath jump: displacement is east (~90°), reported
+      // course still says north, and accuracy spikes.
+      final east = GeoPoint(along.lat, along.lng + 20 / 85000.0);
+      final banked = calc.add(
+        east,
+        t0.add(const Duration(seconds: 4)),
+        accuracyMeters: 22,
+        headingDegrees: 0,
+        previousAccuracyMeters: 6,
+      );
+      expect(banked, 0, reason: 'multipath must not move the anchor');
+      expect(calc.totalMeters, closeTo(20, 1.5));
+      expect(calc.anchor!.lat, closeTo(along.lat, 1e-6));
+    });
+
+    test('a real hard turn without an accuracy spike still banks', () {
+      final calc = fresh();
+      calc.add(origin, t0, accuracyMeters: 5);
+      final northPoint = north(origin, 20);
+      calc.add(
+        northPoint,
+        t0.add(const Duration(seconds: 2)),
+        accuracyMeters: 5,
+        headingDegrees: 0,
+      );
+
+      // Turn east: displacement ~90°, heading also ~90°, accuracy steady.
+      final east = GeoPoint(northPoint.lat, northPoint.lng + 20 / 85000.0);
+      final banked = calc.add(
+        east,
+        t0.add(const Duration(seconds: 4)),
+        accuracyMeters: 6,
+        headingDegrees: 90,
+        previousAccuracyMeters: 5,
+      );
+      expect(banked, greaterThan(15));
+    });
+
+    test('looksLikeMultipath is false when either signal is missing', () {
+      expect(
+        DistanceCalculator.looksLikeMultipath(
+          meters: 20,
+          from: origin,
+          to: north(origin, 20),
+          headingDegrees: null,
+          accuracyMeters: 22,
+          previousAccuracyMeters: 6,
+        ),
+        isFalse,
+      );
+      expect(
+        DistanceCalculator.looksLikeMultipath(
+          meters: 20,
+          from: origin,
+          to: north(origin, 20),
+          headingDegrees: 90,
+          accuracyMeters: 22,
+          previousAccuracyMeters: null,
+        ),
+        isFalse,
+      );
+    });
+  });
 }

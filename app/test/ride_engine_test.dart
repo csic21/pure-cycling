@@ -282,6 +282,30 @@ void main() {
       });
     });
 
+    test('poor-accuracy free ride escapes a stuck zero without a route fill', () {
+      // Free rides cannot use noteRouteMatch. With ±20 m accuracy the old
+      // confirmation radius demanded 25 m of net travel; the stronger path
+      // escape should unlock derived speed sooner so auto-pause does not
+      // mistake canyon riding for a stop.
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        var travelled = 0.0;
+        for (var i = 0; i < 10; i++) {
+          advance(const Duration(seconds: 1));
+          travelled += 2.2;
+          engine.onLocation(
+            fixAt(origin, travelled, clock(), accuracy: 20, speed: 0),
+          );
+        }
+        expect(
+          engine.state.stats.currentSpeedMps,
+          greaterThan(1),
+          reason: 'position-derived speed must override a stuck Doppler zero',
+        );
+        engine.dispose();
+      });
+    });
+
     test('a trusted Doppler sample reaches the computer on the next fix', () {
       withRide((advance, clock, starve) {
         final engine = startRiding(clock: clock);

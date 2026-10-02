@@ -96,10 +96,19 @@ class DistanceCalculator {
   ///
   /// [accuracyMeters] widens the radius for an imprecise fix. Passing null
   /// uses the [noiseFloorMeters] default.
+  ///
+  /// [headingDegrees] and [previousAccuracyMeters] feed the urban multipath
+  /// soft gate: when course and displacement disagree sharply *and* accuracy
+  /// has just spiked, the sample is held rather than banked. The anchor does
+  /// not move — same philosophy as the noise radius — so a later honest fix
+  /// still credits the full travel from here. UI consumers keep seeing the
+  /// raw point; only mileage waits.
   double add(
     GeoPoint point,
     DateTime timestamp, {
     double? accuracyMeters,
+    double? headingDegrees,
+    double? previousAccuracyMeters,
   }) {
     final anchor = _anchor;
     final anchorTime = _anchorTime;
@@ -142,10 +151,59 @@ class DistanceCalculator {
       return 0;
     }
 
+    if (looksLikeMultipath(
+      meters: meters,
+      from: anchor,
+      to: point,
+      headingDegrees: headingDegrees,
+      accuracyMeters: accuracyMeters,
+      previousAccuracyMeters: previousAccuracyMeters,
+    )) {
+      // Urban canyon reflection. Hold the anchor; do not bank and do not
+      // reseat — a later clean fix still measures from the last honest point.
+      return 0;
+    }
+
     _totalMeters += meters;
     _anchor = point;
     _anchorTime = timestamp;
     return meters;
+  }
+
+  /// Heading vs displacement disagree sharply, and accuracy just worsened.
+  ///
+  /// Either alone is common (a real corner; a brief sky obstruction). Together
+  /// they are the multipath signature that would otherwise walk the anchor
+  /// sideways between buildings. Pure function so the gate is unit-testable
+  /// without a full ride.
+  static bool looksLikeMultipath({
+    required double meters,
+    required GeoPoint from,
+    required GeoPoint to,
+    required double? headingDegrees,
+    required double? accuracyMeters,
+    required double? previousAccuracyMeters,
+  }) {
+    if (headingDegrees == null) return false;
+    // Inside the noise floor the radius gate already held; nothing to soft-gate.
+    if (meters < 12) return false;
+    final displacement = initialBearingDegrees(
+      from.lat,
+      from.lng,
+      to.lat,
+      to.lng,
+    );
+    final disagreement = bearingDelta(headingDegrees, displacement);
+    // A real hard turn moves heading and displacement together. Multipath
+    // jumps the position while the reported course stays on the previous
+    // street — that is the 75°+ disagreement.
+    if (disagreement < 75) return false;
+    final accuracy = accuracyMeters;
+    final previous = previousAccuracyMeters;
+    if (accuracy == null || previous == null) return false;
+    // Sudden worsening, not merely "still poor": a canyon reflection arrives
+    // as a spike on top of whatever the last epoch reported.
+    return accuracy >= 15 && accuracy >= previous + 6;
   }
 
   /// Restores state after a crash, so the ride continues from its checkpoint

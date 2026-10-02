@@ -605,8 +605,16 @@ class GpsFilter {
 
     // Some Android providers keep reporting Doppler speed as zero while
     // positions move. One segment can be GPS jitter, so only override that
-    // zero after several fixes have moved consistently beyond the accuracy
+    // zero after several fixes have moved consistently beyond a confirmation
     // radius. Keep the decision until a genuinely stationary fix arrives.
+    //
+    // Free rides cannot lean on route-progress fill (`noteRouteMatch`), so the
+    // confirmation here is intentionally a little more eager than the
+    // distance calculator's own radius: a stuck Doppler zero in an urban
+    // canyon otherwise sits below the display floor for many seconds, and
+    // auto-pause mistakes riding for a stop. The path-consistency check still
+    // rejects the parked-bike oscillation that would otherwise look like
+    // travel.
     final zeroReported =
         reportedUsable && reported < config.minSpeedToReportMps;
     double? confirmedPositionSpeed;
@@ -631,18 +639,31 @@ class GpsFilter {
       final accuracy = anchor.accuracy > fix.accuracy
           ? anchor.accuracy
           : fix.accuracy;
-      final radius = (accuracy * 2).clamp(12.0, 25.0);
-      if (!_zeroSpeedMovementConfirmed &&
-          spanSeconds >= 2 &&
-          netMeters >= radius &&
-          netMeters >= _zeroSpeedPathMeters * 0.7 &&
-          netMeters / spanSeconds >= config.minSpeedToReportMps) {
+      // Tighter than the distance anchor (which uses accuracy×2 up to 25 m):
+      // we only need enough evidence to distrust a stuck zero, not to bank
+      // mileage. Cap stays modest so a poor fix cannot demand a city block.
+      final radius = accuracy.clamp(8.0, 16.0);
+      final netSpeed =
+          spanSeconds > 0 ? netMeters / spanSeconds : 0.0;
+      final consistent =
+          netMeters >= _zeroSpeedPathMeters * 0.55 &&
+          netSpeed >= config.minSpeedToReportMps;
+      // Two ways in: clear the (tighter) radius, or accumulate enough path
+      // with a coherent net so a canyon that inflates accuracy still escapes.
+      final clearedRadius =
+          spanSeconds >= 1.5 && netMeters >= radius && consistent;
+      final pathEscape =
+          spanSeconds >= 2.5 &&
+          _zeroSpeedPathMeters >= 10 &&
+          netMeters >= 8 &&
+          consistent;
+      if (!_zeroSpeedMovementConfirmed && (clearedRadius || pathEscape)) {
         _zeroSpeedMovementConfirmed = true;
       }
       if (_zeroSpeedMovementConfirmed) {
         confirmedPositionSpeed = derivedUsable
             ? derived
-            : netMeters / spanSeconds;
+            : netSpeed;
       }
     } else {
       _resetZeroSpeedConflict();
