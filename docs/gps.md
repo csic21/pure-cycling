@@ -143,6 +143,22 @@ Dart 取消最后一个监听
 
 ---
 
+## 仅手机端精度改进（2026-10）
+
+不依赖外接轮速 / 自行车 GPS。主路径仍是 Android `GPS_PROVIDER` + iOS CoreLocation；
+**不**改回 Fused、不设 `distanceFilter > 0`、停车不降精度档、锁屏不重订订阅。
+
+| 项 | 行为 |
+|---|---|
+| GNSS 预热 | `prepareRideLocation` 成功后 `LocationService.prewarm`（前台、无 FGS）；骑行订阅建立或取消时 `stopPrewarm` |
+| 放置提示 | 倒计时与骑行设置 GPS 脚注：车把支架 / 避开金属磁吸 / 开阔天空 |
+| 卫星质量 | Android `GnssStatus` → `satellites_used` / `cn0_avg`；码表与倒计时展示；iOS 字段为空则只显示精度 |
+| 城市多径 soft gate | `DistanceCalculator`：航向与位移差 ≥75° 且精度突升时**不移锚、不记距**（仍刷新 UI） |
+| 导航位置 snap | 有规划路线且未偏航时，地图箭头/跟随用 `snappedPoint`；**轨迹与里程仍用原 GPS** |
+| 自由骑零速兜底 | 无路线时加强 `_zeroSpeedMovementConfirmed`（更紧确认半径 + 路径一致性逃逸） |
+
+---
+
 ## 权限矩阵
 
 | 平台 | 前台定位 | 后台定位 | 蓝牙 | 通知 |
