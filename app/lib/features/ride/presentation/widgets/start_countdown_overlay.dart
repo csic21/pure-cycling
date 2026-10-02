@@ -105,7 +105,12 @@ class _StartCountdownOverlayState extends State<StartCountdownOverlay> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            _GpsReadiness(accuracy: accuracy, hasFix: hasFix),
+            _GpsReadiness(
+              accuracy: accuracy,
+              hasFix: hasFix,
+              satellitesUsed: widget.ride.satellitesUsed,
+              cn0AverageDbHz: widget.ride.cn0AverageDbHz,
+            ),
             const Spacer(),
 
             if (_remaining > 0)
@@ -141,7 +146,12 @@ class _StartCountdownOverlayState extends State<StartCountdownOverlay> {
 
 /// The GPS quality readout during the countdown (spec §4).
 class _GpsReadiness extends StatelessWidget {
-  const _GpsReadiness({required this.accuracy, required this.hasFix});
+  const _GpsReadiness({
+    required this.accuracy,
+    required this.hasFix,
+    this.satellitesUsed,
+    this.cn0AverageDbHz,
+  });
 
   final double accuracy;
 
@@ -149,6 +159,9 @@ class _GpsReadiness extends StatelessWidget {
   /// is — the first fix is usually poor and improves over about thirty
   /// seconds as the receiver locks onto more satellites.
   final bool hasFix;
+
+  final int? satellitesUsed;
+  final double? cn0AverageDbHz;
 
   ({Color color, String headline}) _classify() {
     if (!hasFix) {
@@ -184,6 +197,20 @@ class _GpsReadiness extends StatelessWidget {
           hasFix ? '当前精度 ±${accuracy.round()}m' : '请到开阔处等待',
           style: AppText.caption,
         ),
+        if (hasFix && _satelliteLine() != null) ...[
+          const SizedBox(height: 4),
+          Text(_satelliteLine()!, style: AppText.caption),
+        ],
+        const SizedBox(height: 12),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 36),
+          child: Text(
+            '车把支架朝上固定比放口袋更稳；避开金属壳与强磁吸；'
+            '尽量在开阔天空下等 GPS 就绪。',
+            style: AppText.caption,
+            textAlign: TextAlign.center,
+          ),
+        ),
         if (hasFix && accuracy > 50) ...[
           const SizedBox(height: 10),
           const Padding(
@@ -197,5 +224,15 @@ class _GpsReadiness extends StatelessWidget {
         ],
       ],
     );
+  }
+
+  String? _satelliteLine() {
+    final used = satellitesUsed;
+    if (used == null || used <= 0) return null;
+    final cn0 = cn0AverageDbHz;
+    if (cn0 != null && cn0 > 0) {
+      return '卫星 $used · CN0 ${cn0.round()} dB-Hz';
+    }
+    return '卫星 $used';
   }
 }

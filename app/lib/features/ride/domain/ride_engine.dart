@@ -71,6 +71,8 @@ class RideState {
     this.gpsAccuracyMeters = 0,
     this.gpsSignalLost = false,
     this.gpsPoor = false,
+    this.satellitesUsed,
+    this.cn0AverageDbHz,
     this.speedAvailable = false,
     this.acceptedPointCount = 0,
     this.motionDetected,
@@ -93,6 +95,12 @@ class RideState {
 
   /// A fix is arriving, but it is too imprecise to trust for distance.
   final bool gpsPoor;
+
+  /// Satellites used in the latest fix, when the platform reports it.
+  final int? satellitesUsed;
+
+  /// Mean CN0 of satellites used in the latest fix, in dB-Hz.
+  final double? cn0AverageDbHz;
 
   /// A recent accepted GPS speed or wheel sensor reading is available.
   final bool speedAvailable;
@@ -133,6 +141,8 @@ class RideState {
     double? gpsAccuracyMeters,
     bool? gpsSignalLost,
     bool? gpsPoor,
+    int? satellitesUsed,
+    double? cn0AverageDbHz,
     bool? speedAvailable,
     int? acceptedPointCount,
     bool? motionDetected,
@@ -150,6 +160,8 @@ class RideState {
       gpsAccuracyMeters: gpsAccuracyMeters ?? this.gpsAccuracyMeters,
       gpsSignalLost: gpsSignalLost ?? this.gpsSignalLost,
       gpsPoor: gpsPoor ?? this.gpsPoor,
+      satellitesUsed: satellitesUsed ?? this.satellitesUsed,
+      cn0AverageDbHz: cn0AverageDbHz ?? this.cn0AverageDbHz,
       speedAvailable: speedAvailable ?? this.speedAvailable,
       acceptedPointCount: acceptedPointCount ?? this.acceptedPointCount,
       motionDetected: motionDetected ?? this.motionDetected,
@@ -362,6 +374,9 @@ class RideEngine {
   double? _grade;
 
   double _gpsAccuracy = 0;
+  double? _previousGpsAccuracy;
+  int? _satellitesUsed;
+  double? _cn0AverageDbHz;
 
   /// The timestamp the *platform* put on the last fix.
   ///
@@ -517,7 +532,15 @@ class RideEngine {
 
     _lastFixAt = fix.timestamp;
     _lastFixArrivedAt = _now();
-    if (fix.hasAccuracy) _gpsAccuracy = fix.accuracy;
+    // Snapshot before overwriting: the multipath soft gate needs the *previous*
+    // epoch's accuracy to spot a spike, not the one that just arrived.
+    final previousAccuracy = _gpsAccuracy > 0 ? _gpsAccuracy : _previousGpsAccuracy;
+    if (fix.hasAccuracy) {
+      _previousGpsAccuracy = previousAccuracy;
+      _gpsAccuracy = fix.accuracy;
+    }
+    if (fix.satellitesUsed != null) _satellitesUsed = fix.satellitesUsed;
+    if (fix.cn0AverageDbHz != null) _cn0AverageDbHz = fix.cn0AverageDbHz;
 
     final processing = _filter.process(
       fix,
@@ -572,6 +595,10 @@ class RideEngine {
         fix.geo,
         fix.timestamp,
         accuracyMeters: fix.hasAccuracy ? fix.accuracy : null,
+        headingDegrees: fix.heading ?? processing.bearing,
+        previousAccuracyMeters: previousAccuracy != null && previousAccuracy > 0
+            ? previousAccuracy
+            : null,
       );
       _filter.noteDistance(added);
 
@@ -1271,6 +1298,8 @@ class RideEngine {
           _now().difference(_lastFixArrivedAt ?? _startedAt ?? _now()) >
               _config.gpsSignalLostAfter,
       gpsPoor: _gpsPoor,
+      satellitesUsed: _satellitesUsed,
+      cn0AverageDbHz: _cn0AverageDbHz,
       speedAvailable: _speedAvailable,
       acceptedPointCount: _sequence,
       motionDetected: motionDetected,
@@ -1313,6 +1342,9 @@ class RideEngine {
     _routeSpeedAt = null;
     _grade = null;
     _gpsAccuracy = 0;
+    _previousGpsAccuracy = null;
+    _satellitesUsed = null;
+    _cn0AverageDbHz = null;
     _lastFixAt = null;
     _lastFixArrivedAt = null;
     _gpsPoor = false;

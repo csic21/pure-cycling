@@ -4,10 +4,12 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationManager
 import android.location.OnNmeaMessageListener
 import android.os.Build
+import android.os.Handler
 import android.os.Looper
 import androidx.core.location.LocationListenerCompat
 import androidx.core.location.LocationManagerCompat
@@ -46,6 +48,14 @@ class GnssStreamHandler(private val context: Context) :
     @Volatile
     private var mslAtMs = 0L
 
+    @Volatile
+    private var satellitesUsed = 0
+
+    @Volatile
+    private var cn0AverageDbHz = Double.NaN
+
+    private var gnssStatusCallback: GnssStatus.Callback? = null
+
     @SuppressLint("MissingPermission")
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
         val interval = when (arguments) {
@@ -67,6 +77,7 @@ class GnssStreamHandler(private val context: Context) :
 
         sink = events
         startNmea()
+        startGnssStatus()
 
         val request = LocationRequestCompat.Builder(interval)
             .setQuality(LocationRequestCompat.QUALITY_HIGH_ACCURACY)
@@ -94,6 +105,7 @@ class GnssStreamHandler(private val context: Context) :
             listening = false
         }
         stopNmea()
+        stopGnssStatus()
         sink = null
     }
 
@@ -125,6 +137,13 @@ class GnssStreamHandler(private val context: Context) :
         ) {
             fix["heading_accuracy"] = location.bearingAccuracyDegrees.toDouble()
         }
+        // Satellite quality from the last GnssStatus callback. Zero used-in-fix
+        // with a NaN CN0 means "not yet reported" and is omitted so Dart keeps
+        // null rather than inventing an empty sky.
+        val used = satellitesUsed
+        if (used > 0) fix["satellites_used"] = used
+        val cn0 = cn0AverageDbHz
+        if (!cn0.isNaN()) fix["cn0_avg"] = cn0
         events.success(fix)
     }
 
@@ -174,6 +193,58 @@ class GnssStreamHandler(private val context: Context) :
         nmeaListener = null
         mslAltitude = Double.NaN
         mslAtMs = 0L
+    }
+
+    /**
+     * Listens for [GnssStatus] so each fix can carry used-in-fix count and
+     * mean CN0. The numbers distinguish "accuracy looks fine but the sky is
+     * thin" urban multipath from a genuinely solid lock — accuracy alone
+     * cannot.
+     *
+     * API 24+. Older devices simply never populate the Dart fields.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startGnssStatus() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
+        if (gnssStatusCallback != null) return
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val callback = object : GnssStatus.Callback() {
+            override fun onSatelliteStatusChanged(status: GnssStatus) {
+                var used = 0
+                var cn0Sum = 0.0
+                var cn0Count = 0
+                for (i in 0 until status.satelliteCount) {
+                    if (!status.usedInFix(i)) continue
+                    used++
+                    val cn0 = status.getCn0DbHz(i)
+                    if (cn0 > 0f) {
+                        cn0Sum += cn0
+                        cn0Count++
+                    }
+                }
+                satellitesUsed = used
+                cn0AverageDbHz = if (cn0Count > 0) cn0Sum / cn0Count else Double.NaN
+            }
+        }
+        gnssStatusCallback = callback
+        locationManager.registerGnssStatusCallback(
+            callback,
+            Handler(Looper.getMainLooper()),
+        )
+    }
+
+    private fun stopGnssStatus() {
+        val callback = gnssStatusCallback ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            locationManager.unregisterGnssStatusCallback(callback)
+        }
+        gnssStatusCallback = null
+        satellitesUsed = 0
+        cn0AverageDbHz = Double.NaN
     }
 
     private fun isMocked(location: Location): Boolean {

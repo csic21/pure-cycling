@@ -27,6 +27,23 @@ void main() {
     expect(fix.speedAccuracy, 0.4);
     expect(fix.accuracy, 4);
     expect(fix.isMocked, isFalse);
+    expect(fix.satellitesUsed, isNull);
+    expect(fix.cn0AverageDbHz, isNull);
+  });
+
+  test('GnssStatus fields ride along on a satellite fix', () {
+    final fix = fixFromGnssEvent({
+      'latitude': 39.9,
+      'longitude': 116.4,
+      'timestamp': 1750000000000,
+      'accuracy': 5.0,
+      'satellites_used': 14,
+      'cn0_avg': 32.5,
+    });
+
+    expect(fix, isNotNull);
+    expect(fix!.satellitesUsed, 14);
+    expect(fix.cn0AverageDbHz, 32.5);
   });
 
   test('a payload that is not a fix is skipped', () {

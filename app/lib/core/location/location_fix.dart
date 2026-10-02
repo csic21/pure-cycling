@@ -19,6 +19,8 @@ class LocationFix {
     this.heading,
     this.headingAccuracy,
     this.isMocked = false,
+    this.satellitesUsed,
+    this.cn0AverageDbHz,
   });
 
   final double latitude;
@@ -47,6 +49,18 @@ class LocationFix {
 
   /// Android reports location spoofing; such a fix is recorded but flagged.
   final bool isMocked;
+
+  /// Satellites used in the current fix, when the platform reports it.
+  ///
+  /// Android fills this from [GnssStatus]; iOS has no public equivalent, so
+  /// the field stays null and the UI degrades to accuracy alone.
+  final int? satellitesUsed;
+
+  /// Mean carrier-to-noise density of satellites used in the fix, in dB-Hz.
+  ///
+  /// A high accuracy radius with low CN0 is the urban multipath signature:
+  /// the number looks fine, the sky does not. Null when unknown.
+  final double? cn0AverageDbHz;
 
   GeoPoint get geo => GeoPoint(latitude, longitude);
 

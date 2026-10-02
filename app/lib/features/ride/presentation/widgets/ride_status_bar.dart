@@ -136,8 +136,15 @@ class _GpsIndicator extends StatelessWidget {
       ),
     };
 
+    final used = ride.satellitesUsed;
+    final detail = used != null && used > 0
+        ? (ride.cn0AverageDbHz != null && ride.cn0AverageDbHz! > 0
+              ? '$label · 卫星 $used · CN0 ${ride.cn0AverageDbHz!.round()}'
+              : '$label · 卫星 $used')
+        : label;
+
     return Tooltip(
-      message: label,
+      message: detail,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -146,7 +153,9 @@ class _GpsIndicator extends StatelessWidget {
           Text(
             ride.gpsSignalLost || ride.gpsAccuracyMeters <= 0
                 ? '--'
-                : '±${ride.gpsAccuracyMeters.round()}m',
+                : used != null && used > 0
+                    ? '±${ride.gpsAccuracyMeters.round()}m ·$used'
+                    : '±${ride.gpsAccuracyMeters.round()}m',
             style: AppText.caption.copyWith(color: color),
           ),
         ],
