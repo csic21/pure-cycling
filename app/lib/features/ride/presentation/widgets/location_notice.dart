@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -177,6 +179,15 @@ Future<bool> prepareRideLocation(BuildContext context, WidgetRef ref) async {
       // explains the screen-off limitation before the rider makes that choice.
       await location.ensurePermission(requestBackground: true);
     }
+  }
+
+  // Warm GNSS now, while the rider is still on the home screen / navigating
+  // into the ride. The countdown then waits on a chip that is already locking
+  // rather than paying cold TTFF on the bars. Foreground-only: no FGS yet.
+  // Cancelled when the ride subscription opens or the ride is abandoned.
+  if (context.mounted) {
+    final mode = ref.read(currentSettingsProvider).gpsAccuracy;
+    unawaited(location.prewarm(mode: mode));
   }
 
   return context.mounted;

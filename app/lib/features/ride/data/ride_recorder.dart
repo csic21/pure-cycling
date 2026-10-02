@@ -473,6 +473,10 @@ class RideRecorder {
     _requested = request;
     _streamAliveAt = _now();
     _stallReported = false;
+    // Hand off from the home-screen prewarm to the ride stream. Cancelling
+    // first avoids two GPS_PROVIDER listeners delivering the same epochs;
+    // the chip stays warm across the gap.
+    unawaited(_location.stopPrewarm());
     _locationSub?.cancel();
     _locationSub = _location
         .fixes(mode: request.accuracy, interval: request.interval)
@@ -508,6 +512,7 @@ class RideRecorder {
   Future<void> _cancelLocation() async {
     _watchdog?.cancel();
     _watchdog = null;
+    await _location.stopPrewarm();
     await _locationSub?.cancel();
     _locationSub = null;
     _requested = null;

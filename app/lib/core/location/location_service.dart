@@ -101,6 +101,39 @@ class LocationService {
 
   Future<bool> openLocationSettings() => Geolocator.openLocationSettings();
 
+  /// A short-lived high-accuracy listen that warms the GNSS chip before a ride.
+  ///
+  /// Cold TTFF from a garage or a pocket can take tens of seconds. Starting the
+  /// stream here — still in the foreground, with no background notification —
+  /// means the countdown is waiting on a receiver that is already locking,
+  /// rather than paying for time-to-first-fix on the bars.
+  ///
+  /// Cancelled automatically when the ride's real subscription opens (see
+  /// [stopPrewarm]). Safe to call more than once; a second call replaces the
+  /// first. Does not replace the ride stream and must never be used with the
+  /// screen locked — that path keeps the FGS rules intact.
+  StreamSubscription<LocationFix>? _prewarmSub;
+
+  Future<void> prewarm({GpsAccuracyMode mode = GpsAccuracyMode.high}) async {
+    await stopPrewarm();
+    try {
+      _prewarmSub = fixes(mode: mode, background: false).listen(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+        cancelOnError: false,
+      );
+    } catch (_) {
+      // Warming is best-effort. A ride can still start cold.
+      _prewarmSub = null;
+    }
+  }
+
+  Future<void> stopPrewarm() async {
+    final sub = _prewarmSub;
+    _prewarmSub = null;
+    await sub?.cancel();
+  }
+
   /// Whether the OS grants location beyond the foreground.
   ///
   /// Android 10+ and iOS 13+ split the grant in two, and only the "always"
@@ -372,6 +405,8 @@ LocationFix? fixFromGnssEvent(Object? event) {
 
   double? number(Object? value) => value is num ? value.toDouble() : null;
 
+  int? integer(Object? value) => value is num ? value.toInt() : null;
+
   return LocationFix(
     latitude: latitude.toDouble(),
     longitude: longitude.toDouble(),
@@ -387,5 +422,7 @@ LocationFix? fixFromGnssEvent(Object? event) {
     heading: number(event['heading']),
     headingAccuracy: number(event['heading_accuracy']),
     isMocked: event['is_mocked'] == true,
+    satellitesUsed: integer(event['satellites_used']),
+    cn0AverageDbHz: number(event['cn0_avg']),
   );
 }
