@@ -490,12 +490,18 @@ class _LiveMapNavigation extends ConsumerWidget {
     return ValueListenableBuilder<int>(
       valueListenable: recorder.traceRevision,
       builder: (context, _, _) {
+        // Snap the *marker / camera* to the route when on course. Track
+        // points and mileage still use the raw fix — this is display/nav
+        // only, never written into DistanceCalculator.
+        final displayPosition = navigation.offRoute
+            ? ride.lastPoint
+            : (navigation.snappedPoint ?? ride.lastPoint);
         return MapNavigationView(
           navigation: navigation,
           route: route,
           tileSource: services.tileSource,
           trackPoints: recorder.liveTrace,
-          position: ride.lastPoint,
+          position: displayPosition,
           bearing: ride.bearing,
           formatter: formatter,
           onDismiss: onDismiss,
