@@ -200,6 +200,7 @@ jobs:
           test -s "$apk" && test -s "$aab"
           apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
           test -n "$apksigner"
+          echo "APK signature verifier: Android Build Tools $(basename "$(dirname "$apksigner")")"
           "$apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
           keytool -exportcert -keystore android/app/upload-keystore.jks \
             -alias "$ANDROID_KEY_ALIAS" -storepass:env ANDROID_STORE_PASSWORD \
@@ -209,10 +210,29 @@ jobs:
           from pathlib import Path
           temp = Path(os.environ['RUNNER_TEMP'])
           certificate = hashlib.sha256((temp / 'release-certificate.der').read_bytes()).hexdigest()
-          signers = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]+)$',
-                               (temp / 'apk-signature.txt').read_text(), re.M)
-          if [value.lower() for value in signers] != [certificate]:
-              raise SystemExit('::error::APK is not signed by the configured release certificate.')
+          report = (temp / 'apk-signature.txt').read_text()
+          # Build Tools 37 prefixes signer names with their signature scheme
+          # and a colon. Older versions use numbered or SDK-qualified names.
+          sdk_range = r'\(minSdkVersion=\d+(?: \(dev release=true\))?, maxSdkVersion=\d+\)'
+          signer_name = (rf'(?:Signer #\d+|Signer {sdk_range}|'
+                         rf'(?:V[12]|V3\.[012](?: Hybrid (?:Classical|PQC))?) '
+                         rf'Signer(?: #\d+)?:(?: {sdk_range})?)')
+          signers = re.findall(rf'^({signer_name}) certificate SHA-256 digest: '
+                               r'([0-9a-fA-F]{64})[ \t]*$', report, re.M)
+          certificate_lines = [line for line in report.splitlines()
+                               if ' certificate SHA-256 digest:' in line
+                               and not line.startswith('Source Stamp Signer')]
+          fingerprints = {value.lower() for _, value in signers}
+          print(f'Configured certificate SHA-256: {certificate}')
+          print(f'APK signer entries: {len(signers)}; unique certificates: {len(fingerprints)}')
+          print('APK signer formats: ' + ', '.join(sorted({name for name, _ in signers})))
+          print('APK certificate SHA-256: ' + ', '.join(sorted(fingerprints)))
+          if not signers or len(signers) != len(certificate_lines):
+              raise SystemExit('::error::Could not parse every APK signer certificate; refusing publication.')
+          # One certificate may be reported for several signature schemes or
+          # SDK ranges. Every report must still identify the configured key.
+          if fingerprints != {certificate}:
+              raise SystemExit('::error::APK signer certificates differ from the configured release certificate.')
           out = Path('../release-artifacts')
           out.mkdir(exist_ok=True)
           shutil.copyfile('build/app/outputs/flutter-apk/app-release.apk', out / 'pure-cycling-android.apk')
