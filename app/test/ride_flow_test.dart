@@ -1,9 +1,13 @@
 import 'package:cycling_app/app/app.dart';
+import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/app/router.dart';
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/core/permissions/notification_permission.dart';
 import 'package:cycling_app/core/utils/geo.dart';
+import 'package:cycling_app/features/ride/data/ride_repository.dart';
+import 'package:cycling_app/features/ride/domain/ride.dart';
+import 'package:cycling_app/features/ride/domain/track_point.dart';
 import 'package:cycling_app/features/ride/presentation/ride_screen.dart';
 import 'package:cycling_app/features/ride/presentation/widgets/ride_controls.dart';
 import 'package:cycling_app/features/ride/presentation/widgets/location_notice.dart';
@@ -26,11 +30,15 @@ import 'support/test_harness.dart';
 /// pieces are connected. A `RideRecorder` that never subscribes to the
 /// location stream passes every unit test in the project and records nothing.
 void main() {
+  useTestMapCache();
   late AppDatabase database;
 
   setUp(() => database = openTestDatabase());
 
-  Future<FakeLocationService> pumpApp(WidgetTester tester) async {
+  Future<FakeLocationService> pumpApp(
+    WidgetTester tester, {
+    List<Override> extraOverrides = const [],
+  }) async {
     final location = FakeLocationService();
     // These cases are about rides, not about the one-time location notice that
     // precedes the first one — the notice has its own group below, which pumps
@@ -39,7 +47,10 @@ void main() {
     useTallSurface(tester);
     await tester.pumpWidget(
       ProviderScope(
-        overrides: testOverrides(database: database, location: location),
+        overrides: [
+          ...testOverrides(database: database, location: location),
+          ...extraOverrides,
+        ],
         child: const CyclingApp(),
       ),
     );
@@ -542,6 +553,67 @@ void main() {
   });
 
   group('leaving a ride in progress', () {
+    testWidgets('a failed save stays visible and can be retried', (
+      tester,
+    ) async {
+      final repository = _FailOnceRideRepository(database);
+      final location = await pumpApp(
+        tester,
+        extraOverrides: [rideRepositoryProvider.overrideWithValue(repository)],
+      );
+      await tester.tap(find.text('开始骑行'));
+      await settle(tester);
+      await tester.pump(const Duration(seconds: 4));
+      location.emitRide(count: 30, speedMps: 5);
+      await settle(tester);
+      final router = GoRouter.of(tester.element(find.byType(RideScreen)));
+
+      Future<void> drainSave() async {
+        for (var i = 0; i < 6; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)),
+          );
+          await settle(tester);
+        }
+      }
+
+      await tester.tap(find.text('结束'));
+      await settle(tester);
+      await tester.tap(find.text('结束').last);
+      await drainSave();
+
+      expect(repository.attempts, 1);
+      expect(
+        router.routerDelegate.currentConfiguration.last.matchedLocation,
+        AppRoutes.ride,
+      );
+      expect(find.text('保存失败，骑行已停止。请重试保存；不要关闭应用。'), findsOneWidget);
+      expect(find.text('重试保存'), findsOneWidget);
+      final checkpoint = await tester.runAsync(
+        () => database.activeRideDao.loadUnfinished(),
+      );
+      expect(checkpoint, isNotNull);
+
+      await tester.tap(find.text('重试保存'));
+      await drainSave();
+      final rides = await tester.runAsync(() => database.rideDao.getRides());
+      expect(repository.attempts, 2);
+      expect(rides, hasLength(1));
+      expect(
+        router.routeInformationProvider.value.uri.path,
+        AppRoutes.rideDetailFor(rides!.single.id),
+      );
+      expect(
+        await tester.runAsync(() => database.activeRideDao.loadUnfinished()),
+        isNull,
+      );
+      expect(find.text('重试保存'), findsNothing);
+      expect(tester.takeException(), isNull);
+
+      await shutdownApp(tester, database);
+      await location.dispose();
+    });
+
     testWidgets('the system back gesture asks instead of leaving silently', (
       tester,
     ) async {
@@ -636,9 +708,14 @@ void main() {
       tester,
     ) async {
       await seedCheckpoint(database);
-      await seedRide(database, id: 'unfinished', trackPoints: 0);
+      final ride = await seedRide(database, id: 'unfinished', trackPoints: 0);
 
-      final location = await pumpApp(tester);
+      final location = await pumpApp(
+        tester,
+        extraOverrides: [
+          selectedMonthProvider.overrideWith((ref) => ride.startedAt.toLocal()),
+        ],
+      );
 
       await tester.tap(find.text('结束并保存'));
 
@@ -665,6 +742,22 @@ void main() {
       await shutdownApp(tester, database);
     });
   });
+}
+
+class _FailOnceRideRepository extends RideRepository {
+  _FailOnceRideRepository(super.database);
+
+  int attempts = 0;
+
+  @override
+  Future<void> saveFinishedRide(
+    Ride ride, {
+    List<TrackPoint> unflushed = const [],
+  }) async {
+    attempts++;
+    if (attempts == 1) throw StateError('injected save failure');
+    await super.saveFinishedRide(ride, unflushed: unflushed);
+  }
 }
 
 /// Inserts the checkpoint a crash would leave behind.

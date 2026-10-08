@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:cycling_app/app/providers.dart';
 import 'package:cycling_app/core/database/database.dart';
@@ -19,6 +20,8 @@ import 'package:cycling_app/features/settings/data/settings_repository.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -35,6 +38,24 @@ import 'package:flutter_test/flutter_test.dart';
 ///
 /// The rest of the wiring is left real on purpose: the repositories, the
 /// providers, the router and the screens are the things under test.
+
+/// Gives map widgets a real, isolated cache without a path-provider plugin.
+/// Register once from the suite's main function. Creating and destroying the
+/// worker outside testWidgets keeps its I/O futures out of the fake clock.
+void useTestMapCache() {
+  late Directory directory;
+  late BuiltInMapCachingProvider cache;
+  setUpAll(() {
+    directory = Directory.systemTemp.createTempSync('cycling-map-test-');
+    cache = BuiltInMapCachingProvider.getOrCreateInstance(
+      cacheDirectory: directory.path,
+    );
+  });
+  tearDownAll(() async {
+    await cache.destroy();
+    if (directory.existsSync()) directory.deleteSync(recursive: true);
+  });
+}
 
 /// A location service that grants permission and answers from a stream the
 /// test controls.
@@ -200,6 +221,25 @@ List<Override> testOverrides({
   CompassSource? compass,
   MotionSource? motion,
 }) {
+  // Fullscreen and wakelock are device-only effects. The widget binding has
+  // no native implementation; explicitly acknowledge their calls just as the
+  // fake location and sensor sources replace the other platform boundaries.
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(
+    const MethodChannel('app.purecycling/ride_fullscreen'),
+    (call) async {
+      if (call.method != 'setImmersive') {
+        throw UnsupportedError('Unexpected fullscreen method: ${call.method}');
+      }
+      return null;
+    },
+  );
+  messenger.setMockMessageHandler(
+    'dev.flutter.pigeon.wakelock_plus_platform_interface.WakelockPlusApi.toggle',
+    (message) async =>
+        const StandardMessageCodec().encodeMessage(<Object?>[null]),
+  );
   return [
     databaseProvider.overrideWithValue(database),
     // The platform channel has no implementation under `flutter test`, and
@@ -250,6 +290,11 @@ List<Override> testOverrides({
 /// 600 ms covers both with room to spare.
 Future<void> settle(WidgetTester tester) async {
   for (var i = 0; i < 6; i++) {
+    // Stream cancellation can return Dart's shared, already-completed future
+    // from the root zone. Awaiting it queues work outside the widget test's
+    // fake clock (notably when handing GPS prewarm over to the recorder).
+    // Drain that real event loop as well; more fake time cannot complete it.
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump(const Duration(milliseconds: 100));
   }
 }

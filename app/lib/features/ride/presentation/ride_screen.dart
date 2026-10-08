@@ -12,6 +12,7 @@ import '../../../core/map/map_providers.dart';
 import '../../../core/system/ride_fullscreen.dart';
 import '../../../core/utils/units.dart';
 import '../../../shared/layout/handlebar.dart';
+import '../../../shared/widgets/error_notice.dart';
 import '../../../shared/widgets/pixel_shift.dart';
 import '../../../shared/widgets/standstill_dimmer.dart';
 import '../../dashboard/domain/dashboard_config.dart';
@@ -46,6 +47,8 @@ class _RideScreenState extends ConsumerState<RideScreen> {
   int _page = 0;
   bool _startingRide = false;
   bool _leavingAfterStop = false;
+  String? _saveError;
+  String? _discardError;
 
   @override
   void initState() {
@@ -221,7 +224,25 @@ class _RideScreenState extends ConsumerState<RideScreen> {
         // The countdown covers the whole screen while the first fix is being
         // acquired, so the rider gets a deliberate "3, 2, 1" rather than an app
         // that starts counting the instant the button is pressed.
-        bottomSheet: null,
+        bottomSheet: _saveError == null && _discardError == null
+            ? null
+            : SafeArea(
+                child: Container(
+                  color: AppColors.background,
+                  padding: const EdgeInsets.all(12),
+                  child: ErrorBanner(
+                    message: _discardError ?? _saveError!,
+                    retryLabel: _discardError == null ? '重试保存' : '重试放弃',
+                    onRetry: _leavingAfterStop
+                        ? null
+                        : () => unawaited(
+                            _discardError == null
+                                ? _saveAndLeave()
+                                : _discardAndLeave(),
+                          ),
+                  ),
+                ),
+              ),
         floatingActionButton: null,
       ),
     );
@@ -252,7 +273,8 @@ class _RideScreenState extends ConsumerState<RideScreen> {
   }
 
   Future<void> _confirmLeave(WidgetRef ref, RideState ride) async {
-    if (!ride.isRecording) {
+    if (_leavingAfterStop) return;
+    if (!ride.isRecording && _saveError == null && _discardError == null) {
       context.pop();
       return;
     }
@@ -265,15 +287,16 @@ class _RideScreenState extends ConsumerState<RideScreen> {
           children: [
             ListTile(
               leading: const Icon(Icons.play_arrow),
-              title: const Text('继续骑行'),
+              title: Text(ride.isRecording ? '继续骑行' : '留在此页'),
               onTap: () => Navigator.pop(context, _LeaveAction.stay),
             ),
-            ListTile(
-              leading: const Icon(Icons.save_outlined),
-              title: const Text('结束并保存'),
-              subtitle: const Text('已记录的数据会保留'),
-              onTap: () => Navigator.pop(context, _LeaveAction.save),
-            ),
+            if (_discardError == null)
+              ListTile(
+                leading: const Icon(Icons.save_outlined),
+                title: Text(_saveError == null ? '结束并保存' : '重试保存'),
+                subtitle: const Text('已记录的数据会保留'),
+                onTap: () => Navigator.pop(context, _LeaveAction.save),
+              ),
             ListTile(
               leading: const Icon(
                 Icons.delete_outline,
@@ -297,21 +320,14 @@ class _RideScreenState extends ConsumerState<RideScreen> {
       case _LeaveAction.stay:
         return;
       case _LeaveAction.save:
-        final saved = await ref.read(rideSessionProvider.notifier).stop();
-        if (mounted) {
-          context.go(
-            saved == null
-                ? AppRoutes.history
-                : AppRoutes.rideDetailFor(saved.id),
-          );
-        }
+        await _saveAndLeave();
       case _LeaveAction.discard:
-        await ref.read(rideSessionProvider.notifier).discard();
-        if (mounted) context.go(AppRoutes.home);
+        await _discardAndLeave();
     }
   }
 
   Future<void> _confirmStop(WidgetRef ref) async {
+    if (_leavingAfterStop) return;
     final ride = ref.read(rideSessionProvider).ride;
 
     // A ride under a minute with almost no distance is almost always a
@@ -342,18 +358,56 @@ class _RideScreenState extends ConsumerState<RideScreen> {
       ),
     );
 
-    if (confirmed != true || _leavingAfterStop) return;
-    _leavingAfterStop = true;
+    if (confirmed == true) await _saveAndLeave();
+  }
 
-    final saved = await ref.read(rideSessionProvider.notifier).stop();
-    if (!mounted) return;
-
-    if (saved == null) {
-      context.go(AppRoutes.home);
-      return;
+  Future<void> _saveAndLeave() async {
+    if (_leavingAfterStop || !mounted) return;
+    setState(() => _leavingAfterStop = true);
+    try {
+      final saved = await ref.read(rideSessionProvider.notifier).stop();
+      if (!mounted) return;
+      context.go(
+        saved == null ? AppRoutes.history : AppRoutes.rideDetailFor(saved.id),
+      );
+    } catch (error, stack) {
+      if (!mounted) return;
+      final message = ref
+          .read(failureReporterProvider)
+          .report(
+            'ride_save',
+            error,
+            stack: stack,
+            message: '保存失败，骑行已停止。请重试保存；不要关闭应用。',
+          );
+      setState(() {
+        _leavingAfterStop = false;
+        _saveError = message;
+      });
     }
+  }
 
-    context.go(AppRoutes.rideDetailFor(saved.id));
+  Future<void> _discardAndLeave() async {
+    if (_leavingAfterStop || !mounted) return;
+    setState(() => _leavingAfterStop = true);
+    try {
+      await ref.read(rideSessionProvider.notifier).discard();
+      if (mounted) context.go(AppRoutes.home);
+    } catch (error, stack) {
+      if (!mounted) return;
+      final message = ref
+          .read(failureReporterProvider)
+          .report(
+            'ride_discard',
+            error,
+            stack: stack,
+            message: '未能放弃这次骑行，数据仍保留。请重试。',
+          );
+      setState(() {
+        _leavingAfterStop = false;
+        _discardError = message;
+      });
+    }
   }
 
   static String _summaryLine(RideState ride, WidgetRef ref) {

@@ -1,11 +1,16 @@
 import 'dart:async';
 
 import 'package:cycling_app/core/database/database.dart';
+import 'package:cycling_app/core/database/dao/active_ride_dao.dart';
+import 'package:cycling_app/core/location/barometer_source.dart';
+import 'package:cycling_app/core/location/compass_source.dart';
 import 'package:cycling_app/core/location/location_service.dart';
+import 'package:cycling_app/core/location/motion_source.dart';
 import 'package:cycling_app/core/location/sampling_policy.dart';
 import 'package:cycling_app/core/sync/sync_status.dart';
 import 'package:cycling_app/features/ride/data/ride_recorder.dart';
 import 'package:cycling_app/features/ride/data/ride_repository.dart';
+import 'package:cycling_app/features/ride/domain/ride_engine.dart';
 import 'package:cycling_app/features/sensors/domain/sensor.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -126,6 +131,273 @@ void main() {
       isNull,
       reason: 'a cleanly finished ride must not be offered for recovery',
     );
+
+    await recorder.dispose();
+    await location.dispose();
+  });
+
+  test(
+    'a failed final commit keeps recovery and can be retried without duplicates',
+    () async {
+      final location = FakeLocationService();
+      final readings = StreamController<SensorReading>.broadcast();
+      final recorder = buildRecorder(location, readings: readings.stream);
+      await recorder.startRide(const AppSettings());
+      await recorder.beginRecording();
+      location.emitRide(count: 35, speedMps: 5);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final distance = recorder.state.stats.distanceMeters;
+      final pointCount = recorder.state.acceptedPointCount;
+
+      // Fail after the ride row has been updated inside the final transaction.
+      await database.customStatement('''
+      CREATE TRIGGER fail_final_outbox BEFORE INSERT ON sync_queue_items
+      BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END
+    ''');
+      await expectLater(recorder.stopRide(name: '晨骑'), throwsA(anything));
+
+      final recovery = await recorder.findUnfinishedRide();
+      expect(recovery, isNotNull);
+      expect(recovery!.distanceMeters, distance);
+      expect(recovery.lastSequence, pointCount);
+      final incomplete = await database.rideDao.getRide(recovery.rideId);
+      expect(
+        incomplete!.endedAt,
+        isNull,
+        reason: 'the summary update rolls back',
+      );
+      expect(await database.syncQueueDao.pendingCount(), 0);
+      final relaunchedLocation = FakeLocationService();
+      final relaunched = buildRecorder(relaunchedLocation);
+      final durableRecovery = await relaunched.findUnfinishedRide();
+      expect(durableRecovery!.rideId, recovery.rideId);
+      expect(durableRecovery.lastSequence, pointCount);
+      expect(durableRecovery.distanceMeters, distance);
+      await relaunched.dispose();
+      await relaunchedLocation.dispose();
+      expect(
+        readings.hasListener,
+        isFalse,
+        reason: 'failed saving must still stop sensor work',
+      );
+      await expectLater(
+        recorder.startRide(const AppSettings()),
+        throwsStateError,
+      );
+
+      await database.customStatement('DROP TRIGGER fail_final_outbox');
+      // Double-tapping retry shares a single commit and the same frozen result.
+      final attempts = await Future.wait([
+        recorder.stopRide(),
+        recorder.stopRide(),
+      ]);
+      expect(attempts[0]!.endedAt, attempts[1]!.endedAt);
+      expect(attempts[0]!.stats.distanceMeters, distance);
+      expect(attempts[0]!.name, '晨骑', reason: 'retry keeps the requested name');
+      final points = await database.rideDao.getTrackPoints(recovery.rideId);
+      expect(points, hasLength(pointCount));
+      expect(points.map((p) => p.sequence).toSet(), hasLength(pointCount));
+      expect(await database.syncQueueDao.pendingCount(), 1);
+      expect(await recorder.findUnfinishedRide(), isNull);
+
+      await recorder.dispose();
+      await readings.close();
+      await location.dispose();
+    },
+  );
+
+  test('a failed point flush cannot advance the recovery checkpoint', () async {
+    final location = FakeLocationService();
+    final recorder = buildRecorder(location);
+    await recorder.startRide(const AppSettings());
+    await recorder.beginRecording();
+    await database.customStatement('''
+      CREATE TRIGGER fail_trace_write BEFORE INSERT ON track_points
+      BEGIN SELECT RAISE(ABORT, 'injected trace failure'); END
+    ''');
+    location.emitRide(count: 5, speedMps: 5);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final expected = recorder.state.acceptedPointCount;
+
+    await expectLater(recorder.saveCheckpointNow(), throwsA(anything));
+    expect(await recorder.findUnfinishedRide(), isNull);
+    await expectLater(recorder.stopRide(), throwsA(anything));
+    expect(await recorder.findUnfinishedRide(), isNull);
+    await database.customStatement('DROP TRIGGER fail_trace_write');
+    final saved = await recorder.stopRide();
+    expect(
+      await database.rideDao.getTrackPoints(saved!.id),
+      hasLength(expected),
+      reason: 'the failed batch was retained for retry',
+    );
+    expect(await recorder.findUnfinishedRide(), isNull);
+
+    await recorder.dispose();
+    await location.dispose();
+  });
+
+  test(
+    'a failed final checkpoint save preserves previous recovery and retries',
+    () async {
+      final location = FakeLocationService();
+      final recorder = buildRecorder(location);
+      await recorder.startRide(const AppSettings());
+      await recorder.beginRecording();
+      location.emitRide(count: 5, speedMps: 5);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await recorder.saveCheckpointNow();
+      final before = await recorder.findUnfinishedRide();
+      await database.customStatement('''
+      CREATE TRIGGER fail_checkpoint BEFORE INSERT ON active_ride_checkpoints
+      BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END
+    ''');
+
+      await expectLater(recorder.stopRide(), throwsA(anything));
+      final recovery = await recorder.findUnfinishedRide();
+      expect(recovery!.rideId, before!.rideId);
+      expect(recovery.lastSequence, before.lastSequence);
+      expect((await database.rideDao.getRide(before.rideId))!.endedAt, isNull);
+
+      await database.customStatement('DROP TRIGGER fail_checkpoint');
+      final saved = await recorder.stopRide();
+      expect(saved!.id, before.rideId);
+      expect(
+        await database.rideDao.getTrackPoints(saved.id),
+        hasLength(before.lastSequence),
+      );
+      expect(await recorder.findUnfinishedRide(), isNull);
+      await recorder.dispose();
+      await location.dispose();
+    },
+  );
+
+  test('an in-flight checkpoint cannot reappear after a clean stop', () async {
+    final location = FakeLocationService();
+    final checkpoints = _BlockingCheckpointDao(database);
+    final recorder = RideRecorder(
+      db: database,
+      repository: RideRepository(database),
+      locationService: location,
+      activeRideDao: checkpoints,
+    );
+    await recorder.startRide(const AppSettings());
+    await recorder.beginRecording();
+    location.emitRide(count: 5, speedMps: 5);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    checkpoints.blockNext = true;
+    final checkpoint = recorder.saveCheckpointNow();
+    await checkpoints.entered.future;
+    final stopping = recorder.stopRide();
+    checkpoints.release.complete();
+    await checkpoint;
+    await stopping;
+
+    expect(await recorder.findUnfinishedRide(), isNull);
+    expect(await database.syncQueueDao.pendingCount(), 1);
+    await recorder.dispose();
+    await location.dispose();
+  });
+
+  test(
+    'discard racing a successful stop cannot delete the saved ride',
+    () async {
+      final location = FakeLocationService();
+      final checkpoints = _BlockingCheckpointDao(database);
+      final recorder = RideRecorder(
+        db: database,
+        repository: RideRepository(database),
+        locationService: location,
+        activeRideDao: checkpoints,
+      );
+      await recorder.startRide(const AppSettings());
+      await recorder.beginRecording();
+      location.emitRide(count: 5, speedMps: 5);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      checkpoints.blockNext = true;
+      final stopping = recorder.stopRide();
+      await checkpoints.entered.future;
+      final discarding = recorder.discardRide();
+      checkpoints.release.complete();
+      final saved = await stopping;
+      await discarding;
+
+      expect(await database.rideDao.getRide(saved!.id), isNotNull);
+      expect(await database.rideDao.getTrackPoints(saved.id), isNotEmpty);
+      expect(await database.syncQueueDao.pendingCount(), 1);
+      await recorder.dispose();
+      await location.dispose();
+    },
+  );
+
+  for (final discard in [false, true]) {
+    test(
+      '${discard ? 'discard' : 'stop'} releases every ride sensor subscription',
+      () async {
+        final location = FakeLocationService();
+        final readings = StreamController<SensorReading>.broadcast();
+        final barometer = _ListeningBarometer();
+        final compass = _ListeningCompass();
+        final motion = _ListeningMotion();
+        final recorder = RideRecorder(
+          db: database,
+          repository: RideRepository(database),
+          locationService: location,
+          sensorReadings: readings.stream,
+          barometer: barometer,
+          compass: compass,
+          motion: motion,
+        );
+        await recorder.startRide(const AppSettings());
+        await recorder.beginRecording();
+        expect(readings.hasListener, isTrue);
+        expect(barometer.controller.hasListener, isTrue);
+        expect(compass.controller.hasListener, isTrue);
+        expect(motion.controller.hasListener, isTrue);
+        if (discard) {
+          await recorder.discardRide();
+        } else {
+          await recorder.stopRide();
+        }
+        expect(readings.hasListener, isFalse);
+        expect(barometer.controller.hasListener, isFalse);
+        expect(compass.controller.hasListener, isFalse);
+        expect(motion.controller.hasListener, isFalse);
+
+        await recorder.dispose();
+        await readings.close();
+        await barometer.controller.close();
+        await compass.controller.close();
+        await motion.controller.close();
+        await location.dispose();
+      },
+    );
+  }
+
+  test('a failed discard retries the original ride after the engine is cleared',
+      () async {
+    final location = FakeLocationService();
+    final recorder = buildRecorder(location);
+    await recorder.startRide(const AppSettings());
+    await recorder.beginRecording();
+    location.emitRide(count: 5, speedMps: 5);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await recorder.saveCheckpointNow();
+    final checkpoint = await recorder.findUnfinishedRide();
+    await database.customStatement('''
+      CREATE TRIGGER fail_discard BEFORE DELETE ON local_rides
+      BEGIN SELECT RAISE(ABORT, 'injected discard failure'); END
+    ''');
+
+    await expectLater(recorder.discardRide(), throwsA(anything));
+    expect(await recorder.findUnfinishedRide(), isNotNull);
+    expect(await database.rideDao.getRide(checkpoint!.rideId), isNotNull);
+    await expectLater(recorder.stopRide(), throwsStateError);
+    await database.customStatement('DROP TRIGGER fail_discard');
+    await recorder.discardRide();
+    expect(await database.rideDao.getRide(checkpoint.rideId), isNull);
+    expect(await database.rideDao.getTrackPoints(checkpoint.rideId), isEmpty);
+    expect(await recorder.findUnfinishedRide(), isNull);
 
     await recorder.dispose();
     await location.dispose();
@@ -506,4 +778,46 @@ void main() {
     await recorder.dispose();
     await location.dispose();
   });
+}
+
+class _BlockingCheckpointDao extends ActiveRideDao {
+  _BlockingCheckpointDao(super.db);
+
+  bool blockNext = false;
+  final entered = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<void> save(RideCheckpoint checkpoint) async {
+    if (blockNext) {
+      blockNext = false;
+      entered.complete();
+      await release.future;
+    }
+    await super.save(checkpoint);
+  }
+}
+
+class _ListeningBarometer implements BarometerSource {
+  final controller = StreamController<BarometerSample>.broadcast();
+  @override
+  Future<bool> isAvailable() async => true;
+  @override
+  Stream<BarometerSample> samples() => controller.stream;
+}
+
+class _ListeningCompass implements CompassSource {
+  final controller = StreamController<CompassSample>.broadcast();
+  @override
+  Future<bool> isAvailable() async => true;
+  @override
+  Stream<CompassSample> samples() => controller.stream;
+}
+
+class _ListeningMotion implements MotionSource {
+  final controller = StreamController<MotionSample>.broadcast();
+  @override
+  Future<bool> isAvailable() async => true;
+  @override
+  Stream<MotionSample> samples() => controller.stream;
 }

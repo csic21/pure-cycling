@@ -50,9 +50,15 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
   Future<void> enqueue(
     SyncEntityType type,
     String entityId,
-    SyncOperation operation,
-  ) async {
+    SyncOperation operation, {
+    bool resetExisting = true,
+  }) async {
     final now = DateTime.now().toUtc();
+    final target = [
+      syncQueueItems.entityType,
+      syncQueueItems.entityId,
+      syncQueueItems.operation,
+    ];
     await into(syncQueueItems).insert(
       SyncQueueItemsCompanion.insert(
         entityType: type.id,
@@ -60,19 +66,19 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
         operation: operation.id,
         createdAt: now,
       ),
-      onConflict: DoUpdate(
-        (old) => SyncQueueItemsCompanion(
-          createdAt: Value(now),
-          retryCount: const Value(0),
-          nextAttemptAt: const Value(null),
-          lastError: const Value(null),
-        ),
-        target: [
-          syncQueueItems.entityType,
-          syncQueueItems.entityId,
-          syncQueueItems.operation,
-        ],
-      ),
+      // Reconciliation discovers work; it is not a new user edit. Preserve an
+      // existing entry's retry schedule and error when requested by the pull.
+      onConflict: resetExisting
+          ? DoUpdate(
+              (old) => SyncQueueItemsCompanion(
+                createdAt: Value(now),
+                retryCount: const Value(0),
+                nextAttemptAt: const Value(null),
+                lastError: const Value(null),
+              ),
+              target: target,
+            )
+          : DoNothing(target: target),
     );
   }
 
@@ -80,8 +86,11 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
   Future<List<PendingSyncItem>> due({int limit = 10}) async {
     final now = DateTime.now().toUtc();
     final query = select(syncQueueItems)
-      ..where((t) =>
-          t.nextAttemptAt.isNull() | t.nextAttemptAt.isSmallerOrEqualValue(now))
+      ..where(
+        (t) =>
+            t.nextAttemptAt.isNull() |
+            t.nextAttemptAt.isSmallerOrEqualValue(now),
+      )
       ..orderBy([(t) => OrderingTerm.asc(t.createdAt)])
       ..limit(limit);
     final rows = await query.get();
@@ -127,8 +136,9 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
       SyncQueueItemsCompanion(
         retryCount: Value(retry),
         lastError: Value(error.length > 500 ? error.substring(0, 500) : error),
-        nextAttemptAt:
-            Value(DateTime.now().toUtc().add(Duration(seconds: backoffSeconds))),
+        nextAttemptAt: Value(
+          DateTime.now().toUtc().add(Duration(seconds: backoffSeconds)),
+        ),
       ),
     );
   }
@@ -155,11 +165,11 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
   }
 
   PendingSyncItem _toItem(SyncQueueRow row) => PendingSyncItem(
-        id: row.id,
-        entityType: SyncEntityType.fromId(row.entityType),
-        entityId: row.entityId,
-        operation: SyncOperation.fromId(row.operation),
-        retryCount: row.retryCount,
-        lastError: row.lastError,
-      );
+    id: row.id,
+    entityType: SyncEntityType.fromId(row.entityType),
+    entityId: row.entityId,
+    operation: SyncOperation.fromId(row.operation),
+    retryCount: row.retryCount,
+    lastError: row.lastError,
+  );
 }

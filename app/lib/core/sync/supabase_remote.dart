@@ -23,7 +23,15 @@ class RemoteRide {
     this.distanceMeters = 0,
     this.elapsedSeconds = 0,
     this.movingSeconds = 0,
+    this.avgSpeedMps = 0,
+    this.maxSpeedMps = 0,
+    this.elevationGainMeters = 0,
+    this.elevationLossMeters = 0,
+    this.startPoint,
+    this.endPoint,
     this.gpxPath,
+    this.fitPath,
+    this.createdAt,
     this.deletedAt,
     this.syncVersion = 1,
   });
@@ -41,30 +49,54 @@ class RemoteRide {
   final double distanceMeters;
   final int elapsedSeconds;
   final int movingSeconds;
+  final double avgSpeedMps;
+  final double maxSpeedMps;
+  final double elevationGainMeters;
+  final double elevationLossMeters;
+  final GeoPoint? startPoint;
+  final GeoPoint? endPoint;
   final String? gpxPath;
+  final String? fitPath;
+  final DateTime? createdAt;
   final DateTime? deletedAt;
   final int syncVersion;
 
   bool get isDeleted => deletedAt != null;
 
   static RemoteRide fromRow(Map<String, dynamic> row) => RemoteRide(
-        id: row['id'] as String,
-        startedAt: DateTime.parse(row['started_at'] as String).toUtc(),
-        updatedAt: DateTime.parse(row['updated_at'] as String).toUtc(),
-        endedAt: row['ended_at'] == null
-            ? null
-            : DateTime.parse(row['ended_at'] as String).toUtc(),
-        name: row['name'] as String?,
-        notes: row['notes'] as String?,
-        distanceMeters: (row['distance_meters'] as num?)?.toDouble() ?? 0,
-        elapsedSeconds: (row['elapsed_seconds'] as num?)?.toInt() ?? 0,
-        movingSeconds: (row['moving_seconds'] as num?)?.toInt() ?? 0,
-        gpxPath: row['gpx_path'] as String?,
-        deletedAt: row['deleted_at'] == null
-            ? null
-            : DateTime.parse(row['deleted_at'] as String).toUtc(),
-        syncVersion: (row['sync_version'] as num?)?.toInt() ?? 1,
-      );
+    id: row['id'] as String,
+    startedAt: DateTime.parse(row['started_at'] as String).toUtc(),
+    updatedAt: DateTime.parse(row['updated_at'] as String).toUtc(),
+    endedAt: row['ended_at'] == null
+        ? null
+        : DateTime.parse(row['ended_at'] as String).toUtc(),
+    name: row['name'] as String?,
+    notes: row['notes'] as String?,
+    distanceMeters: (row['distance_meters'] as num?)?.toDouble() ?? 0,
+    elapsedSeconds: (row['elapsed_seconds'] as num?)?.toInt() ?? 0,
+    movingSeconds: (row['moving_seconds'] as num?)?.toInt() ?? 0,
+    avgSpeedMps: (row['avg_speed_mps'] as num?)?.toDouble() ?? 0,
+    maxSpeedMps: (row['max_speed_mps'] as num?)?.toDouble() ?? 0,
+    elevationGainMeters:
+        (row['elevation_gain_meters'] as num?)?.toDouble() ?? 0,
+    elevationLossMeters:
+        (row['elevation_loss_meters'] as num?)?.toDouble() ?? 0,
+    startPoint: _point(row['start_lat'], row['start_lng']),
+    endPoint: _point(row['end_lat'], row['end_lng']),
+    gpxPath: row['gpx_path'] as String?,
+    fitPath: row['fit_path'] as String?,
+    createdAt: row['created_at'] == null
+        ? null
+        : DateTime.parse(row['created_at'] as String).toUtc(),
+    deletedAt: row['deleted_at'] == null
+        ? null
+        : DateTime.parse(row['deleted_at'] as String).toUtc(),
+    syncVersion: (row['sync_version'] as num?)?.toInt() ?? 1,
+  );
+
+  static GeoPoint? _point(dynamic lat, dynamic lng) => lat is num && lng is num
+      ? GeoPoint(lat.toDouble(), lng.toDouble())
+      : null;
 }
 
 /// Cloud access: Postgres over PostgREST, and file storage.
@@ -96,7 +128,9 @@ class SupabaseRemote {
     }
 
     final objectPath = SupabaseConfig.gpxPath(userId, rideId);
-    await _client.storage.from(SupabaseConfig.gpxBucket).upload(
+    await _client.storage
+        .from(SupabaseConfig.gpxBucket)
+        .upload(
           objectPath,
           file,
           fileOptions: const FileOptions(
@@ -113,8 +147,9 @@ class SupabaseRemote {
   /// Downloads a ride's GPX, or null when no object exists.
   Future<String?> downloadGpx(String objectPath) async {
     try {
-      final bytes =
-          await _client.storage.from(SupabaseConfig.gpxBucket).download(objectPath);
+      final bytes = await _client.storage
+          .from(SupabaseConfig.gpxBucket)
+          .download(objectPath);
       return String.fromCharCodes(bytes);
     } on StorageException {
       // A missing object is a normal state for a ride uploaded before the
@@ -124,13 +159,9 @@ class SupabaseRemote {
   }
 
   Future<void> deleteGpx(String objectPath) async {
-    try {
-      await _client.storage
-          .from(SupabaseConfig.gpxBucket)
-          .remove([objectPath]);
-    } on StorageException {
-      // Already gone, or never uploaded. Not worth failing a sync over.
-    }
+    // Storage returns an empty result for an already absent object. Genuine
+    // failures must keep the outbox entry so the private trace is retried.
+    await _client.storage.from(SupabaseConfig.gpxBucket).remove([objectPath]);
   }
 
   /// Every GPX object path this account references.
@@ -140,15 +171,22 @@ class SupabaseRemote {
   /// Storage after a "delete my cloud data" is precisely the failure that
   /// action must not have.
   Future<List<String>> listGpxPaths() async {
-    final rows = await _client
-        .from('rides')
-        .select('gpx_path')
-        .eq('user_id', userId)
-        .not('gpx_path', 'is', null);
-    return [
-      for (final row in rows)
-        if (row['gpx_path'] is String) row['gpx_path'] as String,
-    ];
+    final paths = <String>[];
+    const pageSize = 500;
+    for (var offset = 0; ; offset += pageSize) {
+      final rows = await _client
+          .from('rides')
+          .select('gpx_path')
+          .eq('user_id', userId)
+          .not('gpx_path', 'is', null)
+          .order('id', ascending: true)
+          .range(offset, offset + pageSize - 1);
+      paths.addAll([
+        for (final row in rows)
+          if (row['gpx_path'] is String) row['gpx_path'] as String,
+      ]);
+      if (rows.length < pageSize) return paths;
+    }
   }
 
   /// Removes objects in chunks — the Storage API takes a list per call.
@@ -160,14 +198,10 @@ class SupabaseRemote {
     for (var i = 0; i < paths.length; i += chunk) {
       final end = i + chunk < paths.length ? i + chunk : paths.length;
       final slice = paths.sublist(i, end);
-      try {
-        await _client.storage
-            .from(SupabaseConfig.gpxBucket)
-            .remove(slice);
-        removed += slice.length;
-      } on StorageException {
-        // Keep going; the rest of the list still has to go.
-      }
+      final deleted = await _client.storage
+          .from(SupabaseConfig.gpxBucket)
+          .remove(slice);
+      removed += deleted.length;
     }
     return removed;
   }
@@ -217,7 +251,11 @@ class SupabaseRemote {
       'start_lng': ride.startPoint?.lng,
       'end_lat': ride.endPoint?.lat,
       'end_lng': ride.endPoint?.lng,
-      'gpx_path': ride.gpxPath,
+      // Local exports share the model field, but a filesystem path must never
+      // replace the Storage object reference in the cloud.
+      'gpx_path': ride.gpxPath == SupabaseConfig.gpxPath(userId, ride.id)
+          ? ride.gpxPath
+          : null,
       'fit_path': ride.fitPath,
       'sync_version': ride.syncVersion,
       'deleted_at': ride.deletedAt?.toUtc().toIso8601String(),
@@ -229,10 +267,7 @@ class SupabaseRemote {
         'route_geometry': _wktToGeoJson(ride.routeGeometryWkt!),
     };
 
-    await _client.rpc<dynamic>(
-      'push_ride',
-      params: {'p_ride': payload},
-    );
+    await _client.rpc<dynamic>('push_ride', params: {'p_ride': payload});
   }
 
   Future<void> pushRoute(Route route) async {
@@ -260,83 +295,83 @@ class SupabaseRemote {
     await _client.rpc<dynamic>('push_route', params: {'p_route': payload});
   }
 
-  /// Rides changed since [since], newest first.
+  /// All ride summaries, including tombstones, in deterministic pages.
   ///
-  /// [since] null fetches everything — the first sync on a new device.
-  Future<List<RemoteRide>> fetchRides({DateTime? since, int limit = 500}) async {
-    var query = _client.from('rides').select(
-          'id, started_at, ended_at, updated_at, name, distance_meters, '
-          'elapsed_seconds, moving_seconds, gpx_path, deleted_at, sync_version',
-        );
-
-    if (since != null) {
-      query = query.gt('updated_at', since.toUtc().toIso8601String());
-    }
-
-    final rows = await query
-        .order('updated_at', ascending: false)
-        .limit(limit);
+  /// updated_at is an offline client's edit time, not a server arrival time.
+  /// It cannot safely serve as an incremental cursor: an old offline edit can
+  /// arrive after a newer pull. Read every summary until a server change feed
+  /// exists; full-resolution GPX traces are still downloaded only on demand.
+  Future<List<RemoteRide>> fetchRides() async {
+    final rows = await _fetchAllRows(
+      'rides',
+      'id, started_at, ended_at, created_at, updated_at, name, notes, '
+          'distance_meters, elapsed_seconds, moving_seconds, avg_speed_mps, '
+          'max_speed_mps, elevation_gain_meters, elevation_loss_meters, '
+          'start_lat, start_lng, end_lat, end_lng, '
+          'gpx_path, fit_path, deleted_at, sync_version',
+    );
 
     return rows.map(RemoteRide.fromRow).toList(growable: false);
   }
 
-  /// Deleted rides, including tombstones, so a local delete converges.
-  Future<List<RemoteRide>> fetchDeletedRides({DateTime? since}) async {
-    var query = _client
-        .from('rides')
-        .select('id, started_at, updated_at, deleted_at, sync_version')
-        .not('deleted_at', 'is', null);
-
-    if (since != null) {
-      query = query.gt('updated_at', since.toUtc().toIso8601String());
-    }
-
-    final rows = await query.limit(1000);
-    return rows.map(RemoteRide.fromRow).toList(growable: false);
-  }
-
-  Future<List<Route>> fetchRoutes({DateTime? since}) async {
-    var query = _client.from('routes').select(
-          'id, name, distance_meters, estimated_seconds, '
+  Future<List<Route>> fetchRoutes() async {
+    final rows = await _fetchAllRows(
+      'routes',
+      'id, name, distance_meters, estimated_seconds, '
           'elevation_gain_meters, provider, provider_route_id, '
           'route_geometry, deleted_at, created_at, updated_at',
-        );
+    );
 
-    if (since != null) {
-      query = query.gt('updated_at', since.toUtc().toIso8601String());
+    return rows
+        .map((row) {
+          final geometry = row['route_geometry'];
+          final points = <GeoPoint>[];
+          if (geometry is Map<String, dynamic>) {
+            points.addAll(_geoJsonToPoints(geometry));
+          }
+
+          return Route(
+            id: row['id'] as String,
+            name: row['name'] as String? ?? '路线',
+            points: points,
+            distanceMeters: (row['distance_meters'] as num?)?.toDouble() ?? 0,
+            estimatedDuration: Duration(
+              seconds: (row['estimated_seconds'] as num?)?.toInt() ?? 0,
+            ),
+            elevationGainMeters: (row['elevation_gain_meters'] as num?)
+                ?.toDouble(),
+            provider: row['provider'] as String? ?? 'amap',
+            providerRouteId: row['provider_route_id'] as String?,
+            createdAt: row['created_at'] == null
+                ? null
+                : DateTime.parse(row['created_at'] as String).toUtc(),
+            updatedAt: row['updated_at'] == null
+                ? null
+                : DateTime.parse(row['updated_at'] as String).toUtc(),
+            deletedAt: row['deleted_at'] == null
+                ? null
+                : DateTime.parse(row['deleted_at'] as String).toUtc(),
+          );
+        })
+        .toList(growable: false);
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchAllRows(
+    String table,
+    String columns,
+  ) async {
+    final result = <Map<String, dynamic>>[];
+    const pageSize = 500;
+    for (var offset = 0; ; offset += pageSize) {
+      final rows = await _client
+          .from(table)
+          .select(columns)
+          .eq('user_id', userId)
+          .order('id', ascending: true)
+          .range(offset, offset + pageSize - 1);
+      result.addAll(rows);
+      if (rows.length < pageSize) return result;
     }
-
-    final rows = await query.limit(500);
-
-    return rows.map((row) {
-      final geometry = row['route_geometry'];
-      final points = <GeoPoint>[];
-      if (geometry is Map<String, dynamic>) {
-        points.addAll(_geoJsonToPoints(geometry));
-      }
-
-      return Route(
-        id: row['id'] as String,
-        name: row['name'] as String? ?? '路线',
-        points: points,
-        distanceMeters: (row['distance_meters'] as num?)?.toDouble() ?? 0,
-        estimatedDuration:
-            Duration(seconds: (row['estimated_seconds'] as num?)?.toInt() ?? 0),
-        elevationGainMeters:
-            (row['elevation_gain_meters'] as num?)?.toDouble(),
-        provider: row['provider'] as String? ?? 'amap',
-        providerRouteId: row['provider_route_id'] as String?,
-        createdAt: row['created_at'] == null
-            ? null
-            : DateTime.parse(row['created_at'] as String).toUtc(),
-        updatedAt: row['updated_at'] == null
-            ? null
-            : DateTime.parse(row['updated_at'] as String).toUtc(),
-        deletedAt: row['deleted_at'] == null
-            ? null
-            : DateTime.parse(row['deleted_at'] as String).toUtc(),
-      );
-    }).toList(growable: false);
   }
 
   Future<void> pushSettings(AppSettings settings) async {

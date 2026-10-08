@@ -29,6 +29,7 @@ import 'support/test_harness.dart';
 /// and the location plugin are substituted, because neither exists in a test
 /// binding.
 void main() {
+  useTestMapCache();
   late AppDatabase database;
 
   setUp(() => database = openTestDatabase());
@@ -295,8 +296,15 @@ void main() {
     testWidgets('a recorded ride reaches the list and the month total', (
       tester,
     ) async {
-      await seedRide(database);
-      await pumpApp(tester);
+      final ride = await seedRide(database);
+      // The fixture is deliberately dated; select its month so the test also
+      // exercises the summary after the real calendar moves to another month.
+      await pumpApp(
+        tester,
+        extraOverrides: [
+          selectedMonthProvider.overrideWith((ref) => ride.startedAt.toLocal()),
+        ],
+      );
 
       // 23820 m is 23.82 km.
       // Shown twice: the month total and the most-recent ride row.

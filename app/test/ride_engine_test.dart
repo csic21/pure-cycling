@@ -194,6 +194,220 @@ void main() {
       });
     });
 
+    test('preparation warms GPS without recording movement or ride totals', () {
+      withRide((advance, clock, starve) {
+        final points = <TrackPoint>[];
+        final engine = RideEngine(
+          config: const RideEngineConfig(
+            preparingTimeout: Duration(minutes: 1),
+          ),
+          now: clock,
+          onTrackPoint: points.add,
+        );
+        engine.start();
+        var travelled = ride(advance, clock, engine, 10, 10, altitude: 50);
+        engine.onBarometricAltitude(0, at: clock());
+        engine.onBarometricAltitude(50, at: clock());
+        engine.onSensorReading(
+          SensorReading(
+            type: SensorType.heartRate,
+            value: 200,
+            timestamp: clock(),
+          ),
+        );
+
+        expect(engine.state.status, RideStatus.preparing);
+        expect(engine.state.lastPoint, isNotNull);
+        expect(engine.state.gpsAccuracyMeters, 4);
+        expect(points, isEmpty);
+        expect(engine.state.acceptedPointCount, 0);
+        expect(engine.state.stats.distanceMeters, 0);
+        expect(engine.state.stats.maxSpeedMps, 0);
+        expect(engine.state.stats.elevationGainMeters, 0);
+        expect(engine.state.stats.avgHeartRate, isNull);
+
+        engine.beginRecording();
+        travelled = ride(
+          advance,
+          clock,
+          engine,
+          5,
+          1,
+          alreadyTravelled: travelled,
+          altitude: 50,
+        );
+        expect(points, hasLength(1));
+        expect(engine.state.stats.distanceMeters, 0);
+        final firstRecorded = points.single.geo;
+        ride(advance, clock, engine, 5, 8, alreadyTravelled: travelled);
+        expect(engine.state.stats.distanceMeters, inExclusiveRange(20, 50));
+        Ride? saved;
+        engine.stop().then((value) => saved = value);
+        advance(Duration.zero);
+        expect(saved!.startPoint, firstRecorded);
+        engine.dispose();
+      });
+    });
+
+    test('manual pause keeps live fixes but freezes recorded movement', () {
+      withRide((advance, clock, starve) {
+        final points = <TrackPoint>[];
+        final engine = startRiding(clock: clock, points: points);
+        var travelled = ride(advance, clock, engine, 5, 10, altitude: 50);
+        engine.onSensorReading(
+          SensorReading(
+            type: SensorType.heartRate,
+            value: 120,
+            timestamp: clock(),
+          ),
+        );
+        engine.onBarometricAltitude(0, at: clock());
+        engine.pause();
+        final before = engine.state.stats;
+        final count = points.length;
+        final endpoint = points.last.geo;
+
+        travelled = ride(
+          advance,
+          clock,
+          engine,
+          10,
+          30,
+          alreadyTravelled: travelled,
+          altitude: 150,
+        );
+        engine.onBarometricAltitude(100, at: clock());
+        engine.onSensorReading(
+          SensorReading(type: SensorType.speed, value: 72, timestamp: clock()),
+        );
+        engine.onSensorReading(
+          SensorReading(
+            type: SensorType.heartRate,
+            value: 240,
+            timestamp: clock(),
+          ),
+        );
+        advance(const Duration(seconds: 1));
+
+        expect(engine.state.status, RideStatus.paused);
+        expect(points, hasLength(count));
+        expect(engine.state.acceptedPointCount, count);
+        expect(engine.state.stats.currentSpeedMps, 0);
+        expect(engine.state.stats.distanceMeters, before.distanceMeters);
+        expect(engine.state.stats.maxSpeedMps, before.maxSpeedMps);
+        expect(engine.state.stats.moving, before.moving);
+        expect(
+          engine.state.stats.elevationGainMeters,
+          before.elevationGainMeters,
+        );
+        expect(
+          engine.state.stats.elevationLossMeters,
+          before.elevationLossMeters,
+        );
+        expect(engine.state.stats.avgHeartRate, 120);
+        expect(engine.state.lastPoint, isNot(endpoint));
+        expect(engine.buildCheckpoint().lastLat, endpoint.lat);
+        expect(engine.buildCheckpoint().lastLng, endpoint.lng);
+
+        engine.resume();
+        travelled = ride(
+          advance,
+          clock,
+          engine,
+          5,
+          1,
+          alreadyTravelled: travelled,
+        );
+        expect(engine.state.stats.distanceMeters, before.distanceMeters);
+        ride(advance, clock, engine, 5, 8, alreadyTravelled: travelled);
+        expect(
+          engine.state.stats.distanceMeters,
+          greaterThan(before.distanceMeters),
+        );
+        expect(
+          engine.state.stats.distanceMeters,
+          lessThan(before.distanceMeters + 50),
+        );
+        engine.dispose();
+      });
+    });
+
+    test('resume cannot bridge a pause without location updates', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        final travelled = ride(advance, clock, engine, 5, 10);
+        engine.pause();
+        final before = engine.state.stats.distanceMeters;
+        advance(const Duration(minutes: 2));
+        engine.resume();
+
+        // 300 m in two minutes is plausible to the GPS filter, but all of it
+        // happened while recording was paused and must still be excluded.
+        var resumed = ride(
+          advance,
+          clock,
+          engine,
+          5,
+          1,
+          alreadyTravelled: travelled + 300,
+        );
+        expect(engine.state.stats.distanceMeters, before);
+        resumed = ride(
+          advance,
+          clock,
+          engine,
+          5,
+          10,
+          alreadyTravelled: resumed,
+        );
+        expect(engine.state.stats.distanceMeters, greaterThan(before));
+        expect(engine.state.stats.distanceMeters, lessThan(before + 60));
+        engine.dispose();
+      });
+    });
+
+    test('barometric climbing resumes even before GPS returns', () {
+      withRide((advance, clock, starve) {
+        final engine = startRiding(clock: clock);
+        ride(advance, clock, engine, 5, 3, altitude: 50);
+        engine.onBarometricAltitude(0, at: clock());
+        engine.pause();
+        for (var i = 0; i < 20; i++) {
+          advance(const Duration(seconds: 1));
+          engine.onBarometricAltitude(100, at: clock());
+        }
+        engine.resume();
+        engine.onBarometricAltitude(100, at: clock());
+        final before = engine.state.stats.elevationGainMeters;
+        for (var i = 1; i <= 20; i++) {
+          advance(const Duration(seconds: 1));
+          engine.onBarometricAltitude(100 + i * 2.0, at: clock());
+        }
+        advance(const Duration(seconds: 1));
+        expect(
+          engine.state.stats.elevationGainMeters,
+          greaterThan(before + 20),
+        );
+        engine.dispose();
+      });
+    });
+
+    test('saving while paused keeps the last recorded endpoint', () {
+      withRide((advance, clock, starve) {
+        final points = <TrackPoint>[];
+        final engine = startRiding(clock: clock, points: points);
+        final travelled = ride(advance, clock, engine, 5, 10);
+        final endpoint = points.last.geo;
+        engine.pause();
+        ride(advance, clock, engine, 5, 10, alreadyTravelled: travelled);
+        Ride? saved;
+        engine.stop().then((value) => saved = value);
+        advance(Duration.zero);
+        expect(saved!.endPoint, endpoint);
+        engine.dispose();
+      });
+    });
+
     test('stop produces a ride with the ride id and endpoints', () {
       withRide((advance, clock, starve) {
         final engine = startRiding(clock: clock);
@@ -282,29 +496,32 @@ void main() {
       });
     });
 
-    test('poor-accuracy free ride escapes a stuck zero without a route fill', () {
-      // Free rides cannot use noteRouteMatch. With ±20 m accuracy the old
-      // confirmation radius demanded 25 m of net travel; the stronger path
-      // escape should unlock derived speed sooner so auto-pause does not
-      // mistake canyon riding for a stop.
-      withRide((advance, clock, starve) {
-        final engine = startRiding(clock: clock);
-        var travelled = 0.0;
-        for (var i = 0; i < 10; i++) {
-          advance(const Duration(seconds: 1));
-          travelled += 2.2;
-          engine.onLocation(
-            fixAt(origin, travelled, clock(), accuracy: 20, speed: 0),
+    test(
+      'poor-accuracy free ride escapes a stuck zero without a route fill',
+      () {
+        // Free rides cannot use noteRouteMatch. With ±20 m accuracy the old
+        // confirmation radius demanded 25 m of net travel; the stronger path
+        // escape should unlock derived speed sooner so auto-pause does not
+        // mistake canyon riding for a stop.
+        withRide((advance, clock, starve) {
+          final engine = startRiding(clock: clock);
+          var travelled = 0.0;
+          for (var i = 0; i < 10; i++) {
+            advance(const Duration(seconds: 1));
+            travelled += 2.2;
+            engine.onLocation(
+              fixAt(origin, travelled, clock(), accuracy: 20, speed: 0),
+            );
+          }
+          expect(
+            engine.state.stats.currentSpeedMps,
+            greaterThan(1),
+            reason: 'position-derived speed must override a stuck Doppler zero',
           );
-        }
-        expect(
-          engine.state.stats.currentSpeedMps,
-          greaterThan(1),
-          reason: 'position-derived speed must override a stuck Doppler zero',
-        );
-        engine.dispose();
-      });
-    });
+          engine.dispose();
+        });
+      },
+    );
 
     test('a trusted Doppler sample reaches the computer on the next fix', () {
       withRide((advance, clock, starve) {

@@ -62,15 +62,14 @@ class SyncReport {
     int? downloaded,
     String? message,
     DateTime? lastSyncedAt,
-  }) =>
-      SyncReport(
-        phase: phase ?? this.phase,
-        pendingCount: pendingCount ?? this.pendingCount,
-        uploaded: uploaded ?? this.uploaded,
-        downloaded: downloaded ?? this.downloaded,
-        message: message ?? this.message,
-        lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
-      );
+  }) => SyncReport(
+    phase: phase ?? this.phase,
+    pendingCount: pendingCount ?? this.pendingCount,
+    uploaded: uploaded ?? this.uploaded,
+    downloaded: downloaded ?? this.downloaded,
+    message: message ?? this.message,
+    lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
+  );
 }
 
 /// The outcome of a "delete my cloud data" action.
@@ -91,9 +90,8 @@ class CloudDeleteReport {
   /// Why nothing was deleted, when [ok] is false.
   final String? message;
 
-  String get summary => ok
-      ? '已删除云端 $rides 条骑行、$routes 条路线、$files 个 GPX 文件'
-      : (message ?? '删除失败');
+  String get summary =>
+      ok ? '已删除云端 $rides 条骑行、$routes 条路线、$files 个 GPX 文件' : (message ?? '删除失败');
 }
 
 /// Drains the local outbox to Supabase and merges the cloud back down.
@@ -117,17 +115,20 @@ class SyncService {
     required RouteRepository routes,
     required AuthResolver resolveClient,
     Connectivity? connectivity,
-  })  : _db = db,
-        _rides = rides,
-        _routes = routes,
-        _resolveClient = resolveClient,
-        _connectivity = connectivity ?? Connectivity();
+    bool Function()? isConfigured,
+  }) : _db = db,
+       _rides = rides,
+       _routes = routes,
+       _resolveClient = resolveClient,
+       _connectivity = connectivity ?? Connectivity(),
+       _isConfigured = isConfigured ?? (() => SupabaseConfig.isConfigured);
 
   final AppDatabase _db;
   final RideRepository _rides;
   final RouteRepository _routes;
   final AuthResolver _resolveClient;
   final Connectivity _connectivity;
+  final bool Function() _isConfigured;
 
   final _controller = StreamController<SyncReport>.broadcast();
   Stream<SyncReport> get reports => _controller.stream;
@@ -139,9 +140,6 @@ class SyncService {
   Timer? _retryTimer;
   bool _running = false;
   bool _started = false;
-
-  /// Last successful sync, used as the pull watermark.
-  DateTime? _lastPulledAt;
 
   AppSettings _settings = const AppSettings();
 
@@ -165,8 +163,7 @@ class SyncService {
 
     _emit(_report.copyWith(phase: _baselinePhase));
 
-    _connectivitySub =
-        _connectivity.onConnectivityChanged.listen((results) {
+    _connectivitySub = _connectivity.onConnectivityChanged.listen((results) {
       if (_isOnline(results)) {
         // A network appearing is the best possible moment to retry: the queue
         // is drained, and any backoff is cleared so the retry is immediate
@@ -215,7 +212,7 @@ class SyncService {
     }
 
     final client = _resolveClient();
-    if (client == null || !SupabaseConfig.isConfigured) {
+    if (client == null || !_isConfigured()) {
       _emit(_report.copyWith(phase: SyncPhase.notConfigured));
       return _report;
     }
@@ -235,10 +232,7 @@ class SyncService {
       if (!results.contains(ConnectivityResult.wifi) &&
           !results.contains(ConnectivityResult.ethernet)) {
         _emit(
-          _report.copyWith(
-            phase: SyncPhase.idle,
-            message: '已设置为仅 Wi-Fi 上传',
-          ),
+          _report.copyWith(phase: SyncPhase.idle, message: '已设置为仅 Wi-Fi 上传'),
         );
         return _report;
       }
@@ -312,7 +306,10 @@ class SyncService {
     // queue hundreds of rides and one pass only takes 25.
     if (due.length == 25) {
       _retryTimer?.cancel();
-      _retryTimer = Timer(const Duration(seconds: 30), () => unawaited(syncNow()));
+      _retryTimer = Timer(
+        const Duration(seconds: 30),
+        () => unawaited(syncNow()),
+      );
     }
 
     return uploaded;
@@ -327,40 +324,36 @@ class SyncService {
       return;
     }
 
+    final objectPath = SupabaseConfig.gpxPath(remote.userId, ride.id);
+    // The repository also uses gpxPath for local exports. Only a cloud object
+    // path belongs in a synced row; never upload a device filesystem path.
+    var gpxPath = ride.gpxPath == objectPath ? objectPath : null;
+
     if (item.operation == SyncOperation.delete) {
       final withTombstone = ride.copyWith(
         deletedAt: ride.deletedAt ?? DateTime.now().toUtc(),
+        gpxPath: gpxPath,
       );
       await remote.pushRide(withTombstone);
-      if (ride.gpxPath != null) {
-        await remote.deleteGpx(ride.gpxPath!);
-      }
+      await remote.deleteGpx(objectPath);
       await _rides.setSyncStatus(ride.id, SyncStatus.synced);
       return;
     }
 
     // Upload the GPX first: the row references `gpx_path`, and a row pointing
     // at an object that is not there is worse than an object nobody points to.
-    var gpxPath = ride.gpxPath;
-    if (!ride.isDeleted) {
-      try {
-        final file = await _rides.exportGpx(ride);
-        gpxPath = await remote.uploadGpx(
-          rideId: ride.id,
-          localFilePath: file.path,
-        );
-        await _rides.setGpxPath(ride.id, gpxPath);
-      } catch (_) {
-        // No trace on this device — the ride was created elsewhere, or the
-        // file was removed. Push the statistics anyway; the geometry and the
-        // summary are still worth having in the cloud.
-        gpxPath = ride.gpxPath;
-      }
+    // A cloud-restored summary has no local trace until hydration succeeds.
+    // Exporting it would produce an empty GPX and overwrite the original.
+    if (!ride.isDeleted && await _rides.trackPointCount(ride.id) > 1) {
+      final file = await _rides.exportGpx(ride);
+      gpxPath = await remote.uploadGpx(
+        rideId: ride.id,
+        localFilePath: file.path,
+      );
+      await _rides.setGpxPath(ride.id, gpxPath);
     }
 
-    await remote.pushRide(
-      ride.copyWith(gpxPath: gpxPath, updatedAt: DateTime.now().toUtc()),
-    );
+    await remote.pushRide(ride.copyWith(gpxPath: gpxPath));
     await _rides.setSyncStatus(ride.id, SyncStatus.synced);
   }
 
@@ -383,30 +376,16 @@ class SyncService {
     // newer. Rides are immutable after they end apart from name, notes and
     // bike, so the only field that can genuinely conflict is a rename — and
     // the later edit is the one the rider meant.
-    final remoteRides = await remote.fetchRides(since: _lastPulledAt);
+    final remoteRides = await remote.fetchRides();
     for (final remoteRide in remoteRides) {
       if (await _mergeRemoteRide(remoteRide)) applied++;
     }
 
-    final deleted = await remote.fetchDeletedRides(since: _lastPulledAt);
-    for (final tombstone in deleted) {
-      final local = await _rides.getRide(tombstone.id);
-      if (local == null) continue;
-      // A local delete is already consistent; only a live local copy needs
-      // tombstoning.
-      if (local.isDeleted) continue;
-      if (local.updatedAt != null && local.updatedAt!.isAfter(tombstone.updatedAt)) {
-        // Edited here more recently than it was deleted elsewhere. Local wins.
-        continue;
-      }
-      await _rides.applyRemoteDelete(tombstone.id);
-      applied++;
-    }
-
-    final remoteRoutes = await remote.fetchRoutes(since: _lastPulledAt);
+    final remoteRoutes = await remote.fetchRoutes();
     for (final route in remoteRoutes) {
       if (route.isDeleted) {
-        if (await _routes.getRoute(route.id) != null) {
+        final local = await _routes.getRoute(route.id);
+        if (local != null && !local.isDeleted) {
           await _routes.applyRemoteDelete(route.id);
         }
         continue;
@@ -419,7 +398,6 @@ class SyncService {
       applied++;
     }
 
-    _lastPulledAt = DateTime.now().toUtc();
     return applied;
   }
 
@@ -436,6 +414,22 @@ class SyncService {
   Future<bool> _mergeRemoteRide(RemoteRide remote) async {
     final local = await _rides.getRide(remote.id);
 
+    // A tombstone must never pass through the new-device live-row insertion
+    // path. Full metadata pulls revisit it, so already deleted rows are no-ops.
+    if (remote.isDeleted) {
+      if (local == null || local.isDeleted) return false;
+      if (local.updatedAt != null &&
+          local.updatedAt!.isAfter(remote.updatedAt)) {
+        return false;
+      }
+      await _rides.applyRemoteDelete(
+        remote.id,
+        deletedAt: remote.deletedAt,
+        updatedAt: remote.updatedAt,
+      );
+      return true;
+    }
+
     if (local == null) {
       // A ride that exists only in the cloud — the new-phone case.
       await _rides.insertRemoteRide(
@@ -449,11 +443,19 @@ class SyncService {
             distanceMeters: remote.distanceMeters,
             elapsed: Duration(seconds: remote.elapsedSeconds),
             moving: Duration(seconds: remote.movingSeconds),
+            avgSpeedMps: remote.avgSpeedMps,
+            maxSpeedMps: remote.maxSpeedMps,
+            elevationGainMeters: remote.elevationGainMeters,
+            elevationLossMeters: remote.elevationLossMeters,
           ),
+          startPoint: remote.startPoint,
+          endPoint: remote.endPoint,
           gpxPath: remote.gpxPath,
+          fitPath: remote.fitPath,
           syncStatus: SyncStatus.synced,
           syncVersion: remote.syncVersion,
           updatedAt: remote.updatedAt,
+          createdAt: remote.createdAt,
         ),
       );
       return true;
@@ -465,7 +467,8 @@ class SyncService {
       await _db.syncQueueDao.enqueue(
         SyncEntityType.ride,
         local.id,
-        SyncOperation.upsert,
+        local.isDeleted ? SyncOperation.delete : SyncOperation.upsert,
+        resetExisting: false,
       );
       return false;
     }
@@ -483,6 +486,7 @@ class SyncService {
         name: remote.name,
         notes: remote.notes,
         gpxPath: remote.gpxPath,
+        updatedAt: remote.updatedAt,
       );
       return true;
     }
@@ -495,7 +499,7 @@ class SyncService {
     // Off before anything else: the screen must not say "已就绪" while the
     // rider has switched uploading off.
     if (!_settings.cloudSync) return SyncPhase.disabled;
-    if (!SupabaseConfig.isConfigured) return SyncPhase.notConfigured;
+    if (!_isConfigured()) return SyncPhase.notConfigured;
     if (_resolveClient()?.auth.currentUser == null) return SyncPhase.signedOut;
     return SyncPhase.idle;
   }
@@ -533,7 +537,8 @@ class SyncService {
       return '登录状态失效：${error.message}';
     }
     final text = error.toString();
-    if (text.contains('SocketException') || text.contains('Failed host lookup')) {
+    if (text.contains('SocketException') ||
+        text.contains('Failed host lookup')) {
       return '网络不可用';
     }
     return text.length > 160 ? '${text.substring(0, 160)}…' : text;
@@ -605,7 +610,7 @@ class SyncService {
 
     // Cheapest and most fundamental first: with no Supabase configured there
     // is nothing to delete against, and the client is never resolved.
-    if (!SupabaseConfig.isConfigured) {
+    if (!_isConfigured()) {
       return const CloudDeleteReport(message: '云同步未配置');
     }
     final client = _resolveClient();
@@ -630,9 +635,6 @@ class SyncService {
       await remote.deleteSettings();
 
       await forgetCloudCopy();
-      // A pull watermark from before the wipe would skip rows created after
-      // it; start over instead.
-      _lastPulledAt = null;
 
       return CloudDeleteReport(
         ok: true,
@@ -671,13 +673,19 @@ class SyncService {
 
     for (final ride in await _db.rideDao.getRides()) {
       if (ride.isDeleted) continue;
-      await _db.syncQueueDao
-          .enqueue(SyncEntityType.ride, ride.id, SyncOperation.upsert);
+      await _db.syncQueueDao.enqueue(
+        SyncEntityType.ride,
+        ride.id,
+        SyncOperation.upsert,
+      );
     }
     for (final route in await _db.routeDao.getRoutes()) {
       if (route.isDeleted) continue;
-      await _db.syncQueueDao
-          .enqueue(SyncEntityType.route, route.id, SyncOperation.upsert);
+      await _db.syncQueueDao.enqueue(
+        SyncEntityType.route,
+        route.id,
+        SyncOperation.upsert,
+      );
     }
   }
 }

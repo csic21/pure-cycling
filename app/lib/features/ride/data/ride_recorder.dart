@@ -186,6 +186,14 @@ class RideRecorder {
   final _pending = <TrackPoint>[];
   bool _disposed = false;
 
+  // One writer owns the buffer and checkpoint ordering. In particular, a
+  // checkpoint already in flight must not recreate recovery after a clean stop.
+  Future<void> _writes = Future<void>.value();
+  Future<Ride?>? _stopAttempt;
+  Ride? _finishingRide;
+  String? _discardingRideId;
+  bool _ending = false;
+
   /// The trace so far, for the live map.
   ///
   /// Held in memory and appended to rather than re-queried from SQLite: the
@@ -223,6 +231,7 @@ class RideRecorder {
   /// Returns false when location permission is missing — the caller is
   /// expected to surface the reason rather than silently doing nothing.
   Future<bool> startRide(AppSettings settings) async {
+    _ensureNoPendingFinish();
     _sampling.setChosen(settings.gpsAccuracy);
 
     final permission = await _location.ensurePermission(
@@ -274,6 +283,7 @@ class RideRecorder {
     RideCheckpoint checkpoint,
     AppSettings settings,
   ) async {
+    _ensureNoPendingFinish();
     _sampling.setChosen(settings.gpsAccuracy);
 
     final permission = await _location.ensurePermission(
@@ -334,31 +344,56 @@ class RideRecorder {
   /// Ends the ride, flushes everything, and persists the record.
   ///
   /// Returns the saved ride, or null if no ride was in progress.
-  Future<Ride?> stopRide({String? name}) async {
-    final engine = _engine;
-    if (engine == null || !engine.isActive) return null;
+  Future<Ride?> stopRide({String? name}) {
+    if (_discardingRideId != null) {
+      return Future<Ride?>.error(
+        StateError('Retry the pending discard before saving another ride'),
+      );
+    }
+    final pending = _stopAttempt;
+    if (pending != null) return pending;
+    late final Future<Ride?> attempt;
+    attempt = _finishRide(name: name).whenComplete(() {
+      if (identical(_stopAttempt, attempt)) _stopAttempt = null;
+    });
+    _stopAttempt = attempt;
+    return attempt;
+  }
 
-    final ride = await engine.stop();
-    await _activeRideDao.clear();
-    await _cancelLocation();
+  Future<Ride?> _finishRide({String? name}) async {
+    final engine = _engine;
+    if (_finishingRide == null && (engine == null || !engine.isActive)) {
+      return null;
+    }
+
+    _ending = true;
+    // Freeze the result once. Retrying a failed save must not add time or lose
+    // the completed ride merely because the engine is no longer active.
+    _finishingRide ??= await engine!.stop();
+    await _cancelInputs();
+    final ride = _finishingRide!;
 
     final toSave = name == null || name.trim().isEmpty
         ? ride
         : ride.copyWith(name: name.trim());
+    _finishingRide = toSave;
 
-    // The buffer goes to the repository rather than being flushed here.
-    // `saveFinishedRide` writes the ride row, then these points, then reads
-    // the whole trace back to build the geometry — and flushing first would
-    // insert points whose ride row is about to be rewritten, for no gain.
-    final buffered = List<TrackPoint>.of(_pending);
-    _pending.clear();
-
-    await _repository.saveFinishedRide(toSave, unflushed: buffered);
-    _pending.clear();
+    await _writeInOrder(() async {
+      // Make the frozen result recoverable before finalization. A failed
+      // write retains its points in memory; a failed final commit leaves this
+      // checkpoint and the complete trace available on the next launch.
+      await _flushPoints();
+      await _activeRideDao.save(engine!.buildCheckpoint());
+      await _repository.saveFinishedRide(toSave);
+    });
+    _finishingRide = null;
+    _ending = false;
     _liveTrace.clear();
     traceRevision.value++;
 
-    return await _repository.getRide(toSave.id) ?? toSave;
+    // No fallible read after the commit: reporting a failure here would invite
+    // a retry of a ride that has already been saved successfully.
+    return toSave.copyWith(syncStatus: SyncStatus.pendingUpload);
   }
 
   /// Throws away the ride in progress without saving it.
@@ -366,18 +401,36 @@ class RideRecorder {
   /// Offered only for the "I started this by accident" case; the caller is
   /// responsible for confirming first.
   Future<void> discardRide() async {
-    final rideId = _engine?.state.rideId;
+    final stopping = _stopAttempt;
+    if (stopping != null) {
+      try {
+        if (await stopping != null) return;
+      } catch (_) {
+        // A rider may explicitly discard a ride whose save failed.
+      }
+    }
+    // cancel() clears the engine's ID. Keep it independently until deletion
+    // commits so a failed discard can retry the same ride safely.
+    final rideId = _discardingRideId ??= _engine?.state.rideId;
+    _ending = true;
     _engine?.cancel();
-    _pending.clear();
-    _liveTrace.clear();
-    traceRevision.value++;
-    await _activeRideDao.clear();
-    await _cancelLocation();
+    await _cancelInputs();
 
     // The placeholder row `beginRide` created goes too. Leaving it would put a
     // zero-distance ride in the rider's history every time they tapped 开始骑行
     // and changed their mind.
-    if (rideId != null) await _repository.purgeAbandonedRide(rideId);
+    await _writeInOrder(
+      () => _db.transaction(() async {
+        if (rideId != null) await _repository.purgeAbandonedRide(rideId);
+        await _activeRideDao.clear();
+      }),
+    );
+    _pending.clear();
+    _finishingRide = null;
+    _discardingRideId = null;
+    _ending = false;
+    _liveTrace.clear();
+    traceRevision.value++;
   }
 
   /// Checks for a ride left behind by a crash or an OS kill.
@@ -401,9 +454,8 @@ class RideRecorder {
   /// about to be terminated, where the five-second cadence may not get a turn.
   Future<void> saveCheckpointNow() async {
     final engine = _engine;
-    if (engine == null || !engine.isActive) return;
-    await _flushPoints();
-    await _activeRideDao.save(engine.buildCheckpoint());
+    if (engine == null || !engine.isActive || _ending) return;
+    await _saveCheckpoint(engine.buildCheckpoint(), engine);
   }
 
   /// Tells the recorder whether the app is in the foreground.
@@ -734,16 +786,43 @@ class RideRecorder {
     _engine = null;
 
     final stopping = engine?.dispose();
-    await _cancelLocation();
-    await _cancelSensors();
-    await _cancelBarometer();
-    await _cancelCompass();
-    await _cancelMotion();
+    await _cancelInputs();
+    await _writes;
     await stopping;
   }
 
-  /// Buffers a validated point. Never fails — the engine's callback cannot
-  /// return an error, and a rejected write here is retried at the next flush.
+  Future<void> _cancelInputs() async {
+    await Future.wait<void>([
+      _cancelLocation(),
+      _cancelSensors(),
+      _cancelBarometer(),
+      _cancelCompass(),
+      _cancelMotion(),
+    ]);
+  }
+
+  void _ensureNoPendingFinish() {
+    if (_ending || _finishingRide != null || _stopAttempt != null) {
+      throw StateError(
+        'Save or discard the previous ride before starting another',
+      );
+    }
+  }
+
+  Future<T> _writeInOrder<T>(Future<T> Function() write) {
+    final result = _writes.then((_) => write());
+    // The caller still receives the error, but a transient failure must not
+    // poison the queue and prevent the next retry from running.
+    _writes = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return result;
+  }
+
+  void _reportWriteFailure(Object error, StackTrace stack) {
+    unawaited(_diagnostics?.error('ride_persistence', error, stack));
+  }
+
+  /// Buffers a validated point. Failed writes are logged and retried at the
+  /// next flush without discarding the points or advancing the checkpoint.
   void _onTrackPoint(TrackPoint point) {
     _pending.add(point);
 
@@ -758,7 +837,13 @@ class RideRecorder {
     if (_pending.length >= _flushEveryPoints) {
       // Fire and forget: the next checkpoint will re-flush anything that did
       // not make it, and the ride is still in memory until stop.
-      unawaited(_flushPoints());
+      final engine = _engine;
+      unawaited(
+        _writeInOrder<void>(() async {
+          if (_ending || !identical(_engine, engine)) return;
+          await _flushPoints();
+        }).catchError(_reportWriteFailure),
+      );
     }
   }
 
@@ -766,26 +851,27 @@ class RideRecorder {
   /// checkpoint records `lastSequence`, and if a point with that sequence were
   /// not yet on disk, a resume would skip it.
   void _onCheckpoint(RideCheckpoint checkpoint) {
-    unawaited(() async {
-      await _flushPoints();
-      await _activeRideDao.save(checkpoint);
-    }());
+    final engine = _engine;
+    if (engine == null || _ending) return;
+    unawaited(
+      _saveCheckpoint(checkpoint, engine).catchError(_reportWriteFailure),
+    );
   }
+
+  Future<void> _saveCheckpoint(RideCheckpoint checkpoint, RideEngine engine) =>
+      _writeInOrder(() async {
+        if (_ending || !identical(_engine, engine)) return;
+        await _flushPoints();
+        await _activeRideDao.save(checkpoint);
+      });
 
   Future<void> _flushPoints() async {
     if (_pending.isEmpty) return;
     final batch = List<TrackPoint>.of(_pending);
-    _pending.clear();
-    try {
-      await _db.rideDao.insertTrackPoints(batch);
-    } catch (_) {
-      // Put them back so the next flush retries, but cap the retry buffer so
-      // a persistently failing disk cannot grow memory without bound.
-      _pending.insertAll(0, batch);
-      if (_pending.length > _flushEveryPoints * 6) {
-        _pending.removeRange(0, _pending.length - _flushEveryPoints * 6);
-      }
-    }
+    await _db.rideDao.insertTrackPoints(batch);
+    // New points may have arrived while SQLite was writing. Remove only the
+    // successfully committed prefix, and never silently drop failed points.
+    _pending.removeRange(0, batch.length);
   }
 
   Future<int> _maxStoredSequence(String rideId) async {

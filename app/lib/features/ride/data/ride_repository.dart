@@ -52,8 +52,7 @@ class RideRepository {
   Future<List<GeoPoint>> trackGeometry(String rideId) =>
       _rides.getTrackGeometry(rideId);
 
-  Future<int> trackPointCount(String rideId) =>
-      _rides.trackPointCount(rideId);
+  Future<int> trackPointCount(String rideId) => _rides.trackPointCount(rideId);
 
   // ---- Writes ----
 
@@ -74,11 +73,7 @@ class RideRepository {
     required DateTime startedAt,
   }) async {
     await _rides.upsertRide(
-      Ride(
-        id: id,
-        startedAt: startedAt,
-        syncStatus: SyncStatus.localOnly,
-      ),
+      Ride(id: id, startedAt: startedAt, syncStatus: SyncStatus.localOnly),
     );
   }
 
@@ -89,26 +84,34 @@ class RideRepository {
   /// are built from the *complete* trace, read back from the database, rather
   /// than from whichever fragment happened to be in memory.
   ///
-  /// Ordering mirrors spec §27: the local commit happens first and
-  /// unconditionally, then the derived artefacts, then the outbox entry.
+  /// The local record, outbox and recovery removal commit together, followed
+  /// by regenerable derived artefacts.
   /// Nothing here can reach the network, so nothing here can fail because of
   /// it.
   Future<void> saveFinishedRide(
     Ride ride, {
     List<TrackPoint> unflushed = const [],
   }) async {
-    await _rides.upsertRide(ride);
-
-    if (unflushed.isNotEmpty) {
-      await _rides.insertTrackPoints(unflushed);
-    }
-
-    final trace = await _rides.getTrackPoints(ride.id);
-
-    // PostGIS geometry — one LineString instead of N rows (spec §23).
-    if (trace.length >= 2) {
+    await _db.transaction(() async {
+      await _rides.upsertRide(ride);
+      if (unflushed.isNotEmpty) {
+        await _rides.insertTrackPoints(unflushed);
+      }
+      // The upload payload reads this column directly. Keep its construction
+      // inside the commit so a write failure cannot enqueue an incomplete ride.
       await _rides.buildRouteGeometryWkt(ride.id);
-    }
+      await _db.syncQueueDao.enqueue(
+        SyncEntityType.ride,
+        ride.id,
+        SyncOperation.upsert,
+      );
+      await _rides.setSyncStatus(ride.id, SyncStatus.pendingUpload);
+      // Recovery is removed only with the durable ride and its outbox entry.
+      // An exception at any step rolls all of these changes back together.
+      await (_db.delete(
+        _db.activeRideCheckpoints,
+      )..where((t) => t.rideId.equals(ride.id))).go();
+    });
 
     // The GPX is written in the background, not awaited.
     //
@@ -118,13 +121,6 @@ class RideRepository {
     // write before the app would admit their ride was saved — the one step on
     // this path that can block on the file system, for no benefit.
     unawaited(_writeGpxInBackground(ride));
-
-    await _db.syncQueueDao.enqueue(
-      SyncEntityType.ride,
-      ride.id,
-      SyncOperation.upsert,
-    );
-    await _rides.setSyncStatus(ride.id, SyncStatus.pendingUpload);
   }
 
   /// Saves the rider's description of a finished ride: the two fields the
@@ -156,7 +152,12 @@ class RideRepository {
     String? notes,
     String? bikeId,
   }) async {
-    await _rides.updateRideMetadata(id, name: name, notes: notes, bikeId: bikeId);
+    await _rides.updateRideMetadata(
+      id,
+      name: name,
+      notes: notes,
+      bikeId: bikeId,
+    );
     // Only these three fields are editable after a ride (spec §28), which is
     // what keeps the merge with the cloud trivial — there is never a
     // statistic to reconcile.
@@ -211,9 +212,15 @@ class RideRepository {
     String id, {
     required String? name,
     required String? notes,
+    required DateTime updatedAt,
     String? gpxPath,
   }) async {
-    await _rides.setRideDescription(id, name: name, notes: notes);
+    await _rides.setRideDescription(
+      id,
+      name: name,
+      notes: notes,
+      updatedAt: updatedAt,
+    );
     if (gpxPath != null) {
       await _rides.setGpxPath(id, gpxPath);
     }
@@ -221,8 +228,12 @@ class RideRepository {
   }
 
   /// Applies a delete that arrived from the cloud.
-  Future<void> applyRemoteDelete(String id) async {
-    await _rides.softDeleteRide(id);
+  Future<void> applyRemoteDelete(
+    String id, {
+    DateTime? deletedAt,
+    DateTime? updatedAt,
+  }) async {
+    await _rides.softDeleteRide(id, deletedAt: deletedAt, updatedAt: updatedAt);
     await _rides.setSyncStatus(id, SyncStatus.synced);
   }
 
@@ -250,10 +261,7 @@ class RideRepository {
   Future<String> writeGpxFile(Ride ride, List<TrackPoint> trace) async {
     final dir = await _exportsDirectory();
     final file = File('${dir.path}/${_safeFileName(ride)}.gpx');
-    await file.writeAsString(
-      GpxCodec.encode(ride, trace),
-      flush: true,
-    );
+    await file.writeAsString(GpxCodec.encode(ride, trace), flush: true);
     return file.path;
   }
 
@@ -289,10 +297,7 @@ class RideRepository {
   Future<String> writeFitFile(Ride ride, List<TrackPoint> trace) async {
     final dir = await _exportsDirectory();
     final file = File('${dir.path}/${_safeFileName(ride)}.fit');
-    await file.writeAsBytes(
-      FitCodec.encode(ride, trace),
-      flush: true,
-    );
+    await file.writeAsBytes(FitCodec.encode(ride, trace), flush: true);
     return file.path;
   }
 
@@ -314,7 +319,8 @@ class RideRepository {
 
   static String _safeFileName(Ride ride) {
     final local = ride.startedAt.toLocal();
-    final stamp = '${local.year}${local.month.toString().padLeft(2, '0')}'
+    final stamp =
+        '${local.year}${local.month.toString().padLeft(2, '0')}'
         '${local.day.toString().padLeft(2, '0')}-'
         '${local.hour.toString().padLeft(2, '0')}'
         '${local.minute.toString().padLeft(2, '0')}';

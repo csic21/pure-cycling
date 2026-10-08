@@ -47,20 +47,24 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
   /// Rides whose start falls within `[from, to)`, newest first.
   Future<List<Ride>> getRidesBetween(DateTime from, DateTime to) {
     final query = select(localRides)
-      ..where((t) =>
-          t.deletedAt.isNull() &
-          t.startedAt.isBiggerOrEqualValue(from.toUtc()) &
-          t.startedAt.isSmallerThanValue(to.toUtc()))
+      ..where(
+        (t) =>
+            t.deletedAt.isNull() &
+            t.startedAt.isBiggerOrEqualValue(from.toUtc()) &
+            t.startedAt.isSmallerThanValue(to.toUtc()),
+      )
       ..orderBy([(t) => OrderingTerm.desc(t.startedAt)]);
     return query.get().then((rows) => rows.map((r) => r.toDomain()).toList());
   }
 
   Stream<List<Ride>> watchRidesBetween(DateTime from, DateTime to) {
     final query = select(localRides)
-      ..where((t) =>
-          t.deletedAt.isNull() &
-          t.startedAt.isBiggerOrEqualValue(from.toUtc()) &
-          t.startedAt.isSmallerThanValue(to.toUtc()))
+      ..where(
+        (t) =>
+            t.deletedAt.isNull() &
+            t.startedAt.isBiggerOrEqualValue(from.toUtc()) &
+            t.startedAt.isSmallerThanValue(to.toUtc()),
+      )
       ..orderBy([(t) => OrderingTerm.desc(t.startedAt)]);
     return query.watch().map((rows) => rows.map((r) => r.toDomain()).toList());
   }
@@ -99,22 +103,22 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
     String id, {
     String? name,
     String? notes,
+    DateTime? updatedAt,
   }) async {
     await (update(localRides)..where((t) => t.id.equals(id))).write(
       LocalRidesCompanion(
         name: Value(name),
         notes: Value(notes),
-        updatedAt: Value(DateTime.now().toUtc()),
+        updatedAt: Value(updatedAt?.toUtc() ?? DateTime.now().toUtc()),
       ),
     );
   }
 
+  /// Sync bookkeeping is not a content edit. Changing updatedAt here makes
+  /// an acknowledged upload appear newer than the cloud and queues it again.
   Future<void> setSyncStatus(String id, SyncStatus status) async {
     await (update(localRides)..where((t) => t.id.equals(id))).write(
-      LocalRidesCompanion(
-        syncStatus: Value(status.id),
-        updatedAt: Value(DateTime.now().toUtc()),
-      ),
+      LocalRidesCompanion(syncStatus: Value(status.id)),
     );
   }
 
@@ -142,14 +146,18 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
   ///
   /// The row survives so the tombstone can travel; the track points do not,
   /// because they are megabytes and carry no information a delete needs.
-  Future<void> softDeleteRide(String id) async {
+  Future<void> softDeleteRide(
+    String id, {
+    DateTime? deletedAt,
+    DateTime? updatedAt,
+  }) async {
     final now = DateTime.now().toUtc();
     await transaction(() async {
       await (update(localRides)..where((t) => t.id.equals(id))).write(
         LocalRidesCompanion(
-          deletedAt: Value(now),
+          deletedAt: Value(deletedAt?.toUtc() ?? now),
           syncStatus: Value(SyncStatus.pendingUpload.id),
-          updatedAt: Value(now),
+          updatedAt: Value(updatedAt?.toUtc() ?? now),
         ),
       );
       await (delete(trackPoints)..where((t) => t.rideId.equals(id))).go();
@@ -221,8 +229,9 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
     final points = await getTrackPoints(rideId);
     if (points.length < 2) return null;
     final wkt = trackToLineStringWkt(points.map((p) => p.geo).toList());
-    await (update(localRides)..where((t) => t.id.equals(rideId)))
-        .write(LocalRidesCompanion(routeGeometryWkt: Value(wkt)));
+    await (update(localRides)..where((t) => t.id.equals(rideId))).write(
+      LocalRidesCompanion(routeGeometryWkt: Value(wkt)),
+    );
     return wkt;
   }
 
@@ -250,8 +259,7 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
 
   Stream<RideSummary> watchMonthSummary(DateTime month) {
     final b = monthBounds(month);
-    return watchRidesBetween(b.start, b.end)
-        .map(RideSummary.from);
+    return watchRidesBetween(b.start, b.end).map(RideSummary.from);
   }
 
   Future<Ride?> mostRecentRide() async {
@@ -274,10 +282,12 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
   /// Rides needing upload, oldest first so the queue drains in order.
   Future<List<Ride>> ridesAwaitingSync({int limit = 20}) async {
     final query = select(localRides)
-      ..where((t) => t.syncStatus.isIn([
-            SyncStatus.pendingUpload.id,
-            SyncStatus.syncFailed.id,
-          ]))
+      ..where(
+        (t) => t.syncStatus.isIn([
+          SyncStatus.pendingUpload.id,
+          SyncStatus.syncFailed.id,
+        ]),
+      )
       ..orderBy([(t) => OrderingTerm.asc(t.startedAt)])
       ..limit(limit);
     final rows = await query.get();

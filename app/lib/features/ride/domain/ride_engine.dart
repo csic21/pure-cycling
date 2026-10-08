@@ -347,6 +347,9 @@ class RideEngine {
   DateTime? _motionAt;
   final _distance = DistanceCalculator();
   final _elevation = ElevationAccumulator();
+  // The first altitude after a recording boundary establishes a new baseline.
+  // GPS and barometer can each supply it, so a tunnel does not stall climbing.
+  bool _needsElevationAnchor = true;
 
   final Map<SensorType, _RunningAverage> _averages = {};
 
@@ -468,6 +471,7 @@ class RideEngine {
     // None of those should make the new ride start already auto-paused.
     _autoPause.reset();
     _autoPauseArmed = false;
+    _needsElevationAnchor = true;
     _publish(force: true);
   }
 
@@ -478,6 +482,7 @@ class RideEngine {
     _tick();
     _status = RideStatus.paused;
     _autoPause.suppress();
+    _needsElevationAnchor = true;
     _currentSpeed = 0;
     _publish(force: true);
   }
@@ -487,13 +492,10 @@ class RideEngine {
     _lastTick = _now();
     _status = RideStatus.riding;
     _autoPause.reset();
-    // Re-anchor: the rider is somewhere new, and the paused interval must not
-    // be turned into a distance segment.
-    _distance.seed(
-      totalMeters: _distance.totalMeters,
-      anchor: _lastPoint,
-      anchorTime: _lastFixAt,
-    );
+    // The last fix may predate the pause. Start at the first accepted fix
+    // after resume rather than joining it to an unobserved paused interval.
+    _distance.seed(totalMeters: _distance.totalMeters);
+    _needsElevationAnchor = true;
     _publish(force: true);
   }
 
@@ -534,7 +536,9 @@ class RideEngine {
     _lastFixArrivedAt = _now();
     // Snapshot before overwriting: the multipath soft gate needs the *previous*
     // epoch's accuracy to spot a spike, not the one that just arrived.
-    final previousAccuracy = _gpsAccuracy > 0 ? _gpsAccuracy : _previousGpsAccuracy;
+    final previousAccuracy = _gpsAccuracy > 0
+        ? _gpsAccuracy
+        : _previousGpsAccuracy;
     if (fix.hasAccuracy) {
       _previousGpsAccuracy = previousAccuracy;
       _gpsAccuracy = fix.accuracy;
@@ -551,7 +555,7 @@ class RideEngine {
       // Even a rejected sample refreshes the GPS indicator — the rider needs
       // to know a signal exists but is poor, which is different from silence.
       _gpsPoor = processing.rejection == FixRejection.accuracyTooPoor;
-      if (_freshWheelSpeed) _currentSpeed = _wheelSpeedMps!;
+      if (_freshWheelSpeed) _syncDisplayedSpeed();
       _publish();
       return;
     }
@@ -577,18 +581,32 @@ class RideEngine {
     final autoPaused = _autoPause.isAutoPaused;
 
     _currentSpeed = speed;
-    if (speed > _maxSpeed) _maxSpeed = speed;
     _grade = processing.gradePercent;
     _bearing = processing.bearing;
     _lastPoint = fix.geo;
-    _firstPoint ??= fix.geo;
     _lastAcceptedFix = fix;
+
+    // Keep the live GPS lock and position warm during preparation and manual
+    // pause, without counting that movement as part of the recorded ride.
+    if (_status != RideStatus.riding) {
+      final altitude = processing.altitudeMeters;
+      if (altitude != null) _elevation.reseed(altitude);
+      _publish();
+      return;
+    }
 
     // A track point is recorded while actually moving. Points collected
     // during an auto-pause are dropped: they are the GPS wandering around a
     // parked bicycle, and they would add length to the trace without adding
     // information.
     if (!autoPaused && !isAutoPausing) {
+      if (_needsElevationAnchor && processing.altitudeMeters != null) {
+        _elevation.reseed(processing.altitudeMeters!);
+        _needsElevationAnchor = false;
+      }
+      if (speed > _maxSpeed) _maxSpeed = speed;
+      _firstPoint ??= fix.geo;
+      _lastRecordedPoint = fix.geo;
       // The accuracy is forwarded so the distance gate can widen for an
       // imprecise fix rather than treating it as if it were a good one.
       final added = _distance.add(
@@ -681,13 +699,19 @@ class RideEngine {
     final smoothed = _filter.smoothedAltitude;
     if (smoothed == null) return;
 
-    if (firstSample) {
+    if (firstSample ||
+        _status != RideStatus.riding ||
+        _autoPause.isAutoPaused ||
+        _needsElevationAnchor) {
       // The series just changed coordinate systems — GPS metres to barometric
       // metres, with an offset of however wrong the GPS altitude was. The
       // accumulator's running extremes are in the old system, so that offset
       // would be banked as terrain. Reseeding keeps the leg already measured
       // and re-anchors without inventing a climb.
       _elevation.reseed(smoothed);
+      if (_status == RideStatus.riding && !_autoPause.isAutoPaused) {
+        _needsElevationAnchor = false;
+      }
     } else {
       _elevation.add(smoothed);
     }
@@ -875,7 +899,9 @@ class RideEngine {
   /// coast is the last Doppler value, not a speed computed from vibration —
   /// the accelerometer only decides whether that value is still plausible.
   void _syncDisplayedSpeed() {
-    if (_freshWheelSpeed) {
+    if (_status == RideStatus.paused) {
+      _currentSpeed = 0;
+    } else if (_freshWheelSpeed) {
       _currentSpeed = _wheelSpeedMps!;
     } else if (_showStopped || _pausedHoldingZero) {
       _currentSpeed = 0;
@@ -935,7 +961,11 @@ class RideEngine {
     final previousSpeed = _currentSpeed;
     final couldShowSpeed = _speedAvailable;
     _syncDisplayedSpeed();
-    if (_currentSpeed > _maxSpeed) _maxSpeed = _currentSpeed;
+    if (_status == RideStatus.riding &&
+        !_autoPause.isAutoPaused &&
+        _currentSpeed > _maxSpeed) {
+      _maxSpeed = _currentSpeed;
+    }
     if (_currentSpeed != previousSpeed || _speedAvailable != couldShowSpeed) {
       _publish();
     }
@@ -1026,25 +1056,26 @@ class RideEngine {
   /// Feeds a normalized sensor value.
   void onSensorReading(SensorReading reading) {
     if (!_status.isActive) return;
+    final recording = _status == RideStatus.riding && !_autoPause.isAutoPaused;
 
     switch (reading.type) {
       case SensorType.heartRate:
         final v = reading.heartRate;
         if (v != null && v > 0 && v < 260) {
           _heartRate = v;
-          _avg(SensorType.heartRate).add(v.toDouble());
+          if (recording) _avg(SensorType.heartRate).add(v.toDouble());
         }
       case SensorType.cadence:
         final v = reading.cadence;
         if (v != null && v >= 0 && v < 300) {
           _cadence = v;
-          _avg(SensorType.cadence).add(v.toDouble());
+          if (recording) _avg(SensorType.cadence).add(v.toDouble());
         }
       case SensorType.power:
         final v = reading.power;
         if (v != null && v >= 0 && v < 3000) {
           _power = v;
-          _avg(SensorType.power).add(v.toDouble());
+          if (recording) _avg(SensorType.power).add(v.toDouble());
         }
       case SensorType.speed:
         // The wheel is the direct speed source while it reports. GPS remains
@@ -1054,8 +1085,8 @@ class RideEngine {
         if (v != null && v >= 0 && v < _config.filter.maxSpeedMps) {
           _wheelSpeedMps = v;
           _lastWheelSpeedAt = _now();
-          _currentSpeed = v;
-          if (v > _maxSpeed) _maxSpeed = v;
+          _syncDisplayedSpeed();
+          if (recording && v > _maxSpeed) _maxSpeed = v;
           if (_status == RideStatus.riding) {
             _applyAutoPause(v, _now());
           }
@@ -1107,6 +1138,7 @@ class RideEngine {
 
     if (checkpoint.lastLat != null && checkpoint.lastLng != null) {
       _lastPoint = GeoPoint(checkpoint.lastLat!, checkpoint.lastLng!);
+      _lastRecordedPoint = _lastPoint;
     }
 
     _startTicker();
@@ -1241,8 +1273,8 @@ class RideEngine {
     maxSpeedMps: _maxSpeed,
     elevationGainMeters: _elevation.gainMeters,
     elevationLossMeters: _elevation.lossMeters,
-    lastLat: _lastPoint?.lat,
-    lastLng: _lastPoint?.lng,
+    lastLat: _lastRecordedPoint?.lat,
+    lastLng: _lastRecordedPoint?.lng,
     lastAltitude: _lastAcceptedFix?.altitude,
     lastSequence: _sequence,
     smoothedSpeedMps: _currentSpeed,
@@ -1258,10 +1290,11 @@ class RideEngine {
     endedAt: endedAt,
     stats: _buildStats(),
     startPoint: _firstPoint,
-    endPoint: _lastPoint,
+    endPoint: _lastRecordedPoint,
   );
 
   GeoPoint? _firstPoint;
+  GeoPoint? _lastRecordedPoint;
 
   RideStats _buildStats() => RideStats(
     distanceMeters: _distance.totalMeters,
@@ -1354,6 +1387,8 @@ class RideEngine {
     _power = null;
     _lastPoint = null;
     _firstPoint = null;
+    _lastRecordedPoint = null;
+    _needsElevationAnchor = true;
     _bearing = null;
     _motionAt = null;
     _motion.reset();
