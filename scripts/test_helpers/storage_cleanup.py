@@ -1,6 +1,6 @@
 """Disposable real Storage regression fixtures; never a hosted-project client."""
 import base64
-import http.client
+from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
@@ -96,7 +96,7 @@ def overlap(user, mode):
     payload = GPX + b' ' * (1024 * 1024)
 
     def stream():
-        connection = http.client.HTTPConnection(urllib.parse.urlsplit(STORAGE).netloc, timeout=90)
+        connection = HTTPConnection(urllib.parse.urlsplit(STORAGE).netloc, timeout=90)
         try:
             connection.putrequest('POST', f'/object/rides/{path}')
             connection.putheader('Authorization', f"Bearer {user['token']}")
