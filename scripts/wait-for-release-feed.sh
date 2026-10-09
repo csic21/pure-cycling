@@ -10,7 +10,7 @@
 # the feed the phones consult still points at the version before it.
 #
 # The default timeout covers the worst case rather than the normal one: until
-# `20260929000100_release_cache_fresh_window.sql` is applied, the relay still
+# `20261009032549_release_cache_fresh_window.sql` is applied, the relay still
 # holds a body for ten minutes, and the release is usually published right
 # around when that window opens. Once the migration is applied a release
 # converges in about a minute, and this exits well before the deadline.
