@@ -96,6 +96,8 @@ docker run -d --name "$AUTH" --network "$NET" -p "${PORT_AUTH}:9999" \
   -e GOTRUE_SITE_URL=http://localhost:3000 \
   -e "GOTRUE_JWT_SECRET=${JWT_SECRET}" \
   -e GOTRUE_JWT_EXP=3600 \
+  -e GOTRUE_JWT_AUD=authenticated \
+  -e GOTRUE_JWT_DEFAULT_GROUP_NAME=authenticated \
   -e GOTRUE_API_HOST=0.0.0.0 \
   -e GOTRUE_API_PORT=9999 \
   -e GOTRUE_DISABLE_SIGNUP=false \
@@ -151,7 +153,7 @@ curl -s -m 10 -X POST "$API/signup" -H 'Content-Type: application/json' \
   -d '{}' > "$WORK/b.json"
 
 python3 - "$WORK/b.json" <<'PY' || exit 1
-import json, sys
+import base64, json, sys
 d = json.load(open(sys.argv[1]))
 if not d.get('access_token'):
     print('  ✗ anonymous signup returned no session:', d); sys.exit(1)
@@ -160,6 +162,10 @@ if not u.get('is_anonymous'):
     print('  ✗ anonymous signup produced a non-anonymous user'); sys.exit(1)
 if u.get('email'):
     print('  ✗ anonymous signup produced an email'); sys.exit(1)
+p = d['access_token'].split('.')[1]; p += '=' * (-len(p) % 4)
+claims = json.loads(base64.urlsafe_b64decode(p))
+if claims.get('role') != 'authenticated' or claims.get('sub') != u['id']:
+    print('  ✗ anonymous token has an incorrect role or subject'); sys.exit(1)
 print('  ✓ anonymous signup returned a session with no address')
 PY
 
@@ -178,10 +184,14 @@ p = t.split('.')[1]; p += '=' * (-len(p) % 4)
 claims = json.loads(base64.urlsafe_b64decode(p))
 if not claims.get('sub'):
     print('  ✗ the token carries no subject'); sys.exit(1)
+if claims.get('role') != 'authenticated':
+    print('  ✗ the token does not carry the authenticated role'); sys.exit(1)
+if claims.get('sub') != d['user']['id']:
+    print('  ✗ the token subject does not match the signed-in user'); sys.exit(1)
 # The subject is written to a file rather than stdout so the line above stays
 # a checkmark the reader can see.
 open(sys.argv[2], 'w').write(claims['sub'])
-print('  ✓ sign-in returned a token')
+print('  ✓ sign-in returned an authenticated token with the correct subject')
 PY
 
 EMAIL_SUB=$(cat "$WORK/sub.txt")

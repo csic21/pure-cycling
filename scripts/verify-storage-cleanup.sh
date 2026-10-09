@@ -71,6 +71,7 @@ docker run -d --name "$AUTH" --network "$NET" -p "127.0.0.1:${PORT_AUTH}:9999" \
   -e "GOTRUE_DB_DATABASE_URL=postgres://supabase_admin:postgres@${DB}:5432/postgres?search_path=auth&sslmode=disable" \
   -e "API_EXTERNAL_URL=http://127.0.0.1:${PORT_AUTH}" -e GOTRUE_SITE_URL=http://localhost \
   -e "GOTRUE_JWT_SECRET=$JWT_SECRET" -e GOTRUE_JWT_EXP=3600 \
+  -e GOTRUE_JWT_AUD=authenticated -e GOTRUE_JWT_DEFAULT_GROUP_NAME=authenticated \
   -e GOTRUE_API_HOST=0.0.0.0 -e GOTRUE_API_PORT=9999 -e GOTRUE_DISABLE_SIGNUP=false \
   -e GOTRUE_MAILER_AUTOCONFIRM=true "$AUTH_IMAGE" >/dev/null
 for _ in $(seq 1 60); do

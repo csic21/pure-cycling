@@ -1,4 +1,5 @@
 """Disposable real Storage regression fixtures; never a hosted-project client."""
+import base64
 import http.client
 import json
 import os
@@ -68,6 +69,10 @@ def seed():
         result = json.loads(result)
         user = {'id': result['user']['id'], 'token': result['access_token']}
         uuid.UUID(user['id'])
+        encoded_claims = user['token'].split('.')[1]
+        claims = json.loads(base64.urlsafe_b64decode(encoded_claims + '=' * (-len(encoded_claims) % 4)))
+        assert claims.get('role') == 'authenticated', 'local Auth token must carry the authenticated role'
+        assert claims.get('sub') == user['id'], 'local Auth token subject must match the fixture user'
         user['legacy'] = f"rides/{user['id']}/{uuid.uuid4()}/original.gpx"
         success(upload(user['legacy'], user['token']), 'normal legacy HTTP upload control')
         assert download(user['legacy'], user['token']) == (200, GPX), 'normal file backend/xattr control failed'
