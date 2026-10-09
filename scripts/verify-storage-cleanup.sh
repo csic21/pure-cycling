@@ -61,7 +61,8 @@ select 1;
 SQL
 # The official image reserves this service role. Bootstrap its disposable
 # password as the image's superuser; keep migrations and assertions on postgres.
-docker exec -i "$DB" psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -q <<'SQL'
+docker exec -i -e PGPASSWORD=postgres "$DB" \
+  psql -U supabase_admin -d postgres --no-password -v ON_ERROR_STOP=1 -q <<'SQL'
 alter role supabase_storage_admin with password 'postgres';
 SQL
 
@@ -78,6 +79,8 @@ for _ in $(seq 1 60); do
 done
 curl -fsS "http://127.0.0.1:${PORT_AUTH}/health" >/dev/null || fail 'Auth did not start'
 
+# Queue bootstrap creates its own pgboss schema. Use the disposable database's
+# admin connection for that only; Storage itself keeps its restricted role.
 docker run -d --name "$STORAGE" --network "$NET" -p "127.0.0.1:${PORT_STORAGE}:5000" \
   -e "AUTH_JWT_SECRET=$JWT_SECRET" -e "PGRST_JWT_SECRET=$JWT_SECRET" \
   -e "ANON_KEY=$ANON_KEY" -e "SERVICE_KEY=$SERVICE_KEY" \
@@ -87,6 +90,7 @@ docker run -d --name "$STORAGE" --network "$NET" -p "127.0.0.1:${PORT_STORAGE}:5
   -e TENANT_ID=cleanup-test -e GLOBAL_S3_BUCKET=cleanup-test -e REGION=local \
   -e FILE_SIZE_LIMIT=52428800 -e ENABLE_IMAGE_TRANSFORMATION=false \
   -e PG_QUEUE_ENABLE=true -e PG_QUEUE_WORKERS_ENABLE=true \
+  -e "PG_QUEUE_CONNECTION_URL=postgres://postgres:postgres@${DB}:5432/postgres" \
   -v "$WORK/storage:/var/lib/storage" "$STORAGE_IMAGE" >/dev/null
 for _ in $(seq 1 90); do
   curl -fsS "http://127.0.0.1:${PORT_STORAGE}/status" >/dev/null 2>&1 && break
