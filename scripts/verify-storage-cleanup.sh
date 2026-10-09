@@ -58,6 +58,10 @@ done
 psql_stdin() { docker exec -i "$DB" psql -U postgres -v ON_ERROR_STOP=1 -q; }
 psql_stdin <<'SQL'
 select 1;
+SQL
+# The official image reserves this service role. Bootstrap its disposable
+# password as the image's superuser; keep migrations and assertions on postgres.
+docker exec -i "$DB" psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -q <<'SQL'
 alter role supabase_storage_admin with password 'postgres';
 SQL
 
