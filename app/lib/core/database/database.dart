@@ -44,28 +44,39 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
-        onCreate: (m) async {
-          await m.createAll();
-        },
-        beforeOpen: (details) async {
-          // Track points cascade from their ride; without this pragma the
-          // declared FK is inert and deleting a ride would orphan its trace.
-          await customStatement('PRAGMA foreign_keys = ON');
+    onCreate: (m) async {
+      await m.createAll();
+      await _createTrackSequenceIndex();
+    },
+    onUpgrade: (m, from, to) async {
+      if (from < 2) await _createTrackSequenceIndex();
+    },
+    beforeOpen: (details) async {
+      // Track points cascade from their ride; without this pragma the
+      // declared FK is inert and deleting a ride would orphan its trace.
+      await customStatement('PRAGMA foreign_keys = ON');
 
-          // WAL keeps a write from blocking the 1 Hz insert stream, and
-          // survives a mid-write process death — which, on a phone in a
-          // jersey pocket, is a real scenario rather than a hypothetical.
-          await customStatement('PRAGMA journal_mode = WAL');
-          // NORMAL is the right trade with WAL: an OS crash can lose the last
-          // transaction, an app crash cannot. Full sync would cost real
-          // battery for a durability level this app does not need.
-          await customStatement('PRAGMA synchronous = NORMAL');
-        },
-      );
+      // WAL keeps a write from blocking the 1 Hz insert stream, and
+      // survives a mid-write process death — which, on a phone in a
+      // jersey pocket, is a real scenario rather than a hypothetical.
+      await customStatement('PRAGMA journal_mode = WAL');
+      // NORMAL is the right trade with WAL: an OS crash can lose the last
+      // transaction, an app crash cannot. Full sync would cost real
+      // battery for a durability level this app does not need.
+      await customStatement('PRAGMA synchronous = NORMAL');
+    },
+  );
+
+  // Both new installs and real v1 databases need the covering trace lookup
+  // index. It is deliberately non-unique: upgrading must preserve old data.
+  Future<void> _createTrackSequenceIndex() => customStatement(
+    'CREATE INDEX IF NOT EXISTS track_points_ride_sequence_idx '
+    'ON track_points (ride_id, sequence)',
+  );
 
   /// Deletes everything. Test-support only.
   Future<void> wipe() async {

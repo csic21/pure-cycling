@@ -1,11 +1,16 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/core/sync/supabase_remote.dart';
+import 'package:cycling_app/core/sync/cloud_data_wipe_client.dart';
+import 'package:cycling_app/features/ride/domain/ride.dart';
+import 'package:cycling_app/features/ride/domain/track_point.dart';
 import 'package:cycling_app/core/sync/sync_service.dart';
 import 'package:cycling_app/core/sync/sync_status.dart';
 import 'package:cycling_app/features/ride/data/ride_repository.dart';
 import 'package:cycling_app/features/routes/data/route_repository.dart';
+import 'package:cycling_app/features/routes/domain/route.dart' as route_model;
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +24,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   const connectivity = MethodChannel('dev.fluttercommunity.plus/connectivity');
+  const connectivityEvents = MethodChannel(
+    'dev.fluttercommunity.plus/connectivity_status',
+  );
   const userId = '00000000-0000-4000-8000-000000000001';
   const rideId = '00000000-0000-4000-8000-000000000002';
   const objectPath = 'rides/$userId/$rideId/original.gpx';
@@ -34,6 +42,11 @@ void main() {
   late List<http.Request> requests;
   late bool failStorage;
   late bool failPush;
+  late CloudDataWipeClient wipeClient;
+  late Directory temp;
+  late Set<String> storedObjects;
+  late bool failWipe;
+  Future<void> Function()? duringRidePush;
 
   Map<String, dynamic> cloudRide() => {
     'id': rideId,
@@ -74,7 +87,11 @@ void main() {
 
   setUp(() async {
     db = AppDatabase.forTesting(NativeDatabase.memory());
-    rides = RideRepository(db);
+    temp = await Directory.systemTemp.createTemp('sync-test-');
+    rides = _ExportRepository(db, File('${temp.path}/trace.gpx'));
+    storedObjects = {objectPath};
+    failWipe = false;
+    duringRidePush = null;
     cloudRows = {rideId: cloudRide()};
     cloudRoutes = [];
     requests = [];
@@ -82,6 +99,8 @@ void main() {
     failPush = false;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(connectivity, (_) async => ['wifi']);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(connectivityEvents, (_) async => null);
 
     client = SupabaseClient(
       'https://sync-test.invalid',
@@ -113,7 +132,14 @@ void main() {
             },
           });
         }
-        if (path == '/rest/v1/rpc/push_ride') {
+        if (path == '/rest/v1/rpc/new_gpx_upload_path') {
+          final payload = jsonDecode(request.body) as Map;
+          return jsonResponse(
+            request,
+            'rides/$userId/${payload['p_ride_id']}/11111111-1111-4111-8111-111111111111/${payload['p_attempt_id']}.gpx',
+          );
+        }
+        if (path == '/rest/v1/rpc/push_ride_v2') {
           if (failPush) {
             return jsonResponse(request, {
               'message': 'push unavailable',
@@ -123,9 +149,70 @@ void main() {
           final payload = Map<String, dynamic>.from(
             (jsonDecode(request.body) as Map)['p_ride'] as Map,
           );
+          final hook = duringRidePush;
+          duringRidePush = null;
+          if (hook != null) await hook();
+          if (payload['deleted_at'] == null &&
+              payload['gpx_path'] != null &&
+              !storedObjects.contains(payload['gpx_path'])) {
+            return jsonResponse(request, {
+              'code': 'PC001',
+              'message': 'GPX_OBJECT_MISSING',
+            }, status: 400);
+          }
           final id = payload['id'] as String;
-          cloudRows[id] = {...?cloudRows[id], ...payload};
-          return http.Response('', 204, request: request);
+          final old = cloudRows[id];
+          final newer =
+              old == null ||
+              DateTime.parse(
+                payload['updated_at'] as String,
+              ).isAfter(DateTime.parse(old['updated_at'] as String));
+          final deleteTie =
+              old != null &&
+              old['deleted_at'] == null &&
+              payload['deleted_at'] != null &&
+              payload['updated_at'] == old['updated_at'];
+          final accepted =
+              old == null ||
+              ((old['deleted_at'] == null || payload['deleted_at'] != null) &&
+                  (newer || deleteTie));
+          if (accepted) {
+            cloudRows[id] = {
+              ...?old,
+              ...payload,
+              'gpx_path': payload['gpx_path'] ?? old?['gpx_path'],
+            };
+          }
+          return jsonResponse(request, {
+            'accepted': accepted,
+            'row': cloudRows[id],
+          });
+        }
+        if (path == '/rest/v1/rpc/push_route_v2') {
+          final payload = Map<String, dynamic>.from(
+            (jsonDecode(request.body) as Map)['p_route'] as Map,
+          );
+          final index = cloudRoutes.indexWhere(
+            (row) => row['id'] == payload['id'],
+          );
+          final old = index < 0 ? null : cloudRoutes[index];
+          final accepted =
+              old == null ||
+              (old['deleted_at'] == null &&
+                  DateTime.parse(
+                    payload['updated_at'] as String,
+                  ).isAfter(DateTime.parse(old['updated_at'] as String)));
+          if (accepted) {
+            if (index < 0) {
+              cloudRoutes.add(payload);
+            } else {
+              cloudRoutes[index] = payload;
+            }
+          }
+          return jsonResponse(request, {
+            'accepted': accepted,
+            'row': accepted ? payload : old,
+          });
         }
         if ((path == '/rest/v1/rides' || path == '/rest/v1/routes') &&
             request.method == 'GET') {
@@ -165,8 +252,20 @@ void main() {
               'message': 'Storage unavailable',
             }, status: 503);
           }
+          final paths = (jsonDecode(request.body) as Map)['prefixes'] as List;
+          for (final path in paths) {
+            storedObjects.remove(path);
+          }
           // Already missing is a successful, empty response from Storage.
           return jsonResponse(request, []);
+        }
+        if (request.method == 'POST' &&
+            path.startsWith('/storage/v1/object/rides/')) {
+          final object = path.substring('/storage/v1/object/rides/'.length);
+          expect(request.headers['x-upsert'], 'false');
+          expect(object, isNot(objectPath));
+          storedObjects.add(object);
+          return jsonResponse(request, {'Key': 'rides/$object'});
         }
         if (request.method == 'DELETE' && path.startsWith('/rest/v1/')) {
           if (path == '/rest/v1/rides') cloudRows.clear();
@@ -179,12 +278,28 @@ void main() {
     );
     await client.auth.signInAnonymously();
     remote = SupabaseRemote(client, userId);
+    wipeClient = CloudDataWipeClient(
+      endpoint: 'https://sync-test.invalid/functions/v1/wipe-cloud-data',
+      accessToken: () => client.auth.currentSession?.accessToken,
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        if (failStorage || failWipe) {
+          return jsonResponse(request, {
+            'error': 'Storage unavailable',
+          }, status: 503);
+        }
+        storedObjects.clear();
+        cloudRows.clear();
+        return jsonResponse(request, {'wiped': true, 'files': 0});
+      }),
+    );
     service = SyncService(
       db: db,
       rides: rides,
       routes: RouteRepository(db),
       resolveClient: () => client,
       isConfigured: () => true,
+      cloudWipeClient: wipeClient,
     );
     service.applySettings(const AppSettings(cloudSync: true));
     requests.clear();
@@ -193,9 +308,13 @@ void main() {
   tearDown(() async {
     await service.dispose();
     await client.dispose();
+    wipeClient.close();
     await db.close();
+    await temp.delete(recursive: true);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(connectivity, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(connectivityEvents, null);
   });
 
   test(
@@ -347,10 +466,169 @@ void main() {
     expect(pending.single.retryCount, 1);
     expect(pending.single.lastError, contains('push unavailable'));
     expect(
-      requests.where((r) => r.url.path == '/rest/v1/rpc/push_ride'),
+      requests.where((r) => r.url.path == '/rest/v1/rpc/push_ride_v2'),
       hasLength(1),
     );
   });
+
+  test(
+    'stale metadata push consumes server winner and cannot overwrite it',
+    () async {
+      await service.mergeRemoteRide((await remote.fetchRides()).single);
+      await rides.updateDescription(
+        rideId,
+        name: 'stale offline name',
+        notes: 'stale',
+      );
+      final newer = DateTime.now().toUtc().add(const Duration(hours: 1));
+      cloudRows[rideId]!['updated_at'] = newer.toIso8601String();
+      cloudRows[rideId]!['name'] = 'server winner';
+      cloudRows[rideId]!['notes'] = 'newer';
+      await service.syncNow(force: true);
+      expect(cloudRows[rideId]!['name'], 'server winner');
+      expect((await rides.getRide(rideId))!.name, 'server winner');
+      expect((await rides.getRide(rideId))!.updatedAt, newer);
+      expect(await db.syncQueueDao.pendingCount(), 0);
+    },
+  );
+
+  test(
+    'stale trace upload never overwrites winning GPX and removes its candidate',
+    () async {
+      await service.mergeRemoteRide((await remote.fetchRides()).single);
+      await rides.importTrackPoints(rideId, [
+        for (var i = 1; i <= 2; i++)
+          TrackPoint(
+            rideId: rideId,
+            sequence: i,
+            timestamp: recordedAt.add(Duration(seconds: i)),
+            lat: 31 + i * .01,
+            lng: 121,
+          ),
+      ]);
+      await rides.setGpxPath(rideId, '/local/old-export.gpx');
+      await rides.updateDescription(rideId, name: 'stale', notes: null);
+      cloudRows[rideId]!['updated_at'] = DateTime.now()
+          .toUtc()
+          .add(const Duration(hours: 1))
+          .toIso8601String();
+      await service.syncNow(force: true);
+      expect(storedObjects, {objectPath});
+      expect(cloudRows[rideId]!['gpx_path'], objectPath);
+      expect((await rides.getRide(rideId))!.gpxPath, objectPath);
+      expect(await db.syncQueueDao.pendingCount(), 0);
+    },
+  );
+
+  test('server tombstone wins even over a future-dated local edit', () async {
+    await service.mergeRemoteRide((await remote.fetchRides()).single);
+    await rides.updateDescription(rideId, name: 'offline edit', notes: null);
+    cloudRows[rideId]!['deleted_at'] = recordedAt.toIso8601String();
+    await service.syncNow(force: true);
+    expect((await rides.getRide(rideId))!.isDeleted, isTrue);
+    expect(cloudRows[rideId]!['deleted_at'], isNotNull);
+    expect(storedObjects, isEmpty);
+    expect(await db.syncQueueDao.pendingCount(), 0);
+  });
+
+  test(
+    'a losing stale local delete never removes the live winner GPX',
+    () async {
+      await service.mergeRemoteRide((await remote.fetchRides()).single);
+      await rides.deleteRide(rideId);
+      cloudRows[rideId]!['updated_at'] = DateTime.now()
+          .toUtc()
+          .add(const Duration(hours: 1))
+          .toIso8601String();
+      await service.syncNow(force: true);
+      expect(storedObjects, {objectPath});
+      expect((await rides.getRide(rideId))!.isDeleted, isFalse);
+      expect(await db.syncQueueDao.pendingCount(), 0);
+    },
+  );
+
+  test(
+    'a deletion during an in-flight upsert is not resurrected by its acknowledgement',
+    () async {
+      await service.mergeRemoteRide((await remote.fetchRides()).single);
+      await rides.updateDescription(rideId, name: 'uploading', notes: null);
+      duringRidePush = () => rides.deleteRide(rideId);
+      await service.syncNow(force: true);
+      expect((await rides.getRide(rideId))!.isDeleted, isTrue);
+      final pending = await db.syncQueueDao.all();
+      expect(pending, hasLength(1));
+      expect(pending.single.operation, SyncOperation.delete);
+      await service.syncNow(force: true);
+      expect(cloudRows[rideId]!['deleted_at'], isNotNull);
+      expect(await db.syncQueueDao.pendingCount(), 0);
+    },
+  );
+
+  test(
+    'a committed enqueue wakes the running service without a manual sync',
+    () async {
+      await service.mergeRemoteRide((await remote.fetchRides()).single);
+      service.start();
+      final uploaded = service.reports.firstWhere(
+        (report) => report.uploaded == 1 && !report.isBusy,
+      );
+      await rides.updateDescription(
+        rideId,
+        name: 'automatic upload',
+        notes: null,
+      );
+      await uploaded.timeout(const Duration(seconds: 5));
+      expect(cloudRows[rideId]!['name'], 'automatic upload');
+      expect(await db.syncQueueDao.pendingCount(), 0);
+      await service.stop();
+    },
+  );
+
+  test(
+    'a retained path after a remote wipe is rebuilt from the local trace',
+    () async {
+      await service.mergeRemoteRide((await remote.fetchRides()).single);
+      await rides.importTrackPoints(rideId, [
+        for (var i = 1; i <= 2; i++)
+          TrackPoint(
+            rideId: rideId,
+            sequence: i,
+            timestamp: recordedAt.add(Duration(seconds: i)),
+            lat: 31 + i * .01,
+            lng: 121,
+          ),
+      ]);
+      await rides.updateDescription(rideId, name: 'local backup', notes: null);
+      cloudRows.clear();
+      storedObjects.clear();
+      await service.syncNow(force: true);
+      expect(cloudRows[rideId]!['gpx_path'], isNot(objectPath));
+      expect(storedObjects, contains(cloudRows[rideId]!['gpx_path']));
+      expect(
+        (await rides.getRide(rideId))!.gpxPath,
+        cloudRows[rideId]!['gpx_path'],
+      );
+      expect(await rides.trackPointCount(rideId), 2);
+      expect(await db.syncQueueDao.pendingCount(), 0);
+    },
+  );
+
+  test(
+    'a missing cloud trace with no local copy remains retryable, not falsely synced',
+    () async {
+      await service.mergeRemoteRide((await remote.fetchRides()).single);
+      await rides.updateDescription(rideId, name: 'summary only', notes: null);
+      cloudRows.clear();
+      storedObjects.clear();
+      await service.syncNow(force: true);
+      expect(cloudRows, isEmpty);
+      expect(
+        (await db.syncQueueDao.all()).single.lastError,
+        contains('云端轨迹已删除'),
+      );
+      expect((await rides.getRide(rideId))!.name, 'summary only');
+    },
+  );
 
   test('late uploaded offline edits are found after an earlier pull', () async {
     await service.syncNow(force: true);
@@ -415,6 +693,40 @@ void main() {
     expect(result.map((route) => route.id).toSet(), hasLength(501));
     expect(result.every((route) => route.points.length == 2), isTrue);
   });
+
+  test(
+    'rejected route push applies the canonical name, geometry and timestamp',
+    () async {
+      cloudRows.clear();
+      final stamp = recordedAt.toIso8601String();
+      cloudRoutes = [
+        {
+          'id': 'route-1',
+          'name': 'initial route',
+          'updated_at': stamp,
+          'created_at': stamp,
+          'route_geometry': {
+            'type': 'LineString',
+            'coordinates': [
+              [121.4, 31.2],
+              [121.5, 31.3],
+            ],
+          },
+        },
+      ];
+      await service.syncNow(force: true);
+      await RouteRepository(db).renameRoute('route-1', 'stale rename');
+      final newer = DateTime.now().toUtc().add(const Duration(hours: 1));
+      cloudRoutes.single['updated_at'] = newer.toIso8601String();
+      cloudRoutes.single['name'] = 'server route';
+      await service.syncNow(force: true);
+      final route_model.Route local = (await db.routeDao.getRoute('route-1'))!;
+      expect(local.name, 'server route');
+      expect(local.updatedAt, newer);
+      expect(local.points, hasLength(2));
+      expect(await db.syncQueueDao.pendingCount(), 0);
+    },
+  );
 
   test('full pulls do not restore unseen tombstones as live rides', () async {
     cloudRows[rideId]!['deleted_at'] = recordedAt.toIso8601String();
@@ -485,4 +797,14 @@ void main() {
       isTrue,
     );
   });
+}
+
+class _ExportRepository extends RideRepository {
+  _ExportRepository(super.db, this.file);
+  final File file;
+  @override
+  Future<File> exportGpx(Ride ride) async {
+    await file.writeAsString('<gpx><trk><name>${ride.name}</name></trk></gpx>');
+    return file;
+  }
 }

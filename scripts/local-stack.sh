@@ -30,7 +30,15 @@ RESET=false
 [ "${1:-}" = "--reset" ] && RESET=true
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+SERVE_PID=""
+cleanup() {
+  if [ -n "$SERVE_PID" ]; then
+    kill "$SERVE_PID" >/dev/null 2>&1 || true
+    wait "$SERVE_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
 
 ok() { echo "  ✓ $1"; }
 fail() { echo "  ✗ $1" >&2; exit 1; }
@@ -103,7 +111,7 @@ ANON_KEY="$(status_env ANON_KEY)"
 # The app's request path, in the app's order
 # ---------------------------------------------------------------------------
 
-api() { curl -s -m 20 "$@"; }
+api() { curl -fsS -m 20 "$@"; }
 code() { curl -s -m 20 -o /dev/null -w '%{http_code}' "$@"; }
 auth_header() { printf 'apikey: %s\nAuthorization: Bearer %s\n' "$ANON_KEY" "$1"; }
 
@@ -172,7 +180,11 @@ echo "==> uploading a GPX to the storage bucket"
 # looks redundant in the URL, and it is, but the second segment is part of the
 # policy, not a typo.
 BUCKET=rides
-OBJECT_NAME="rides/$OWNER/$RIDE_ID/original.gpx"
+OBJECT_NAME="$(api -X POST "$API_URL/rest/v1/rpc/new_gpx_upload_path" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"p_ride_id\":\"$RIDE_ID\",\"p_attempt_id\":\"$(uuidgen | tr 'A-Z' 'a-z')\"}" | \
+  python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value,str); print(value)')"
 UPLOAD_URL="$API_URL/storage/v1/object/$BUCKET/$OBJECT_NAME"
 DOWNLOAD_URL="$API_URL/storage/v1/object/authenticated/$BUCKET/$OBJECT_NAME"
 
@@ -203,7 +215,7 @@ api -X POST "$API_URL/rest/v1/rpc/push_ride" \
   -H 'Content-Type: application/json' \
   -d "{\"p_ride\":{\"id\":\"$RIDE_ID\",\"started_at\":\"2026-09-24T06:00:00Z\",
         \"distance_meters\":12000,\"gpx_path\":\"$OBJECT_NAME\",
-        \"updated_at\":\"2026-09-24T07:00:00Z\"}}" >/dev/null
+        \"updated_at\":\"2026-09-24T07:01:00Z\"}}" >/dev/null
 ok "the row now points at the uploaded GPX"
 
 # ---------------------------------------------------------------------------
@@ -249,11 +261,8 @@ esac
 # ---------------------------------------------------------------------------
 # Deleting the cloud copy
 #
-# This is the request path behind 「删除云端数据」, in the app's order: read the
-# object paths, remove the objects, then the rows. The rows are the index of
-# what lives in the bucket, so they cannot be the first to go — and if this
-# order ever slips, a location trace is left behind in Storage after the user
-# asked for it to be deleted.
+# The app invokes a fenced server endpoint; direct row-index-only wipes are
+# denied so older clients cannot report false success while leaving orphans.
 # ---------------------------------------------------------------------------
 
 echo "==> deleting the cloud copy (rides, routes, settings, GPX)"
@@ -284,23 +293,38 @@ STATUS="$(code -X DELETE "$API_URL/storage/v1/object/$BUCKET/$OBJECT_NAME" \
 [ "$STATUS" != "200" ] || fail "a second account deleted the rider's GPX"
 ok "a second account cannot delete the object (HTTP $STATUS)"
 
-STATUS="$(code -X DELETE "$API_URL/storage/v1/object/$BUCKET/$OBJECT_NAME" \
+# Legacy direct hard-delete must fail instead of pretending it was a wipe.
+STATUS="$(code -X DELETE "$API_URL/rest/v1/rides?user_id=eq.$OWNER" \
   -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN")"
-[ "$STATUS" = "200" ] || fail "the rider could not delete their own GPX (HTTP $STATUS)"
+[ "$STATUS" = "403" ] || fail "unfenced legacy wipe was not rejected (HTTP $STATUS)"
 
+if pgrep -f "supabase functions serve" >/dev/null 2>&1; then
+  fail "stop the existing functions serve process before validating this checkout"
+fi
+"$CLI" functions serve >"$WORK/functions.log" 2>&1 &
+SERVE_PID=$!
+for _ in $(seq 1 60); do
+  STATUS="$(code -X POST "$API_URL/functions/v1/wipe-cloud-data" \
+    -H 'Content-Type: application/json' -d '{}')"
+  [ "$STATUS" = "401" ] && break
+  sleep 1
+done
+[ "$STATUS" = "401" ] || { tail -30 "$WORK/functions.log" >&2; fail "wipe endpoint did not start"; }
+STATUS="$(curl -sS -m 60 -o "$WORK/wipe.json" -w '%{http_code}' \
+  -X POST "$API_URL/functions/v1/wipe-cloud-data" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" \
+  -H 'Content-Type: application/json' -d '{}')"
+[ "$STATUS" = "200" ] || { cat "$WORK/wipe.json" >&2; fail "cloud wipe failed (HTTP $STATUS)"; }
+python3 - "$WORK/wipe.json" <<'PYCHECK'
+import json, sys
+result = json.load(open(sys.argv[1]))
+assert result.get('wiped') is True, result
+assert result.get('files') == 1, result
+PYCHECK
 STATUS="$(code "$DOWNLOAD_URL" \
   -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN")"
-[ "$STATUS" != "200" ] || fail "the GPX is still downloadable after deletion"
-ok "the rider deletes their own GPX, and it is gone"
-
-# Rows, in the same order the app uses: storage first, then the tables.
-for table in rides routes user_settings; do
-  STATUS="$(code -X DELETE "$API_URL/rest/v1/$table?user_id=eq.$OWNER" \
-    -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" \
-    -H 'Prefer: return=minimal')"
-  [ "$STATUS" = "204" ] || fail "deleting from $table returned $STATUS"
-done
-ok "the rider's rows are gone (rides, routes, settings)"
+[ "$STATUS" != "200" ] || fail "the GPX is still downloadable after wipe"
+ok "the server removed cloud rows and GPX under the account fence"
 
 REMAINING="$(api "$API_URL/rest/v1/rides?select=id" \
   -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_TOKEN" |

@@ -62,6 +62,10 @@ verify_jwt="$(value_of functions.delete-account verify_jwt)"
   fail "[functions.delete-account] verify_jwt 不是 true（是 ${verify_jwt:-空}）"
 ok "delete-account 函数要求会话（verify_jwt = true）"
 
+verify_jwt="$(value_of functions.wipe-cloud-data verify_jwt)"
+[ "$verify_jwt" = "true" ] || fail "wipe-cloud-data 必须要求会话"
+ok "wipe-cloud-data 函数要求会话（verify_jwt = true）"
+
 verify_jwt="$(value_of functions.release verify_jwt)"
 [ "$verify_jwt" = "false" ] ||
   fail "[functions.release] verify_jwt 是 ${verify_jwt:-空}，应为 false —— 它只转发公开的 Release 信息，要求会话会让退出登录的骑手查不到更新"

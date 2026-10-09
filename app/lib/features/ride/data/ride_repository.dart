@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
+import 'package:drift/drift.dart';
 
 import '../../../core/database/dao/ride_dao.dart';
 import '../../../core/database/database.dart';
@@ -91,6 +92,7 @@ class RideRepository {
   Future<void> saveFinishedRide(
     Ride ride, {
     List<TrackPoint> unflushed = const [],
+    bool writeExport = true,
   }) async {
     await _db.transaction(() async {
       await _rides.upsertRide(ride);
@@ -120,7 +122,7 @@ class RideRepository {
     // is missing. Awaiting it would make the rider watch a two-megabyte flash
     // write before the app would admit their ride was saved — the one step on
     // this path that can block on the file system, for no benefit.
-    unawaited(_writeGpxInBackground(ride));
+    if (writeExport) unawaited(_writeGpxInBackground(ride));
   }
 
   /// Saves the rider's description of a finished ride: the two fields the
@@ -134,16 +136,18 @@ class RideRepository {
     required String? name,
     required String? notes,
   }) async {
-    await _rides.setRideDescription(id, name: name, notes: notes);
-    // These are the only fields editable after a ride (spec §28), which is
-    // what keeps the merge with the cloud trivial — there is never a statistic
-    // to reconcile.
-    await _db.syncQueueDao.enqueue(
-      SyncEntityType.ride,
-      id,
-      SyncOperation.upsert,
-    );
-    await _rides.setSyncStatus(id, SyncStatus.pendingUpload);
+    await _db.transaction(() async {
+      await _rides.setRideDescription(id, name: name, notes: notes);
+      // These are the only fields editable after a ride (spec §28), which is
+      // what keeps the merge with the cloud trivial — there is never a statistic
+      // to reconcile.
+      await _db.syncQueueDao.enqueue(
+        SyncEntityType.ride,
+        id,
+        SyncOperation.upsert,
+      );
+      await _rides.setSyncStatus(id, SyncStatus.pendingUpload);
+    });
   }
 
   Future<void> updateMetadata(
@@ -152,21 +156,23 @@ class RideRepository {
     String? notes,
     String? bikeId,
   }) async {
-    await _rides.updateRideMetadata(
-      id,
-      name: name,
-      notes: notes,
-      bikeId: bikeId,
-    );
-    // Only these three fields are editable after a ride (spec §28), which is
-    // what keeps the merge with the cloud trivial — there is never a
-    // statistic to reconcile.
-    await _db.syncQueueDao.enqueue(
-      SyncEntityType.ride,
-      id,
-      SyncOperation.upsert,
-    );
-    await _rides.setSyncStatus(id, SyncStatus.pendingUpload);
+    await _db.transaction(() async {
+      await _rides.updateRideMetadata(
+        id,
+        name: name,
+        notes: notes,
+        bikeId: bikeId,
+      );
+      // Only these three fields are editable after a ride (spec §28), which is
+      // what keeps the merge with the cloud trivial — there is never a
+      // statistic to reconcile.
+      await _db.syncQueueDao.enqueue(
+        SyncEntityType.ride,
+        id,
+        SyncOperation.upsert,
+      );
+      await _rides.setSyncStatus(id, SyncStatus.pendingUpload);
+    });
   }
 
   /// Erases a ride the rider abandoned before finishing.
@@ -177,12 +183,14 @@ class RideRepository {
   Future<void> purgeAbandonedRide(String id) => _rides.purgeAbandonedRide(id);
 
   Future<void> deleteRide(String id) async {
-    await _rides.softDeleteRide(id);
-    await _db.syncQueueDao.enqueue(
-      SyncEntityType.ride,
-      id,
-      SyncOperation.delete,
-    );
+    await _db.transaction(() async {
+      await _rides.softDeleteRide(id);
+      await _db.syncQueueDao.enqueue(
+        SyncEntityType.ride,
+        id,
+        SyncOperation.delete,
+      );
+    });
   }
 
   // ---- Cloud reconciliation ----
@@ -214,6 +222,7 @@ class RideRepository {
     required String? notes,
     required DateTime updatedAt,
     String? gpxPath,
+    bool restoreLive = false,
   }) async {
     await _rides.setRideDescription(
       id,
@@ -221,9 +230,12 @@ class RideRepository {
       notes: notes,
       updatedAt: updatedAt,
     );
-    if (gpxPath != null) {
-      await _rides.setGpxPath(id, gpxPath);
-    }
+    await (_db.update(_db.localRides)..where((t) => t.id.equals(id))).write(
+      LocalRidesCompanion(
+        gpxPath: Value(gpxPath),
+        deletedAt: restoreLive ? const Value(null) : const Value.absent(),
+      ),
+    );
     await _rides.setSyncStatus(id, SyncStatus.synced);
   }
 
@@ -265,12 +277,12 @@ class RideRepository {
     return file.path;
   }
 
-  /// Writes the GPX to disk and records where it went, off the critical path.
+  /// Writes a regenerable local GPX off the critical path. Local filenames
+  /// never replace the cloud object reference in the ride row.
   Future<void> _writeGpxInBackground(Ride ride) async {
     try {
       final trace = await _rides.getTrackPoints(ride.id);
-      final path = await writeGpxFile(ride, trace);
-      await _rides.setGpxPath(ride.id, path);
+      await writeGpxFile(ride, trace);
     } catch (_) {
       // Regenerable; the export and upload paths both rebuild it on demand.
     }
@@ -281,7 +293,6 @@ class RideRepository {
   Future<File> exportGpx(Ride ride) async {
     final trace = await trackPoints(ride.id);
     final path = await writeGpxFile(ride, trace);
-    await _rides.setGpxPath(ride.id, path);
     return File(path);
   }
 

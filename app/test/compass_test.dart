@@ -10,6 +10,7 @@ import 'package:cycling_app/features/ride/data/ride_repository.dart';
 import 'package:cycling_app/features/ride/domain/ride_engine.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fake_async/fake_async.dart';
 
 import 'support/test_harness.dart';
 
@@ -59,15 +60,18 @@ void main() {
     double east = 0,
     double north = 0,
     double? heading,
-  }) =>
-      LocationFix(
-        latitude: 39.9 + north / 111132.0,
-        longitude: 116.4 +
-            east / (111320.0 * math.cos(39.9 * math.pi / 180.0)),
-        timestamp: at,
-        accuracy: 4,
-        heading: heading,
-      );
+    double? speed,
+    double? headingAccuracy,
+    double accuracy = 4,
+  }) => LocationFix(
+    latitude: 39.9 + north / 111132.0,
+    longitude: 116.4 + east / (111320.0 * math.cos(39.9 * math.pi / 180.0)),
+    timestamp: at,
+    accuracy: accuracy,
+    heading: heading,
+    speed: speed,
+    headingAccuracy: headingAccuracy,
+  );
 
   /// Drives [count] fixes that do not move — one a second, from the position
   /// given by [east]/[north] — the parked-at-a-junction case the compass
@@ -99,15 +103,16 @@ void main() {
   }
 
   group('the fusion', () {
-    test('with no compass the bearing behaves exactly as it did before', () {
+    test('without compass a stopped course expires instead of freezing', () {
       final filter = GpsFilter();
       final t0 = DateTime.utc(2026, 9, 28, 6);
 
       // A fix that moves far enough to derive a course, then a long standstill
-      // with nothing to derive one from. This is the low-speed hole, and
-      // without a compass the last course simply carries forward.
+      // with nothing to derive one from. The last course expires.
       filter.process(fixAt(t0));
-      final moved = filter.process(fixAt(t0.add(const Duration(seconds: 1)), east: 10));
+      final moved = filter.process(
+        fixAt(t0.add(const Duration(seconds: 1)), east: 10),
+      );
       expect(moved.bearing, closeTo(90, 0.5), reason: '正东应当是 90°');
 
       final still = holdStill(
@@ -115,11 +120,7 @@ void main() {
         t0.add(const Duration(seconds: 1)),
         east: 10,
       );
-      expect(
-        still,
-        closeTo(90, 0.5),
-        reason: '没有指南针时，方向停在最后一次 GPS 航向，而不是转去别处',
-      );
+      expect(still, isNull, reason: '停车后没有可信方向时显示定位圆点，不能永久保留旧箭头');
     });
 
     test('a compass gives a real direction while the bike is stopped', () {
@@ -143,11 +144,7 @@ void main() {
         compassDegrees: 45,
         east: 10,
       );
-      expect(
-        still,
-        closeTo(105, 1.5),
-        reason: '指南针 45° + 锚点 60° = 105°',
-      );
+      expect(still, closeTo(105, 1.5), reason: '指南针 45° + 锚点 60° = 105°');
     });
 
     test('a compass that disagrees with a live GPS course is ignored', () {
@@ -179,11 +176,7 @@ void main() {
       // the reading from ten seconds ago must not be presented as current.
       final at = t0.add(const Duration(seconds: 11));
       final still = filter.process(fixAt(at, east: 10)).bearing;
-      expect(
-        still,
-        closeTo(90, 0.5),
-        reason: '陈旧读数要交还给 GPS 航向，而不是继续冒充方向',
-      );
+      expect(still, isNull, reason: '指南针和 GPS 都已过期，不能继续冒充方向');
     });
 
     test('a compass the phone cannot stand behind is ignored', () {
@@ -202,15 +195,14 @@ void main() {
         compassDegrees: 45,
         east: 10,
       );
-      expect(still, closeTo(90, 0.5));
+      expect(still, isNull);
     });
 
-    test('an unusable accuracy is treated as unknown, not as bad', () {
+    test('an explicitly invalid accuracy cannot calibrate a compass', () {
       final filter = GpsFilter();
       final t0 = DateTime.utc(2026, 9, 28, 6);
 
-      // A negative accuracy is the platform declining to quantify the reading.
-      // Android reports a band and iOS reports -1 when it has nothing to say.
+      // A platform explicitly reporting invalid heading accuracy is rejected.
       filter.onCompassHeading(30, at: t0, accuracyDegrees: -1);
       filter.process(fixAt(t0));
       filter.process(fixAt(t0.add(const Duration(seconds: 1)), east: 10));
@@ -221,7 +213,7 @@ void main() {
         compassDegrees: 45,
         east: 10,
       );
-      expect(still, closeTo(105, 1.5), reason: '说不清精度不等于读数不可用');
+      expect(still, isNull, reason: '无效精度不能校准指南针');
     });
 
     test('a heading crossing north does not swing the long way round', () {
@@ -252,11 +244,7 @@ void main() {
       );
       // Smoothed a third of the way from 350° to 355° — the short way. The
       // long way would land near 250°.
-      expect(
-        still,
-        closeTo(351.5, 0.5),
-        reason: '方位角是环形的，插值不能绕远路',
-      );
+      expect(still, closeTo(351.5, 0.5), reason: '方位角是环形的，插值不能绕远路');
     });
 
     test('no anchor is invented before a GPS course exists', () {
@@ -267,12 +255,220 @@ void main() {
       // has said which way the bike is pointing in the world the map uses.
       filter.onCompassHeading(120, at: t0);
       final first = filter.process(fixAt(t0)).bearing;
+      expect(first, isNull, reason: '没有 GPS 航向可锚定时，不能凭空造一个方向出来');
+    });
+  });
+
+  group('travel direction regressions', () {
+    final t0 = DateTime.utc(2026, 10, 9);
+
+    test('first stationary platform heading is not travel direction', () {
+      final filter = GpsFilter();
+      expect(filter.process(fixAt(t0, heading: 270, speed: 0)).bearing, isNull);
+      for (var i = 1; i < 12; i++) {
+        expect(
+          filter
+              .process(
+                fixAt(
+                  t0.add(Duration(seconds: i)),
+                  east: i.isEven ? 1 : -1,
+                  heading: i * 25.0,
+                  speed: 0.2,
+                ),
+              )
+              .bearing,
+          isNull,
+        );
+      }
+    });
+
+    test('slow travel accumulates a reliable baseline across fixes', () {
+      final filter = GpsFilter();
+      filter.process(fixAt(t0));
+      for (var i = 1; i < 4; i++) {
+        expect(
+          filter
+              .process(fixAt(t0.add(Duration(seconds: i)), east: i * 1.5))
+              .bearing,
+          isNull,
+        );
+      }
+      final result = filter.process(
+        fixAt(t0.add(const Duration(seconds: 5)), east: 7.5),
+      );
+      expect(result.bearing, closeTo(90, 0.5));
+    });
+
+    test('reported course requires speed and heading accuracy', () {
+      final reliable = GpsFilter();
       expect(
-        first,
+        reliable
+            .process(fixAt(t0, heading: 90, speed: 5, headingAccuracy: 5))
+            .bearing,
+        90,
+      );
+      for (final heading in [double.nan, double.infinity, -1.0, 360.0]) {
+        expect(
+          GpsFilter().process(fixAt(t0, heading: heading, speed: 5)).bearing,
+          isNull,
+        );
+      }
+      expect(
+        GpsFilter()
+            .process(fixAt(t0, heading: 90, speed: 5, headingAccuracy: 80))
+            .bearing,
         isNull,
-        reason: '没有 GPS 航向可锚定时，不能凭空造一个方向出来',
       );
     });
+
+    test('a rejected teleport cannot become a later travel baseline', () {
+      final filter = GpsFilter();
+      filter.process(fixAt(t0));
+      filter.process(fixAt(t0.add(const Duration(seconds: 1)), east: 1000));
+      expect(
+        filter
+            .process(fixAt(t0.add(const Duration(seconds: 2)), east: 1000))
+            .bearing,
+        isNull,
+      );
+    });
+
+    test('poor-accuracy position jitter cannot derive a course', () {
+      final filter = GpsFilter();
+      filter.process(fixAt(t0, accuracy: 25));
+      expect(
+        filter
+            .process(
+              fixAt(t0.add(const Duration(seconds: 1)), east: 10, accuracy: 25),
+            )
+            .bearing,
+        isNull,
+      );
+    });
+
+    for (final frame in [1, 2, 3]) {
+      test('display frame 0 to $frame discards old mount calibration', () {
+        final filter = GpsFilter();
+        filter.onCompassHeading(30, at: t0);
+        filter.process(fixAt(t0, heading: 90, speed: 5));
+        filter.process(fixAt(t0.add(const Duration(seconds: 1)), speed: 0));
+        filter.onCompassHeading(
+          120,
+          at: t0.add(const Duration(seconds: 2)),
+          orientationQuarterTurns: frame,
+        );
+        expect(
+          filter.advanceBearingFromCompass(t0.add(const Duration(seconds: 2))),
+          isNull,
+        );
+        final movingAt = t0.add(const Duration(seconds: 3));
+        filter.onCompassHeading(
+          120,
+          at: movingAt,
+          orientationQuarterTurns: frame,
+        );
+        expect(
+          filter
+              .process(fixAt(movingAt, east: 10, heading: 90, speed: 5))
+              .bearing,
+          90,
+        );
+        filter.process(
+          fixAt(t0.add(const Duration(seconds: 4)), east: 10, speed: 0),
+        );
+        expect(
+          filter.advanceBearingFromCompass(t0.add(const Duration(seconds: 4))),
+          90,
+        );
+      });
+    }
+
+    test('live GPS wins even when display frame changes', () {
+      final filter = GpsFilter();
+      filter.onCompassHeading(10, at: t0);
+      filter.process(fixAt(t0, heading: 90, speed: 5));
+      filter.onCompassHeading(
+        270,
+        at: t0.add(const Duration(seconds: 1)),
+        orientationQuarterTurns: 1,
+      );
+      expect(
+        filter.advanceBearingFromCompass(t0.add(const Duration(seconds: 1))),
+        90,
+      );
+    });
+
+    test('compass can take over after GPS dropout then expires itself', () {
+      final filter = GpsFilter();
+      filter.onCompassHeading(30, at: t0);
+      filter.process(fixAt(t0, heading: 90, speed: 5));
+      final later = t0.add(const Duration(seconds: 9));
+      filter.onCompassHeading(45, at: later);
+      expect(filter.advanceBearingFromCompass(later), 105);
+      expect(
+        filter.currentBearing(later.add(const Duration(seconds: 9))),
+        isNull,
+      );
+      filter.reset();
+      filter.onCompassHeading(45, at: later.add(const Duration(seconds: 10)));
+      expect(
+        filter.advanceBearingFromCompass(
+          later.add(const Duration(seconds: 10)),
+        ),
+        isNull,
+      );
+    });
+
+    test('display frame change after GPS dropout clears compass bearing', () {
+      final filter = GpsFilter();
+      filter.onCompassHeading(30, at: t0);
+      filter.process(fixAt(t0, heading: 90, speed: 5));
+      final later = t0.add(const Duration(seconds: 9));
+      filter.onCompassHeading(45, at: later);
+      expect(filter.advanceBearingFromCompass(later), 105);
+      final rotatedAt = later.add(const Duration(seconds: 1));
+      filter.onCompassHeading(135, at: rotatedAt, orientationQuarterTurns: 1);
+      expect(filter.advanceBearingFromCompass(rotatedAt), isNull);
+    });
+
+    test('preparation expires direction without starting the ride clock', () {
+      fakeAsync((clock) {
+        final engine = RideEngine(now: () => t0.add(clock.elapsed));
+        unawaited(engine.start());
+        engine.onLocation(fixAt(t0, heading: 90, speed: 5));
+        expect(engine.state.bearing, 90);
+        clock.elapse(const Duration(seconds: 9));
+        expect(engine.state.bearing, isNull);
+        expect(engine.state.status, RideStatus.preparing);
+        expect(engine.state.stats.elapsed, Duration.zero);
+        unawaited(engine.dispose());
+      });
+    });
+
+    test(
+      'engine clock expires heading with no sensor events; stop clears it',
+      () {
+        fakeAsync((clock) {
+          final engine = RideEngine(now: () => t0.add(clock.elapsed));
+          engine.start();
+          engine.beginRecording();
+          engine.onLocation(fixAt(t0, heading: 90, speed: 5));
+          expect(engine.state.bearing, 90);
+          clock.elapse(const Duration(seconds: 9));
+          expect(engine.state.bearing, isNull);
+          engine.onLocation(
+            fixAt(t0.add(clock.elapsed), east: 20, heading: 90, speed: 5),
+          );
+          expect(engine.state.bearing, 90);
+          unawaited(engine.stop());
+          expect(engine.state.bearing, isNull);
+          engine.cancel();
+          engine.start();
+          expect(engine.state.bearing, isNull);
+          unawaited(engine.dispose());
+        });
+      },
+    );
   });
 
   group('the engine', () {
@@ -288,6 +484,23 @@ void main() {
       unawaited(engine.dispose());
     }
 
+    test('small compass turns accumulate against the published direction', () {
+      withRidingEngine((engine, advance) {
+        final at = DateTime.utc(2026, 9, 28, 6);
+        engine.onCompassHeading(30, at: at);
+        engine.onLocation(fixAt(at, heading: 90, speed: 5));
+        advance(const Duration(seconds: 1));
+        engine.onLocation(fixAt(at.add(const Duration(seconds: 1)), speed: 0));
+        for (var i = 1; i <= 15; i++) {
+          engine.onCompassHeading(
+            30.0 + i,
+            at: at.add(Duration(milliseconds: 1000 + i * 20)),
+          );
+        }
+        expect(engine.state.bearing, greaterThan(94));
+      });
+    });
+
     test('a compass reading moves the bearing with no fix behind it', () {
       withRidingEngine((engine, advance) {
         // The compass is already reporting when the ride starts — both streams
@@ -299,17 +512,13 @@ void main() {
         // anchor at 90° − 30° = 60°.
         engine.onLocation(fixAt(DateTime.utc(2026, 9, 28, 6)));
         advance(const Duration(seconds: 1));
-        engine.onLocation(
-          fixAt(DateTime.utc(2026, 9, 28, 6, 0, 1), east: 10),
-        );
+        engine.onLocation(fixAt(DateTime.utc(2026, 9, 28, 6, 0, 1), east: 10));
         expect(engine.state.bearing, closeTo(90, 0.5));
 
         // Stopped. The next fix carries no course — `hasBearing()` is false —
         // and that is what hands the direction over to the compass.
         advance(const Duration(seconds: 1));
-        engine.onLocation(
-          fixAt(DateTime.utc(2026, 9, 28, 6, 0, 2), east: 10),
-        );
+        engine.onLocation(fixAt(DateTime.utc(2026, 9, 28, 6, 0, 2), east: 10));
         expect(
           engine.state.bearing,
           closeTo(90, 0.5),
@@ -352,7 +561,7 @@ void main() {
       // fixes heading north establish the course it gets anchored to.
       compass.emit(0);
       final t0 = DateTime.now().toUtc();
-      location.emitRide(count: 2, speedMps: 5, start: t0);
+      location.emitRide(count: 3, speedMps: 5, start: t0);
       await Future<void>.delayed(const Duration(milliseconds: 20));
       final course = recorder.state.bearing;
       expect(course, isNotNull);
@@ -360,10 +569,10 @@ void main() {
 
       // A stationary fix: the platform reports no bearing while stopped, which
       // is what hands the direction over to the compass.
-      final stoppedAt = t0.add(const Duration(seconds: 3));
+      final stoppedAt = t0.add(const Duration(seconds: 4));
       location.emit(
         LocationFix(
-          latitude: 39.9042 + 10 / 111132.0,
+          latitude: 39.9042 + 15 / 111132.0,
           longitude: 116.4074,
           timestamp: stoppedAt,
           accuracy: 4,

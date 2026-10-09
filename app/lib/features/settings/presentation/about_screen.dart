@@ -62,7 +62,10 @@ class AboutScreen extends ConsumerWidget {
               '通过 GitHub Release 查看新版本',
               style: AppText.caption,
             ),
-            onTap: () => checkForAppUpdate(context),
+            onTap: () => checkForAppUpdate(
+              context,
+              coordinator: ref.read(appUpdateCoordinatorProvider),
+            ),
           ),
 
           const Divider(height: 1),

@@ -78,4 +78,19 @@ abstract final class SupabaseConfig {
   /// Storage object path for a ride's GPX (spec §24).
   static String gpxPath(String userId, String rideId) =>
       'rides/$userId/$rideId/original.gpx';
+
+  /// Accept only a single GPX filename beneath this exact account/ride prefix.
+  static bool isRideGpxPath(String? path, String userId, String rideId) {
+    final prefix = 'rides/$userId/$rideId/';
+    if (path == null || !path.startsWith(prefix)) return false;
+    final name = path.substring(prefix.length);
+    // Epoch-bearing paths fence uploads begun before a cloud wipe. Keep
+    // previously stored single-filename paths readable during upgrades.
+    if (!name.contains('/')) {
+      return RegExp(r'^[a-zA-Z0-9_-]+\.gpx$').hasMatch(name);
+    }
+    const uuid =
+        r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+    return RegExp('^$uuid/$uuid\\.gpx\$').hasMatch(name);
+  }
 }

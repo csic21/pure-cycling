@@ -13,6 +13,9 @@ class RouteRepository {
 
   RouteDao get _dao => _db.routeDao;
 
+  Stream<List<RouteSummary>> watchRouteSummaries() =>
+      _dao.watchRouteSummaries();
+
   Stream<List<Route>> watchRoutes() => _dao.watchRoutes();
 
   Future<List<Route>> getRoutes() => _dao.getRoutes();
@@ -27,27 +30,34 @@ class RouteRepository {
   /// a record that was just downloaded would make every sync push back what it
   /// pulled, and on a slow connection that is a loop the user pays for.
   Future<void> saveRoute(Route route, {bool enqueue = true}) async {
-    await _dao.upsertRoute(
-      route.copyWith(updatedAt: DateTime.now().toUtc()),
-    );
-
-    if (enqueue) {
-      await _db.syncQueueDao.enqueue(
-        SyncEntityType.route,
-        route.id,
-        SyncOperation.upsert,
+    await _db.transaction(() async {
+      await _dao.upsertRoute(
+        enqueue
+            ? route.copyWith(updatedAt: await _dao.nextEditTime(route.id))
+            : route,
       );
-      await _dao.setSyncStatus(route.id, SyncStatus.pendingUpload);
-    }
+
+      if (!enqueue) await _dao.setSyncStatus(route.id, SyncStatus.synced);
+      if (enqueue) {
+        await _db.syncQueueDao.enqueue(
+          SyncEntityType.route,
+          route.id,
+          SyncOperation.upsert,
+        );
+        await _dao.setSyncStatus(route.id, SyncStatus.pendingUpload);
+      }
+    });
   }
 
   Future<void> renameRoute(String id, String name) async {
-    await _dao.renameRoute(id, name);
-    await _db.syncQueueDao.enqueue(
-      SyncEntityType.route,
-      id,
-      SyncOperation.upsert,
-    );
+    await _db.transaction(() async {
+      await _dao.renameRoute(id, name);
+      await _db.syncQueueDao.enqueue(
+        SyncEntityType.route,
+        id,
+        SyncOperation.upsert,
+      );
+    });
   }
 
   Future<void> setFavorite(String id, bool favorite) async {
@@ -58,17 +68,23 @@ class RouteRepository {
   }
 
   Future<void> deleteRoute(String id) async {
-    await _dao.softDeleteRoute(id);
-    await _db.syncQueueDao.enqueue(
-      SyncEntityType.route,
-      id,
-      SyncOperation.delete,
-    );
+    await _db.transaction(() async {
+      await _dao.softDeleteRoute(id);
+      await _db.syncQueueDao.enqueue(
+        SyncEntityType.route,
+        id,
+        SyncOperation.delete,
+      );
+    });
   }
 
   /// Applies a tombstone that arrived from the cloud.
-  Future<void> applyRemoteDelete(String id) async {
-    await _dao.softDeleteRoute(id);
+  Future<void> applyRemoteDelete(
+    String id, {
+    DateTime? deletedAt,
+    DateTime? updatedAt,
+  }) async {
+    await _dao.softDeleteRoute(id, deletedAt: deletedAt, updatedAt: updatedAt);
     await _dao.setSyncStatus(id, SyncStatus.synced);
   }
 
@@ -76,10 +92,7 @@ class RouteRepository {
   ///
   /// Throws [GpxImportException] when the file holds no usable geometry, so
   /// the import screen can explain *why* rather than silently doing nothing.
-  Future<Route> importGpx(
-    String xml, {
-    String? name,
-  }) async {
+  Future<Route> importGpx(String xml, {String? name}) async {
     ParsedGpx parsed;
     try {
       parsed = GpxCodec.decode(xml);
@@ -88,9 +101,7 @@ class RouteRepository {
     }
 
     if (parsed.points.length < 2) {
-      throw const GpxImportException(
-        'GPX 文件里没有足够的轨迹点（至少需要 2 个）',
-      );
+      throw const GpxImportException('GPX 文件里没有足够的轨迹点（至少需要 2 个）');
     }
 
     final route = GpxCodec.toRoute(

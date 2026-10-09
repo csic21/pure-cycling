@@ -1,0 +1,22 @@
+name: Storage cleanup regression
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+concurrency:
+  group: storage-cleanup-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  storage-cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Real Storage upload and cleanup overlap
+        run: ./scripts/verify-storage-cleanup.sh
+      - name: Remove disposable services
+        if: always()
+        run: |
+          docker rm -f cycling-storage-api cycling-storage-auth cycling-storage-db || true
+          docker network rm cycling-storage-verify || true

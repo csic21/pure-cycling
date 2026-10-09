@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:math' as math;
 
 import '../utils/geo.dart';
 import 'elevation_tuning.dart';
@@ -168,6 +169,10 @@ class GpsFilter {
   DateTime? _lastBaroAt;
   double? _lastGpsVerticalAccuracy;
   double? _bearing;
+  DateTime? _bearingAt;
+  DateTime? _lastCourseAt;
+  LocationFix? _courseOrigin;
+  int? _compassOrientation;
 
   double? _compassHeading;
   DateTime? _compassAt;
@@ -257,14 +262,9 @@ class GpsFilter {
   ///
   /// ## What this is for
   ///
-  /// The bearing this filter produces has one hole in it, and it is a large
-  /// one. A derived course needs three metres of travel between two accepted
-  /// fixes — at 1 Hz that is 10.8 km/h — so below that speed, and at every
-  /// junction, and for the first seconds of a ride, there is no new direction
-  /// to report and the last one is carried forward. That is exactly the range
-  /// a bicycle spends its slowest and most navigation-dependent moments in.
-  /// A magnetometer has no such floor: it knows which way the phone points
-  /// while the bike is completely stopped.
+  /// A GPS course needs reliable motion. At a junction or on a slow climb,
+  /// an already-calibrated compass can fill the gap while it remains fresh.
+  /// Without either source, currentBearing expires the arrow into a dot.
   ///
   /// ## What it is not for
   ///
@@ -300,14 +300,30 @@ class GpsFilter {
     double degrees, {
     required DateTime at,
     double? accuracyDegrees,
+    int orientationQuarterTurns = 0,
   }) {
-    if (!degrees.isFinite) return;
+    if (!degrees.isFinite || (_compassAt != null && at.isBefore(_compassAt!))) {
+      return;
+    }
+    final orientation = orientationQuarterTurns % 4;
+    if (_compassOrientation != null && _compassOrientation != orientation) {
+      // The screen's forward axis changed. A mount offset calibrated in the
+      // old frame cannot describe this frame; wait for a fresh travel course.
+      _compassAnchor = null;
+      if (!_hasFreshCourse(at)) {
+        _bearing = null;
+        _bearingAt = null;
+      }
+    }
+    _compassOrientation = orientation;
 
-    // A negative accuracy is the platform saying "I cannot quantify this",
-    // which is not the same statement as zero error.
-    _compassAccuracy = (accuracyDegrees != null && accuracyDegrees >= 0)
-        ? accuracyDegrees
-        : null;
+    // Null is unspecified. Negative/non-finite is explicitly invalid, not
+    // permission to trust a platform that cannot produce a reliable heading.
+    _compassAccuracy = accuracyDegrees == null
+        ? null
+        : (accuracyDegrees.isFinite && accuracyDegrees >= 0
+              ? accuracyDegrees
+              : 180);
     _compassHeading = normalizeBearing(degrees);
     _compassAt = at;
   }
@@ -318,6 +334,7 @@ class GpsFilter {
   /// needed to place the sample in the gradient window.
   ProcessedFix process(LocationFix fix, {double cumulativeDistanceMeters = 0}) {
     totalFixes++;
+    currentBearing(fix.timestamp);
 
     // A barometer that stops reporting has to hand the altitude back to GPS,
     // or the ride keeps a frozen altitude for the rest of the day. Fifteen
@@ -393,6 +410,8 @@ class GpsFilter {
       // Re-seat so the ride resumes from where the rider is now instead of
       // dragging the anchor behind forever.
       _lastAccepted = fix;
+      _courseOrigin = null;
+      _lastFixHadCourse = false;
       return ProcessedFix(
         raw: fix,
         rejection: fix.accuracy > config.maxAccuracyMeters
@@ -419,6 +438,8 @@ class GpsFilter {
         impliedSpeed > config.longGapMaxSpeedMps) {
       rejectedFixes++;
       _lastAccepted = fix;
+      _courseOrigin = null;
+      _lastFixHadCourse = false;
       return ProcessedFix(
         raw: fix,
         rejection: FixRejection.teleport,
@@ -463,14 +484,7 @@ class GpsFilter {
 
     _lastAccepted = fix;
 
-    final bearing = _smoothBearing(
-      fix.heading,
-      last.latitude,
-      last.longitude,
-      fix.latitude,
-      fix.longitude,
-      fix.timestamp,
-    );
+    final bearing = _smoothBearing(fix);
 
     final speed = _smoothSpeed(
       fix: fix,
@@ -540,8 +554,7 @@ class GpsFilter {
     _smoothedSpeed = (fix.hasSpeed && fix.speed! < config.maxSpeedMps)
         ? fix.speed
         : 0.0;
-    _bearing = fix.heading;
-    _lastFixHadCourse = fix.heading != null;
+    _smoothBearing(fix);
     _gradeWindow.clear();
     _gradeWindowDistance = 0;
     final altitude = smoothedAltitude;
@@ -643,8 +656,7 @@ class GpsFilter {
       // we only need enough evidence to distrust a stuck zero, not to bank
       // mileage. Cap stays modest so a poor fix cannot demand a city block.
       final radius = accuracy.clamp(8.0, 16.0);
-      final netSpeed =
-          spanSeconds > 0 ? netMeters / spanSeconds : 0.0;
+      final netSpeed = spanSeconds > 0 ? netMeters / spanSeconds : 0.0;
       final consistent =
           netMeters >= _zeroSpeedPathMeters * 0.55 &&
           netSpeed >= config.minSpeedToReportMps;
@@ -661,9 +673,7 @@ class GpsFilter {
         _zeroSpeedMovementConfirmed = true;
       }
       if (_zeroSpeedMovementConfirmed) {
-        confirmedPositionSpeed = derivedUsable
-            ? derived
-            : netSpeed;
+        confirmedPositionSpeed = derivedUsable ? derived : netSpeed;
       }
     } else {
       _resetZeroSpeedConflict();
@@ -920,74 +930,138 @@ class GpsFilter {
     return accuracy == null || accuracy <= _maxCompassAccuracyDegrees;
   }
 
-  /// Whether the last accepted fix carried a usable course of its own.
-  ///
-  /// Both platforms follow `Location.hasBearing()`: the field is simply absent
-  /// when the receiver cannot say, which is the stationary case. So this is
-  /// the platform's own answer to "is there a course right now", not a guess
-  /// reconstructed from speed.
+  /// Eight seconds bridges the slowest normal GPS cadence, but never leaves
+  /// yesterday's direction on the map after the location/compass streams die.
+  static const bearingStaleAfter = Duration(seconds: 8);
   bool _lastFixHadCourse = false;
 
-  double? _smoothBearing(
-    double? reported,
-    double fromLat,
-    double fromLng,
-    double toLat,
-    double toLng,
-    DateTime at,
-  ) {
-    final moved = haversineMeters(fromLat, fromLng, toLat, toLng);
-    final gpsCourse = (moved >= 3.0 && reported == null)
-        ? initialBearingDegrees(fromLat, fromLng, toLat, toLng)
-        : reported;
-    _lastFixHadCourse = gpsCourse != null;
-
-    if (gpsCourse == null) {
-      // Nothing the receiver can say about direction right now. That is not a
-      // rare state: a derived course needs three metres of travel between
-      // fixes, which at 1 Hz is 10.8 km/h — so on a climb at 8 km/h, at every
-      // junction, and for the first seconds of a ride, the receiver's answer
-      // is stale. The compass is the only real direction available here, and
-      // this is the entire reason it is wired in.
-      final standIn = _compassStandIn(at);
-      if (standIn == null) return _bearing;
-      return _foldBearing(standIn);
+  /// Expiration is also called by the engine's clock when no sensor arrives.
+  /// Merely displaying a heading must not refresh its timestamp.
+  double? currentBearing(DateTime at) {
+    final seenAt = _bearingAt;
+    if (seenAt == null || at.difference(seenAt) > bearingStaleAfter) {
+      _bearing = null;
     }
-
-    // The GPS course is the direction of travel, which is what a bike computer
-    // is asked for — so it stays the authority for as long as it exists, and
-    // the compass is only ever a stand-in for its absence.
-    _anchorCompass(gpsCourse, at);
-    return _foldBearing(gpsCourse);
+    return _bearing;
   }
 
-  /// Smooths [heading] into the published bearing.
-  ///
-  /// Circular, because interpolating naively across 359°/1° would swing the
-  /// arrow the long way round.
-  double _foldBearing(double heading) {
-    final previous = _bearing;
-    if (previous == null) return _bearing = normalizeBearing(heading);
+  double? _smoothBearing(LocationFix fix) {
+    final at = fix.timestamp;
+    final origin = _courseOrigin;
+    final seconds = origin == null
+        ? 0.0
+        : at.difference(origin.timestamp).inMilliseconds / 1000.0;
+    // Accumulate a short baseline for slow riding rather than deriving an
+    // unstable azimuth from every 1 Hz, one-metre position delta.
+    if (origin == null || seconds > 10 || seconds <= 0) _courseOrigin = fix;
+    final moved = origin == null
+        ? 0.0
+        : haversineMeters(
+            origin.latitude,
+            origin.longitude,
+            fix.latitude,
+            fix.longitude,
+          );
+    final accuracyFloor = math.max(
+      6.0,
+      ((origin?.accuracy ?? 0) + fix.accuracy) * 0.75,
+    );
+    final reportedSpeed = fix.speed;
+    final hasSpeed =
+        reportedSpeed != null && reportedSpeed.isFinite && reportedSpeed >= 0;
+    final speedAccuracy = fix.speedAccuracy;
+    final movingSpeed =
+        hasSpeed &&
+        reportedSpeed >= 1.5 &&
+        reportedSpeed < config.maxSpeedMps &&
+        (speedAccuracy == null ||
+            (speedAccuracy.isFinite &&
+                speedAccuracy >= 0 &&
+                reportedSpeed > speedAccuracy));
+    // Some receivers get stuck reporting zero Doppler speed while accepted
+    // positions advance. Reuse the filter's sustained-movement confirmation
+    // instead of making the direction permanently unavailable on that device.
+    final stopped =
+        hasSpeed && reportedSpeed < 1.0 && !_zeroSpeedMovementConfirmed;
+    final movingBaseline =
+        !stopped &&
+        seconds > 0 &&
+        seconds <= 10 &&
+        moved >= accuracyFloor &&
+        moved / seconds >= 1.0 &&
+        moved / seconds < config.maxSpeedMps;
+    final quality =
+        !fix.isMocked &&
+        fix.accuracy.isFinite &&
+        fix.accuracy <= config.maxAccuracyMeters;
+    if (!quality) _courseOrigin = null;
+    final reported = fix.heading;
+    final headingAccuracy = fix.headingAccuracy;
+    final goodReported =
+        reported != null &&
+        reported.isFinite &&
+        reported >= 0 &&
+        reported < 360 &&
+        (headingAccuracy == null ||
+            (headingAccuracy.isFinite &&
+                headingAccuracy >= 0 &&
+                headingAccuracy <= 35));
+    final double? gpsCourse;
+    if (quality && goodReported && (movingSpeed || movingBaseline)) {
+      gpsCourse = reported;
+    } else if (quality && movingBaseline) {
+      gpsCourse = initialBearingDegrees(
+        origin!.latitude,
+        origin.longitude,
+        fix.latitude,
+        fix.longitude,
+      );
+    } else {
+      gpsCourse = null;
+    }
+    _lastFixHadCourse = gpsCourse != null;
+    if (stopped) _courseOrigin = fix;
 
+    if (gpsCourse == null) {
+      final standIn = _compassStandIn(at);
+      return standIn == null
+          ? currentBearing(at)
+          : _foldBearing(standIn, _compassAt!);
+    }
+
+    _courseOrigin = fix;
+    _lastCourseAt = at;
+    // GPS is travel direction, independent of the way the phone is mounted
+    // or which way its screen faces. A compass can never override it.
+    _anchorCompass(gpsCourse, at);
+    return _foldBearing(gpsCourse, at);
+  }
+
+  /// Circular interpolation follows the short turn across 359°/1°.
+  double _foldBearing(double heading, DateTime at) {
+    final previous = currentBearing(at);
+    _bearingAt = at;
+    if (previous == null) return _bearing = normalizeBearing(heading);
     final delta = signedTurnAngle(previous, heading);
+    if (delta.abs() < 1.5) return _bearing = previous;
     return _bearing = normalizeBearing(previous + delta * 0.3);
   }
 
-  /// Folds in a compass reading immediately, with no fix to carry it.
-  ///
-  /// The reason this exists as well as [_smoothBearing]: a reading that can
-  /// only take effect on the next fix is a reading that arrives up to five
-  /// seconds late at the frugal profile — and the case the compass is for is
-  /// the rider stopped at a junction, turning the bars, waiting for a direction
-  /// the receiver has no intention of giving.
-  ///
-  /// Does nothing while the receiver is producing a course. At speed the
-  /// compass has nothing to add and would only put noise on a good answer.
+  bool _hasFreshCourse(DateTime at) {
+    final courseAt = _lastCourseAt;
+    return _lastFixHadCourse &&
+        courseAt != null &&
+        at.difference(courseAt) <= bearingStaleAfter;
+  }
+
+  /// A calibrated compass responds immediately at low speed. After GPS
+  /// dropout it can take over, but only while its own samples remain fresh.
   double? advanceBearingFromCompass(DateTime at) {
-    if (_lastFixHadCourse) return _bearing;
+    if (_hasFreshCourse(at)) return currentBearing(at);
     final standIn = _compassStandIn(at);
-    if (standIn == null) return _bearing;
-    return _foldBearing(standIn);
+    return standIn == null
+        ? currentBearing(at)
+        : _foldBearing(standIn, _compassAt!);
   }
 
   /// Resets all state, e.g. after a long pause or a crash resume.
@@ -997,6 +1071,10 @@ class GpsFilter {
     _resetZeroSpeedConflict();
     _smoothedGpsAltitude = null;
     _bearing = null;
+    _bearingAt = null;
+    _lastCourseAt = null;
+    _courseOrigin = null;
+    _compassOrientation = null;
     _gradeWindow.clear();
     _gradeWindowDistance = 0;
     poorAccuracyStreak = 0;

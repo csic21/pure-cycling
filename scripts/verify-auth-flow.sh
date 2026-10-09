@@ -75,8 +75,13 @@ for migration in "$REPO_ROOT"/supabase/migrations/*.sql; do
   echo "    $(basename "$migration")"
   # `-q` quiets psql, not the server's NOTICEs — "policy does not exist,
   # skipping" is expected on a first run and drowns the output.
-  docker exec -i "$DB" psql -v ON_ERROR_STOP=1 -U postgres -q \
-    < "$migration" 2>&1 | grep -vE '^NOTICE' || true
+  if ! docker exec -i "$DB" psql -v ON_ERROR_STOP=1 -U postgres -q \
+    < "$migration" > "$WORK/migration.log" 2>&1; then
+    cat "$WORK/migration.log" >&2
+    fail "migration failed: $(basename "$migration")"
+  fi
+  # Only suppress the filter's empty-output status, never psql's failure.
+  grep -vE '^NOTICE' "$WORK/migration.log" || true
 done
 
 # ---------------------------------------------------------------------------

@@ -7,10 +7,11 @@ import 'package:cycling_app/core/location/compass_source.dart';
 import 'package:cycling_app/core/location/location_service.dart';
 import 'package:cycling_app/core/location/motion_source.dart';
 import 'package:cycling_app/core/location/sampling_policy.dart';
-import 'package:cycling_app/core/sync/sync_status.dart';
 import 'package:cycling_app/features/ride/data/ride_recorder.dart';
 import 'package:cycling_app/features/ride/data/ride_repository.dart';
 import 'package:cycling_app/features/ride/domain/ride_engine.dart';
+import 'package:cycling_app/features/ride/domain/ride.dart';
+import 'package:cycling_app/features/ride/domain/track_point.dart';
 import 'package:cycling_app/features/sensors/domain/sensor.dart';
 import 'package:cycling_app/features/settings/domain/app_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -44,6 +45,93 @@ void main() {
         locationService: location,
         sensorReadings: readings,
       );
+
+  Future<RideCheckpoint> seedRecovery() async {
+    final started = DateTime.utc(2026, 1, 1);
+    final checkpoint = RideCheckpoint(
+      rideId: 'recovered',
+      status: RideStatus.riding.name,
+      startedAt: started,
+      elapsed: const Duration(minutes: 10),
+      moving: const Duration(minutes: 8),
+      distanceMeters: 2400,
+      maxSpeedMps: 9,
+      elevationGainMeters: 45,
+      elevationLossMeters: 21,
+      lastSequence: 2,
+      smoothedSpeedMps: 5,
+    );
+    await database.rideDao.upsertRide(
+      Ride(id: checkpoint.rideId, startedAt: started),
+    );
+    await database.rideDao.insertTrackPoints([
+      for (var i = 1; i <= 2; i++)
+        TrackPoint(
+          rideId: checkpoint.rideId,
+          sequence: i,
+          timestamp: started.add(Duration(minutes: i)),
+          lat: 31 + i * .001,
+          lng: 121,
+        ),
+    ]);
+    await database.activeRideDao.save(checkpoint);
+    return checkpoint;
+  }
+
+  test(
+    'recovery ends without location permission or subscribing to inputs',
+    () async {
+      final checkpoint = await seedRecovery();
+      final location = FakeLocationService(
+        permission: LocationPermissionStatus.denied,
+      );
+      final recorder = buildRecorder(location);
+      final ride = await recorder.finishRecoveredRide(checkpoint);
+      expect(location.permissionRequests, isEmpty);
+      expect(location.streamOpened, isFalse);
+      expect(recorder.engine, isNull);
+      expect(ride.elapsed, const Duration(minutes: 10));
+      expect(ride.distanceMeters, 2400);
+      expect(ride.endedAt, checkpoint.startedAt.add(checkpoint.elapsed));
+      expect(await database.activeRideDao.loadUnfinished(), isNull);
+      expect(await database.rideDao.trackPointCount(ride.id), 2);
+      expect(
+        (await database.rideDao.getRide(ride.id))!.routeGeometryWkt,
+        isNotNull,
+      );
+      expect(await database.syncQueueDao.pendingCount(), 1);
+      expect((await recorder.finishRecoveredRide(checkpoint)).id, ride.id);
+      expect(await database.syncQueueDao.pendingCount(), 1);
+      await recorder.dispose();
+    },
+  );
+
+  test(
+    'failed recovery commit keeps checkpoint and trace available for retry',
+    () async {
+      final checkpoint = await seedRecovery();
+      final recorder = buildRecorder(FakeLocationService());
+      await database.customStatement(
+        "CREATE TRIGGER fail_recovery BEFORE INSERT ON sync_queue_items BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+      );
+      await expectLater(
+        recorder.finishRecoveredRide(checkpoint),
+        throwsA(anything),
+      );
+      expect(await database.activeRideDao.loadUnfinished(), isNotNull);
+      expect(
+        (await database.rideDao.getRide(checkpoint.rideId))!.endedAt,
+        isNull,
+      );
+      expect(await database.rideDao.trackPointCount(checkpoint.rideId), 2);
+      expect(await database.syncQueueDao.pendingCount(), 0);
+      await database.customStatement('DROP TRIGGER fail_recovery');
+      await recorder.finishRecoveredRide(checkpoint);
+      expect(await database.activeRideDao.loadUnfinished(), isNull);
+      expect(await database.syncQueueDao.pendingCount(), 1);
+      await recorder.dispose();
+    },
+  );
 
   test('a finished ride is persisted with its trace, geometry and queue entry',
       () async {

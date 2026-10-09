@@ -335,6 +335,57 @@ class RideRecorder {
     return true;
   }
 
+  /// Saves a persisted recovery checkpoint without starting GPS or sensors.
+  /// Downtime is not recording time. Only the durable checkpoint totals and
+  /// stored trace are used; recovery is cleared by the same final transaction.
+  Future<Ride> finishRecoveredRide(RideCheckpoint checkpoint) async {
+    _ensureNoPendingFinish();
+    if (_engine?.isActive ?? false) {
+      throw StateError('Cannot finalize recovery during an active ride');
+    }
+    return _db.transaction(() async {
+      final stored = await _repository.getRide(checkpoint.rideId);
+      final recovery = await _activeRideDao.loadUnfinished();
+      if (recovery?.rideId != checkpoint.rideId) {
+        // A repeated tap after the first commit is harmless.
+        if (stored?.endedAt != null && !stored!.isDeleted) return stored;
+        throw StateError('Recovery checkpoint is no longer available');
+      }
+      final trace = await _repository.trackPoints(checkpoint.rideId);
+      final saved = recovery!;
+      final endedAt = saved.startedAt.add(saved.elapsed);
+      final ride = Ride(
+        id: saved.rideId,
+        startedAt: saved.startedAt,
+        endedAt: trace.isNotEmpty && trace.last.timestamp.isAfter(endedAt)
+            ? trace.last.timestamp
+            : endedAt,
+        name: stored?.name,
+        notes: stored?.notes,
+        bikeId: stored?.bikeId,
+        createdAt: stored?.createdAt,
+        updatedAt: _now(),
+        startPoint: trace.isEmpty ? stored?.startPoint : trace.first.geo,
+        endPoint: trace.isEmpty ? stored?.endPoint : trace.last.geo,
+        stats: RideStats(
+          distanceMeters: saved.distanceMeters,
+          elapsed: saved.elapsed,
+          moving: saved.moving,
+          avgSpeedMps: RideStats.computeAvgSpeed(
+            saved.distanceMeters,
+            saved.moving,
+          ),
+          maxSpeedMps: saved.maxSpeedMps,
+          elevationGainMeters: saved.elevationGainMeters,
+          elevationLossMeters: saved.elevationLossMeters,
+        ),
+        syncStatus: SyncStatus.pendingUpload,
+      );
+      await _repository.saveFinishedRide(ride, writeExport: false);
+      return ride;
+    });
+  }
+
   Future<void> beginRecording() async => _engine?.beginRecording();
 
   void pause() => _engine?.pause();
@@ -738,6 +789,7 @@ class RideRecorder {
         sample.headingDegrees,
         at: sample.timestamp,
         accuracyDegrees: sample.accuracyDegrees,
+        orientationQuarterTurns: sample.orientationQuarterTurns,
       ),
       onError: (_) {},
       cancelOnError: false,

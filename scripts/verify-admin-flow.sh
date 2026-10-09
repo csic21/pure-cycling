@@ -99,7 +99,7 @@ rpc() {
 }
 
 echo "==> syncing one ride as the rider (the thing an admin must not see)"
-curl -sS -X POST "${API}/rest/v1/rpc/push_ride" \
+curl -fsS -X POST "${API}/rest/v1/rpc/push_ride" \
   -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${rider_token}" \
   -H 'Content-Type: application/json' \
   -d "$(jq -nc '{p_ride:{
@@ -169,8 +169,8 @@ ok "public.admins 不通过 Data API 暴露（HTTP ${admin_table}）"
 # ---------------------------------------------------------------------------
 # Deleting an account the way the console does
 #
-# The console's server action runs with the service role, in this order: read
-# the object paths, remove the objects, then delete the user. Nothing cascades
+# The console sets a durable account fence, drains authoritative Storage
+# objects, verifies emptiness, then deletes the user. Nothing cascades
 # into Storage — skip the middle step and a location trace outlives the account
 # that owned it. This phase exists to catch exactly that.
 # ---------------------------------------------------------------------------
@@ -191,7 +191,11 @@ fi
 # The bucket is `rides` and the object name also starts with `rides/` — the
 # layout the storage policies check with `(storage.foldername(name))[1]`. The
 # redundancy is in the format, not in this line.
-GPX_OBJECT="rides/${rider_id}/77777777-7777-7777-8777-777777777777/original.gpx"
+GPX_OBJECT="$(curl -fsS -X POST "${API}/rest/v1/rpc/new_gpx_upload_path" \
+  -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${rider_token}" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg attempt "$(uuidgen | tr 'A-Z' 'a-z')" \
+    '{p_ride_id:"77777777-7777-7777-8777-777777777777",p_attempt_id:$attempt}')" | jq -er '.')"
 printf '<?xml version="1.0"?><gpx version="1.1"><trk><name>t</name></trk></gpx>' \
   >"$WORK/rider.gpx"
 STATUS="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' \
@@ -200,7 +204,7 @@ STATUS="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' \
   -H 'Content-Type: application/gpx+xml' --data-binary @"$WORK/rider.gpx")"
 [ "$STATUS" = "200" ] || fail "骑手上传自己的 GPX 失败（HTTP ${STATUS}）"
 
-curl -sS -m 20 -X POST "${API}/rest/v1/rpc/push_ride" \
+curl -fsS -m 20 -X POST "${API}/rest/v1/rpc/push_ride" \
   -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${rider_token}" \
   -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg o "$GPX_OBJECT" '{p_ride:{
@@ -212,18 +216,24 @@ curl -sS -m 20 -X POST "${API}/rest/v1/rpc/push_ride" \
 
 service_auth=(-H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}")
 
-# 1. The object paths, before the rows that index them are gone.
-paths="$(curl -sS -m 20 \
-  "${API}/rest/v1/rides?select=gpx_path&user_id=eq.${rider_id}&gpx_path=not.is.null" \
-  "${service_auth[@]}" | jq -r '.[].gpx_path')"
-[ "$paths" = "$GPX_OBJECT" ] || fail "服务端读不到要删的 GPX 路径"
-
-# 2. Objects.
-while IFS= read -r path; do
-  [ -n "$path" ] || continue
-  curl -sS -m 20 -o /dev/null -X DELETE \
-    "${API}/storage/v1/object/rides/${path}" "${service_auth[@]}"
-done <<<"$paths"
+# The same durable service cleanup contract used by the console action.
+service_rpc() {
+  curl -fsS -m 30 -X POST "${API}/rest/v1/rpc/$1" "${service_auth[@]}" \
+    -H 'Content-Type: application/json' -d "$2"
+}
+cleanup_token="$(uuidgen | tr 'A-Z' 'a-z')"
+cleanup_params="$(jq -nc --arg uid "$rider_id" --arg token "$cleanup_token" \
+  '{p_user_id:$uid,p_token:$token}')"
+service_rpc begin_account_cleanup "$(printf '%s' "$cleanup_params" | \
+  jq --arg actor "$admin_id" '. + {p_actor_id:$actor,p_mode:"delete"}')" >/dev/null
+while true; do
+  paths="$(service_rpc list_account_cleanup_objects "$cleanup_params")"
+  [ "$(printf '%s' "$paths" | jq 'length')" = 0 ] && break
+  curl -fsS -m 30 -X DELETE "${API}/storage/v1/object/rides" "${service_auth[@]}" \
+    -H 'Content-Type: application/json' \
+    -d "$(printf '%s' "$paths" | jq '{prefixes:map(.name)}')" >/dev/null
+done
+service_rpc finish_account_cleanup "$cleanup_params" >/dev/null
 
 # 3. The account. Rows follow by cascade.
 STATUS="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' -X DELETE \

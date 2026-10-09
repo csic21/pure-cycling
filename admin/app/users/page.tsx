@@ -161,6 +161,7 @@ export default async function UsersPage({
               <tbody>
                 {users.map((row) => {
                   const banned = row.access_state === 'disabled';
+                  const cleaning = row.access_state === 'wipe' || row.access_state === 'delete';
                   return (
                     <tr key={row.id}>
                       <td className="wrap">
@@ -182,14 +183,14 @@ export default async function UsersPage({
                         {row.is_admin ? '管理员' : '骑手'}
                       </td>
                       <td>
-                        <span className={banned ? 'status banned' : 'status'}>
-                          {banned ? '已封禁' : '正常'}
+                        <span className={banned || cleaning ? 'status banned' : 'status'}>
+                          {cleaning ? '清理待完成' : banned ? '已封禁' : '正常'}
                         </span>
                       </td>
                       <td className="right">
                         {row.is_admin ? null : (
                           <div className="row-actions">
-                            <form action={setUserDisabled}>
+                            {cleaning ? null : <form action={setUserDisabled}>
                               <input type="hidden" name="userId" value={row.id} />
                               <input
                                 type="hidden"
@@ -208,12 +209,12 @@ export default async function UsersPage({
                               >
                                 {banned ? '解封' : '封禁'}
                               </button>
-                            </form>
+                            </form>}
                             <Link
                               className="row-action"
                               href={`/users/${row.id}/delete`}
                             >
-                              删除
+                              {cleaning ? '重试删除' : '删除'}
                             </Link>
                           </div>
                         )}

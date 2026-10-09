@@ -37,6 +37,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Test Android release guards
+        working-directory: .
+        run: python3 -B -m unittest discover -s scripts/tests -p 'test_release_guard.py' -v
       - name: Validate tag, source ancestry and app version
         id: request
         working-directory: .
@@ -45,6 +48,7 @@ jobs:
           python3 - <<'PY'
           import json, os, re, subprocess
           from pathlib import Path
+          from scripts.release_guard import source_version
           request = json.loads(Path('.github/release-request.json').read_text())
           if not isinstance(request, dict) or set(request) != {'tag', 'source_sha'}:
               raise SystemExit('::error::Release request must contain only tag and source_sha.')
@@ -59,9 +63,7 @@ jobs:
               raise SystemExit('::error::Release source or triggering checkout is invalid.')
           subprocess.run(['git', 'merge-base', '--is-ancestor', source, os.environ['GITHUB_SHA']], check=True)
           pubspec = git('show', f'{source}:app/pubspec.yaml')
-          version = re.search(r'^version: ([0-9]+\.[0-9]+\.[0-9]+)\+[0-9]+\s*$', pubspec, re.M)
-          if not version or tag != 'v' + version.group(1):
-              raise SystemExit('::error::Requested tag does not match the source app version.')
+          source_version(pubspec, tag)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'tag={tag}\nsource_sha={source}\n')
           print(f'Validated {tag} at {source}.')
@@ -118,6 +120,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.request.outputs.source_sha }}
+          persist-credentials: false
+      # Keep validation at the triggering workflow revision, even when a
+      # retry rebuilds an older source that predates these guard scripts.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-validation
           persist-credentials: false
       - uses: actions/setup-java@v4
         with:
@@ -189,7 +198,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE_SHA"
           flutter build appbundle --release --dart-define-from-file=dart_define.json
           flutter build apk --release --dart-define-from-file=dart_define.json
-      - name: Verify APK signature and prepare release provenance
+      - name: Verify actual APK identity, version and signature; prepare provenance
         env:
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -206,40 +215,23 @@ jobs:
             -alias "$ANDROID_KEY_ALIAS" -storepass:env ANDROID_STORE_PASSWORD \
             > "$RUNNER_TEMP/release-certificate.der"
           python3 - <<'PY'
-          import hashlib, json, os, re, shutil
+          import hashlib, json, os, shutil, sys
           from pathlib import Path
+          sys.path.insert(0, str(Path('../.release-validation').resolve()))
+          from scripts.release_guard import create_manifest, verify_signer_report
           temp = Path(os.environ['RUNNER_TEMP'])
           certificate = hashlib.sha256((temp / 'release-certificate.der').read_bytes()).hexdigest()
-          report = (temp / 'apk-signature.txt').read_text()
-          # Build Tools 37 prefixes signer names with their signature scheme
-          # and a colon. Older versions use numbered or SDK-qualified names.
-          sdk_range = r'\(minSdkVersion=\d+(?: \(dev release=true\))?, maxSdkVersion=\d+\)'
-          signer_name = (rf'(?:Signer #\d+|Signer {sdk_range}|'
-                         rf'(?:V[12]|V3\.[012](?: Hybrid (?:Classical|PQC))?) '
-                         rf'Signer(?: #\d+)?:(?: {sdk_range})?)')
-          signers = re.findall(rf'^({signer_name}) certificate SHA-256 digest: '
-                               r'([0-9a-fA-F]{64})[ \t]*$', report, re.M)
-          certificate_lines = [line for line in report.splitlines()
-                               if ' certificate SHA-256 digest:' in line
-                               and not line.startswith('Source Stamp Signer')]
-          fingerprints = {value.lower() for _, value in signers}
-          print(f'Configured certificate SHA-256: {certificate}')
-          print(f'APK signer entries: {len(signers)}; unique certificates: {len(fingerprints)}')
-          print('APK signer formats: ' + ', '.join(sorted({name for name, _ in signers})))
-          print('APK certificate SHA-256: ' + ', '.join(sorted(fingerprints)))
-          if not signers or len(signers) != len(certificate_lines):
-              raise SystemExit('::error::Could not parse every APK signer certificate; refusing publication.')
-          # One certificate may be reported for several signature schemes or
-          # SDK ranges. Every report must still identify the configured key.
-          if fingerprints != {certificate}:
-              raise SystemExit('::error::APK signer certificates differ from the configured release certificate.')
+          verify_signer_report((temp / 'apk-signature.txt').read_text(), certificate)
+          print(f'Configured and verified APK certificate SHA-256: {certificate}')
           out = Path('../release-artifacts')
           out.mkdir(exist_ok=True)
           shutil.copyfile('build/app/outputs/flutter-apk/app-release.apk', out / 'pure-cycling-android.apk')
           shutil.copyfile('build/app/outputs/bundle/release/app-release.aab', out / 'pure-cycling-android.aab')
-          manifest = {'source_sha': os.environ['RELEASE_SOURCE_SHA'],
-                      'tag': os.environ['RELEASE_TAG'], 'signer_sha256': certificate,
-                      'apk_sha256': hashlib.sha256((out / 'pure-cycling-android.apk').read_bytes()).hexdigest()}
+          manifest = create_manifest(out / 'pure-cycling-android.apk',
+                                     source=os.environ['RELEASE_SOURCE_SHA'],
+                                     tag=os.environ['RELEASE_TAG'], signer=certificate,
+                                     pubspec=Path('pubspec.yaml').read_text())
+          print(f"Verified {manifest['package_name']} {manifest['version_name']}+{manifest['version_code']}")
           (out / 'release-manifest.json').write_text(json.dumps(manifest, sort_keys=True) + '\n')
           PY
       - name: Remove signing material
@@ -270,6 +262,17 @@ jobs:
         with:
           ref: ${{ needs.request.outputs.source_sha }}
           persist-credentials: false
+      # Keep validation at the triggering workflow revision, even when a
+      # retry rebuilds an older source that predates these guard scripts.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-validation
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.android.outputs.artifact_id }}
@@ -282,8 +285,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import hashlib, json, os, re, subprocess
+          import json, os, re, subprocess, sys, tempfile
           from pathlib import Path
+          sys.path.insert(0, str(Path('.release-validation').resolve()))
+          from scripts.release_guard import (
+              apk_sha256, inspect_apk, previous_release, release_provenance,
+              validate_candidate, validate_provenance, validate_retry,
+              validate_upgrade, verify_apk_signer,
+          )
           repo, tag, source = (os.environ[key] for key in
                                ('RELEASE_REPOSITORY', 'RELEASE_TAG', 'RELEASE_SOURCE_SHA'))
           if (repo != 'csic21/pure-cycling' or not re.fullmatch(r'[0-9a-f]{40}', source)
@@ -303,17 +312,28 @@ jobs:
           manifest = json.loads(Path('release-artifacts/release-manifest.json').read_text())
           if not apk.is_file() or apk.stat().st_size == 0:
               fail('No signed APK was produced.')
-          if (manifest.get('source_sha'), manifest.get('tag')) != (source, tag):
-              fail('Artifact provenance does not match the approved source.')
-          if not re.fullmatch(r'[0-9a-f]{64}', manifest.get('signer_sha256', '')):
-              fail('Artifact has no verified signing certificate.')
-          if hashlib.sha256(apk.read_bytes()).hexdigest() != manifest.get('apk_sha256'):
-              fail('APK differs from the signature-verified build artifact.')
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
+              fail('Publication checkout does not match the requested source.')
+          metadata = inspect_apk(apk)
+          signer = manifest.get('signer_sha256')
+          verify_apk_signer(apk, signer)
+          validate_candidate(manifest, metadata, apk_sha256(apk), source=source, tag=tag,
+                             signer=signer, pubspec=Path('app/pubspec.yaml').read_text())
+          def inspect_asset(asset):
+              if asset.get('state') != 'uploaded':
+                  fail('Existing APK upload is incomplete; no asset will be overwritten.')
+              with tempfile.TemporaryDirectory(prefix='release-guard-') as directory:
+                  downloaded = Path(directory) / 'published.apk'
+                  with downloaded.open('wb') as output:
+                      subprocess.run(['gh', 'api', f"{prefix}/releases/assets/{asset['id']}",
+                                      '-H', 'Accept: application/octet-stream'], stdout=output, check=True)
+                  verify_apk_signer(downloaded, signer)
+                  return inspect_apk(downloaded), apk_sha256(downloaded)
           if api('')['visibility'] != 'public':
               fail('The update repository must be public.')
-          def check_tag():
-              refs = [item for item in api(f'git/matching-refs/tags/{tag}')
-                      if item['ref'] == f'refs/tags/{tag}']
+          def tag_source(name):
+              refs = [item for item in api(f'git/matching-refs/tags/{name}')
+                      if item['ref'] == f'refs/tags/{name}']
               if not refs:
                   return False
               if len(refs) != 1:
@@ -323,9 +343,14 @@ jobs:
                   if obj['type'] != 'tag':
                       break
                   obj = api(f"git/tags/{obj['sha']}")['object']
-              if obj['type'] != 'commit' or obj['sha'] != source:
+              if obj['type'] != 'commit':
+                  fail('Release tag does not resolve to a commit.')
+              return obj['sha']
+          def check_tag():
+              existing_source = tag_source(tag)
+              if existing_source and existing_source != source:
                   fail('Existing release tag points elsewhere; it will not be moved.')
-              return True
+              return bool(existing_source)
           releases = []
           for page in range(1, 101):
               batch = api(f'releases?per_page=100&page={page}')
@@ -334,12 +359,24 @@ jobs:
                   break
           else:
               fail('Could not exhaust releases safely.')
-          requested_version = tuple(map(int, tag[1:].split('.')))
-          for item in releases:
-              stable = re.fullmatch(r'v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', item['tag_name'])
-              if (stable and not item['draft'] and not item['prerelease']
-                      and tuple(map(int, stable.groups())) > requested_version):
-                  fail('A newer stable release exists; refusing to promote an older request.')
+          # Compare actual Android versions before creating a tag or draft.
+          # Exclude the requested tag so rerunning an intact release is safe.
+          baseline = previous_release(releases, tag)
+          if baseline:
+              baseline_assets = [item for item in baseline.get('assets', [])
+                                 if item['name'].lower().endswith('.apk')]
+              if len(baseline_assets) != 1:
+                  fail('Previous stable release must have exactly one Android APK.')
+              older_metadata, older_digest = inspect_asset(baseline_assets[0])
+              older_provenance = release_provenance(baseline.get('body'))
+              if older_provenance is not None:
+                  older_source = tag_source(baseline['tag_name'])
+                  validate_provenance(older_provenance, older_metadata, older_digest,
+                                      source=older_source, tag=baseline['tag_name'],
+                                      signer=signer, allow_legacy=True)
+              validate_upgrade(metadata, older_metadata, previous_tag=baseline['tag_name'])
+              print(f"Android versionCode advances from {older_metadata.version_code} "
+                    f"({baseline['tag_name']}) to {metadata.version_code} ({tag}).")
           releases = [item for item in releases if item['tag_name'] == tag]
           if len(releases) > 1:
               fail('Multiple releases have this tag.')
@@ -351,32 +388,32 @@ jobs:
               fail('Release tag was not created.')
           marker = 'pure-cycling-release'
           def notes(provenance):
+              changes = ''
+              changelog = Path('CHANGELOG.md')
+              if changelog.is_file():
+                  section = re.search(r'^## ' + re.escape(tag[1:]) + r'(?: \([^\n]+\))?\n(.*?)(?=^## |\Z)',
+                                      changelog.read_text(), re.M | re.S)
+                  if section:
+                      changes = section[1].strip() + '\n\n'
               return (f'纯粹骑行 {tag}。Android 用户可下载 APK 更新；iOS 请通过原安装渠道更新。\n\n'
-                      f'Source commit: {source}\n\n<!-- {marker}: '
+                      + changes + f'Source commit: {source}\n\n<!-- {marker}: '
                       + json.dumps(provenance, sort_keys=True) + ' -->')
           release = releases[0] if releases else api('releases', 'POST', {
               'tag_name': tag, 'target_commitish': source, 'name': tag,
               'body': notes(manifest), 'draft': True, 'prerelease': False})
           if release['target_commitish'] != source or release['prerelease']:
               fail('Existing release is not for the approved source.')
-          match = re.search(r'<!-- ' + re.escape(marker) + r': (\{[^\n]+\}) -->', release.get('body') or '')
-          if not match:
+          previous = release_provenance(release.get('body'))
+          if previous is None:
               fail('Existing release has no matching publication provenance; it is untouched.')
-          previous = json.loads(match.group(1))
           if any(previous.get(key) != manifest[key] for key in ('source_sha', 'tag', 'signer_sha256')):
               fail('Existing release has different source or signing provenance.')
           assets = release.get('assets', [])
           if any(item['name'] != apk.name for item in assets) or len(assets) > 1:
               fail('Unexpected existing assets; refusing to replace anything.')
           if assets:
-              asset = assets[0]
-              if asset.get('state') != 'uploaded':
-                  fail('Existing APK upload is incomplete; no asset will be overwritten.')
-              existing = subprocess.run(['gh', 'api', f"{prefix}/releases/assets/{asset['id']}",
-                                         '-H', 'Accept: application/octet-stream'],
-                                        capture_output=True, check=True).stdout
-              if hashlib.sha256(existing).hexdigest() != previous.get('apk_sha256'):
-                  fail('Existing APK does not match the recorded signed build.')
+              existing_metadata, existing_digest = inspect_asset(assets[0])
+              validate_retry(manifest, previous, existing_metadata, existing_digest)
           else:
               if not release['draft']:
                   fail('A published release is missing its APK; refusing to alter it.')
@@ -389,11 +426,9 @@ jobs:
               assets = release.get('assets', [])
               if len(assets) != 1 or assets[0]['name'] != apk.name or assets[0].get('state') != 'uploaded':
                   fail('Signed APK upload could not be verified.')
-              uploaded = subprocess.run(['gh', 'api', f"{prefix}/releases/assets/{assets[0]['id']}",
-                                         '-H', 'Accept: application/octet-stream'],
-                                        capture_output=True, check=True).stdout
-              if hashlib.sha256(uploaded).hexdigest() != manifest['apk_sha256']:
-                  fail('Uploaded APK integrity check failed; release remains a draft.')
+              uploaded_metadata, uploaded_digest = inspect_asset(assets[0])
+              validate_candidate(manifest, uploaded_metadata, uploaded_digest, source=source,
+                                 tag=tag, signer=signer, pubspec=Path('app/pubspec.yaml').read_text())
           if not check_tag():
               fail('Tag vanished before publication.')
           if release['draft']:

@@ -164,7 +164,7 @@ class LocationService {
       final position = await Geolocator.getCurrentPosition(
         locationSettings: _settingsFor(mode, background: false),
       ).timeout(timeout);
-      return _toFix(position);
+      return fixFromPosition(position);
     } on TimeoutException {
       return null;
     } catch (_) {
@@ -199,7 +199,7 @@ class LocationService {
         background: background,
         interval: resolved,
       ),
-    ).map(_toFix);
+    ).map(fixFromPosition);
     if (!_preferSatelliteFixes(mode)) return fallback;
     return _satelliteFirst(fallback, resolved);
   }
@@ -368,20 +368,6 @@ class LocationService {
     return controller.stream;
   }
 
-  static LocationFix _toFix(Position p) => LocationFix(
-    latitude: p.latitude,
-    longitude: p.longitude,
-    timestamp: p.timestamp.toUtc(),
-    altitude: p.altitude,
-    altitudeAccuracy: p.altitudeAccuracy,
-    accuracy: p.accuracy,
-    speed: p.speed,
-    speedAccuracy: p.speedAccuracy,
-    heading: p.heading,
-    headingAccuracy: p.headingAccuracy,
-    isMocked: p.isMocked,
-  );
-
   /// Distance between two fixes, for the pre-ride sanity check.
   static double distanceBetween(LocationFix a, LocationFix b) =>
       Geolocator.distanceBetween(
@@ -426,3 +412,19 @@ LocationFix? fixFromGnssEvent(Object? event) {
     cn0AverageDbHz: number(event['cn0_avg']),
   );
 }
+
+/// Preserves measurement presence at the geolocator boundary. A missing
+/// course is not north (0°), and a missing speed is not a measured standstill.
+LocationFix fixFromPosition(Position p) => LocationFix(
+  latitude: p.latitude,
+  longitude: p.longitude,
+  timestamp: p.timestamp.toUtc(),
+  altitude: p.hasAltitude ? p.altitude : null,
+  altitudeAccuracy: p.hasAltitudeAccuracy ? p.altitudeAccuracy : null,
+  accuracy: p.hasAccuracy ? p.accuracy : 0,
+  speed: p.hasSpeed ? p.speed : null,
+  speedAccuracy: p.hasSpeedAccuracy ? p.speedAccuracy : null,
+  heading: p.hasHeading ? p.heading : null,
+  headingAccuracy: p.hasHeadingAccuracy ? p.headingAccuracy : null,
+  isMocked: p.isMocked,
+);

@@ -1,3 +1,4 @@
+import CoreLocation
 import CoreMotion
 import Flutter
 import UIKit
@@ -87,8 +88,9 @@ final class MotionStreamHandler: NSObject, FlutterStreamHandler {
 /// from north.
 ///
 /// The Android side is the mirror image (`CompassStreamHandler.kt`). Both
-/// report the direction the *top of the phone* points, in **true** north, and
-/// neither decides whether to be believed: the fusion with GPS course lives in
+/// report the direction the *top of the display* points relative to magnetic
+/// north, aligned to true north by the GPS-course anchor. Neither
+/// decides whether to be believed: the fusion with GPS course lives in
 /// Dart (`core/location/gps_filter.dart`), where it can be tested without a
 /// device.
 ///
@@ -108,6 +110,10 @@ final class CompassStreamHandler: NSObject, FlutterStreamHandler,
 {
   private let locationManager = CLLocationManager()
   private var sink: FlutterEventSink?
+  private var orientationObservers: [NSObjectProtocol] = []
+  private var observingOrientation = false
+  private var orientationQuarterTurns = 0
+  private var orientationChangedAt = Date.distantPast
 
   override init() {
     super.init()
@@ -127,12 +133,30 @@ final class CompassStreamHandler: NSObject, FlutterStreamHandler,
     }
 
     sink = events
+    updateHeadingOrientation()
+    UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+    observingOrientation = true
+    for name in [UIDevice.orientationDidChangeNotification, UIApplication.didBecomeActiveNotification] {
+      orientationObservers.append(NotificationCenter.default.addObserver(
+        forName: name, object: nil, queue: .main
+      ) { [weak self] _ in
+        // Interface rotation follows the device notification; use the actual
+        // window orientation, including an OS rotation lock, on the next turn.
+        DispatchQueue.main.async { self?.updateHeadingOrientation() }
+      })
+    }
     locationManager.startUpdatingHeading()
     return nil
   }
 
   func onCancel(withArguments arguments: Any?) -> FlutterError? {
     locationManager.stopUpdatingHeading()
+    orientationObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    orientationObservers.removeAll()
+    if observingOrientation {
+      UIDevice.current.endGeneratingDeviceOrientationNotifications()
+      observingOrientation = false
+    }
     sink = nil
     return nil
   }
@@ -141,21 +165,44 @@ final class CompassStreamHandler: NSObject, FlutterStreamHandler,
     _ manager: CLLocationManager,
     didUpdateHeading newHeading: CLHeading
   ) {
-    // True north, not magnetic, because that is the frame the GPS course and
-    // the map are in. CoreLocation computes the declination itself, but it
-    // needs a position to do it — and a negative `trueHeading` is exactly the
-    // "I cannot" answer. Reporting nothing is better than reporting a reading
-    // in a different frame: the blend downstream treats a stale reading as
-    // absent and falls back to the GPS course, whereas a frame change would
-    // look like the rider had turned.
-    guard newHeading.trueHeading >= 0 else { return }
+    updateHeadingOrientation()
+    // CLLocation headings are already in headingOrientation's display frame;
+    // applying another Dart-side 90-degree correction would rotate twice.
+    // Drop queued old-frame samples and an explicitly unreliable compass.
+    guard newHeading.timestamp >= orientationChangedAt,
+      newHeading.headingAccuracy >= 0,
+      newHeading.magneticHeading.isFinite,
+      newHeading.magneticHeading >= 0 else { return }
 
     sink?([
-      "heading": newHeading.trueHeading,
-      // Negative means the platform declined to quantify it, which is a
-      // different statement from "0 degrees of error".
-      "accuracy": newHeading.headingAccuracy >= 0 ? newHeading.headingAccuracy : nil,
+      // This manager intentionally does not run a second location stream.
+      // trueHeading requires its own location updates and can remain invalid.
+      // Keep one stable magnetic frame; the GPS anchor already aligns it.
+      "heading": newHeading.magneticHeading,
+      "accuracy": newHeading.headingAccuracy,
+      "orientationQuarterTurns": orientationQuarterTurns,
     ] as [String: Any?])
+  }
+
+  private func updateHeadingOrientation() {
+    guard let scene = UIApplication.shared.connectedScenes
+      .compactMap({ $0 as? UIWindowScene })
+      .first(where: { $0.activationState == .foregroundActive && $0.windows.contains(where: { $0.isKeyWindow }) })
+      else { return }
+    let frame: (CLDeviceOrientation, Int)
+    // UIInterfaceOrientation's landscape names are opposite to the physical
+    // CLDeviceOrientation names. A direct raw-value cast is incorrect.
+    switch scene.interfaceOrientation {
+    case .portrait: frame = (.portrait, 0)
+    case .landscapeRight: frame = (.landscapeLeft, 1)
+    case .portraitUpsideDown: frame = (.portraitUpsideDown, 2)
+    case .landscapeLeft: frame = (.landscapeRight, 3)
+    default: return
+    }
+    guard locationManager.headingOrientation != frame.0 else { return }
+    orientationChangedAt = Date()
+    orientationQuarterTurns = frame.1
+    locationManager.headingOrientation = frame.0
   }
 
   func locationManagerShouldDisplayHeadingCalibration(_ manager: CLLocationManager) -> Bool {

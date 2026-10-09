@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -6,6 +7,7 @@ import '../../features/ride/domain/ride.dart';
 import '../../features/routes/domain/route.dart';
 import '../../features/settings/domain/app_settings.dart';
 import '../utils/geo.dart';
+import '../utils/ids.dart';
 import 'supabase_config.dart';
 
 /// What the cloud holds for one ride.
@@ -99,9 +101,15 @@ class RemoteRide {
       : null;
 }
 
+class PushResult<T> {
+  const PushResult({required this.accepted, required this.winner});
+  final bool accepted;
+  final T winner;
+}
+
 /// Cloud access: Postgres over PostgREST, and file storage.
 ///
-/// Writes go through `push_ride` / `push_route` RPCs rather than direct table
+/// Writes go through `push_ride_v2` / `push_route_v2` RPCs rather than direct table
 /// inserts. The reason is the PostGIS `route_geometry` column: sending WKT or
 /// GeoJSON through PostgREST's geometry casting is version-dependent and fails
 /// opaquely when it fails. The RPC takes the line as a GeoJSON object and
@@ -116,8 +124,8 @@ class SupabaseRemote {
 
   /// Uploads a ride's GPX to Storage.
   ///
-  /// `upsert: true` because a retried upload after a partial failure must
-  /// overwrite rather than fail on the existing object.
+  /// Every attempt uses an isolated object. A rejected stale edit must never
+  /// overwrite a newer device's bytes before the database resolves conflict.
   Future<String> uploadGpx({
     required String rideId,
     required String localFilePath,
@@ -127,14 +135,20 @@ class SupabaseRemote {
       throw StateError('GPX 文件不存在：$localFilePath');
     }
 
-    final objectPath = SupabaseConfig.gpxPath(userId, rideId);
+    final objectPath = await _client.rpc<String>(
+      'new_gpx_upload_path',
+      params: {'p_ride_id': rideId, 'p_attempt_id': generateId()},
+    );
+    if (!SupabaseConfig.isRideGpxPath(objectPath, userId, rideId)) {
+      throw StateError('云端返回了无效的 GPX 上传路径');
+    }
     await _client.storage
         .from(SupabaseConfig.gpxBucket)
         .upload(
           objectPath,
           file,
           fileOptions: const FileOptions(
-            upsert: true,
+            upsert: false,
             contentType: 'application/gpx+xml',
             // Location traces are the most sensitive data the app holds; the
             // bucket is private and objects stay private (spec §44).
@@ -150,7 +164,7 @@ class SupabaseRemote {
       final bytes = await _client.storage
           .from(SupabaseConfig.gpxBucket)
           .download(objectPath);
-      return String.fromCharCodes(bytes);
+      return utf8.decode(bytes);
     } on StorageException {
       // A missing object is a normal state for a ride uploaded before the
       // storage write succeeded, or deleted out from under us.
@@ -234,7 +248,7 @@ class SupabaseRemote {
   }
 
   /// Upserts a ride row, including its PostGIS geometry.
-  Future<void> pushRide(Ride ride) async {
+  Future<PushResult<RemoteRide>> pushRide(Ride ride) async {
     final payload = <String, dynamic>{
       'id': ride.id,
       'name': ride.name,
@@ -253,7 +267,7 @@ class SupabaseRemote {
       'end_lng': ride.endPoint?.lng,
       // Local exports share the model field, but a filesystem path must never
       // replace the Storage object reference in the cloud.
-      'gpx_path': ride.gpxPath == SupabaseConfig.gpxPath(userId, ride.id)
+      'gpx_path': SupabaseConfig.isRideGpxPath(ride.gpxPath, userId, ride.id)
           ? ride.gpxPath
           : null,
       'fit_path': ride.fitPath,
@@ -267,10 +281,20 @@ class SupabaseRemote {
         'route_geometry': _wktToGeoJson(ride.routeGeometryWkt!),
     };
 
-    await _client.rpc<dynamic>('push_ride', params: {'p_ride': payload});
+    final response = await _client.rpc<dynamic>(
+      'push_ride_v2',
+      params: {'p_ride': payload},
+    );
+    final result = _pushResponse(response);
+    return PushResult(
+      accepted: result['accepted'] as bool,
+      winner: RemoteRide.fromRow(
+        Map<String, dynamic>.from(result['row'] as Map),
+      ),
+    );
   }
 
-  Future<void> pushRoute(Route route) async {
+  Future<PushResult<Route>> pushRoute(Route route) async {
     final payload = <String, dynamic>{
       'id': route.id,
       'name': route.name,
@@ -292,7 +316,15 @@ class SupabaseRemote {
         },
     };
 
-    await _client.rpc<dynamic>('push_route', params: {'p_route': payload});
+    final response = await _client.rpc<dynamic>(
+      'push_route_v2',
+      params: {'p_route': payload},
+    );
+    final result = _pushResponse(response);
+    return PushResult(
+      accepted: result['accepted'] as bool,
+      winner: _routeFromRow(Map<String, dynamic>.from(result['row'] as Map)),
+    );
   }
 
   /// All ride summaries, including tombstones, in deterministic pages.
@@ -322,38 +354,46 @@ class SupabaseRemote {
           'route_geometry, deleted_at, created_at, updated_at',
     );
 
-    return rows
-        .map((row) {
-          final geometry = row['route_geometry'];
-          final points = <GeoPoint>[];
-          if (geometry is Map<String, dynamic>) {
-            points.addAll(_geoJsonToPoints(geometry));
-          }
+    return rows.map(_routeFromRow).toList(growable: false);
+  }
 
-          return Route(
-            id: row['id'] as String,
-            name: row['name'] as String? ?? '路线',
-            points: points,
-            distanceMeters: (row['distance_meters'] as num?)?.toDouble() ?? 0,
-            estimatedDuration: Duration(
-              seconds: (row['estimated_seconds'] as num?)?.toInt() ?? 0,
-            ),
-            elevationGainMeters: (row['elevation_gain_meters'] as num?)
-                ?.toDouble(),
-            provider: row['provider'] as String? ?? 'amap',
-            providerRouteId: row['provider_route_id'] as String?,
-            createdAt: row['created_at'] == null
-                ? null
-                : DateTime.parse(row['created_at'] as String).toUtc(),
-            updatedAt: row['updated_at'] == null
-                ? null
-                : DateTime.parse(row['updated_at'] as String).toUtc(),
-            deletedAt: row['deleted_at'] == null
-                ? null
-                : DateTime.parse(row['deleted_at'] as String).toUtc(),
-          );
-        })
-        .toList(growable: false);
+  static Map<String, dynamic> _pushResponse(dynamic response) {
+    if (response is! Map<String, dynamic> ||
+        response['accepted'] is! bool ||
+        response['row'] is! Map) {
+      throw StateError('云端同步协议未更新，请稍后重试');
+    }
+    return response;
+  }
+
+  static Route _routeFromRow(Map<String, dynamic> row) {
+    final geometry = row['route_geometry'];
+    final points = <GeoPoint>[];
+    if (geometry is Map<String, dynamic>) {
+      points.addAll(_geoJsonToPoints(geometry));
+    }
+
+    return Route(
+      id: row['id'] as String,
+      name: row['name'] as String? ?? '路线',
+      points: points,
+      distanceMeters: (row['distance_meters'] as num?)?.toDouble() ?? 0,
+      estimatedDuration: Duration(
+        seconds: (row['estimated_seconds'] as num?)?.toInt() ?? 0,
+      ),
+      elevationGainMeters: (row['elevation_gain_meters'] as num?)?.toDouble(),
+      provider: row['provider'] as String? ?? 'amap',
+      providerRouteId: row['provider_route_id'] as String?,
+      createdAt: row['created_at'] == null
+          ? null
+          : DateTime.parse(row['created_at'] as String).toUtc(),
+      updatedAt: row['updated_at'] == null
+          ? null
+          : DateTime.parse(row['updated_at'] as String).toUtc(),
+      deletedAt: row['deleted_at'] == null
+          ? null
+          : DateTime.parse(row['deleted_at'] as String).toUtc(),
+    );
   }
 
   Future<List<Map<String, dynamic>>> _fetchAllRows(

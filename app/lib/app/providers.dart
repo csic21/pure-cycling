@@ -170,15 +170,15 @@ final elevationProviderProvider = Provider<ElevationProvider>((ref) {
 
 /// The elevation profile of a saved route.
 ///
-/// One request per route per session: the provider is not auto-disposed, so
-/// opening the same route twice does not ask the terrain service twice.
+/// Retained while the detail screen is visible, then released along with its
+/// geometry. Reopening may ask the configured terrain service again.
 ///
 /// Gain is computed with the same peak/valley accumulator the rides use, at a
 /// threshold of 5 m rather than 2 — a 30 m DEM is a measurement of the ground,
 /// but it is a coarse one, and counting its own noise as climbing would be the
 /// same mistake the GPS path was designed to avoid.
-final routeElevationProfileProvider =
-    FutureProvider.family<RouteElevationProfile?, String>((ref, routeId) async {
+final routeElevationProfileProvider = FutureProvider.autoDispose
+    .family<RouteElevationProfile?, String>((ref, routeId) async {
       final provider = ref.watch(elevationProviderProvider);
       if (!provider.isConfigured) return null;
 
@@ -651,13 +651,13 @@ class RideSessionNotifier extends Notifier<RideSessionState> {
 }
 
 /// The raw engine state, for widgets that want only the numbers.
-final rideStateProvider = Provider<RideState>(
+final rideStateProvider = Provider.autoDispose<RideState>(
   (ref) => ref.watch(rideSessionProvider).ride,
 );
 
 /// Everything the dashboard needs: ride statistics, navigation progress, GPS
 /// quality and battery, in one object.
-final dashboardDataProvider = Provider<DashboardData>((ref) {
+final dashboardDataProvider = Provider.autoDispose<DashboardData>((ref) {
   final session = ref.watch(rideSessionProvider);
   final ride = session.ride;
 
@@ -677,7 +677,7 @@ final dashboardDataProvider = Provider<DashboardData>((ref) {
 ///
 /// One minute is deliberate: a battery percentage that ticks every second is
 /// noise on the dashboard and a wakeup the platform does not need to serve.
-final batteryPercentProvider = StreamProvider<double>((ref) async* {
+final batteryPercentProvider = StreamProvider.autoDispose<double>((ref) async* {
   final battery = Battery();
   try {
     yield (await battery.batteryLevel).toDouble();
@@ -699,11 +699,11 @@ final batteryPercentProvider = StreamProvider<double>((ref) async* {
 // History
 // ---------------------------------------------------------------------------
 
-final ridesProvider = StreamProvider<List<Ride>>(
+final ridesProvider = StreamProvider.autoDispose<List<Ride>>(
   (ref) => ref.watch(rideRepositoryProvider).watchRides(),
 );
 
-final mostRecentRideProvider = StreamProvider<Ride?>(
+final mostRecentRideProvider = StreamProvider.autoDispose<Ride?>(
   (ref) => ref.watch(rideRepositoryProvider).watchMostRecent(),
 );
 
@@ -713,33 +713,33 @@ final selectedMonthProvider = StateProvider<DateTime>((ref) {
   return DateTime(now.year, now.month);
 });
 
-final monthSummaryProvider = StreamProvider<RideSummary>((ref) {
+final monthSummaryProvider = StreamProvider.autoDispose<RideSummary>((ref) {
   final month = ref.watch(selectedMonthProvider);
   return ref.watch(rideRepositoryProvider).watchMonthSummary(month);
 });
 
 /// One ride, by id.
-final rideProvider = StreamProvider.family<Ride?, String>(
+final rideProvider = StreamProvider.autoDispose.family<Ride?, String>(
   (ref, rideId) => ref.watch(rideRepositoryProvider).watchRide(rideId),
 );
 
 /// A single ride's trace, for the detail screen's map and elevation chart.
-final trackPointsProvider = StreamProvider.family<List<TrackPoint>, String>(
-  (ref, rideId) => ref.watch(rideRepositoryProvider).watchTrackPoints(rideId),
-);
+final trackPointsProvider = StreamProvider.autoDispose
+    .family<List<TrackPoint>, String>(
+      (ref, rideId) =>
+          ref.watch(rideRepositoryProvider).watchTrackPoints(rideId),
+    );
 
 /// The trace as coordinates, for the map.
 ///
 /// Derived rather than stored: the track itself is the source of truth and the
 /// projection is cheap, so there is no reason to keep a second copy in sync.
-final trackGeometryProvider = Provider.family<List<GeoPoint>, String>((
-  ref,
-  rideId,
-) {
-  final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
-  if (points == null) return const [];
-  return points.map((p) => p.geo).toList(growable: false);
-});
+final trackGeometryProvider = Provider.autoDispose
+    .family<List<GeoPoint>, String>((ref, rideId) {
+      final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+      if (points == null) return const [];
+      return points.map((p) => p.geo).toList(growable: false);
+    });
 
 /// How much the climb total for a recorded ride can be trusted.
 ///
@@ -750,80 +750,76 @@ final trackGeometryProvider = Provider.family<List<GeoPoint>, String>((
 ///
 /// The median rather than the mean: one optimistic fix in a tunnel should not
 /// make a whole ride look precise.
-final elevationQualityProvider = Provider.family<ElevationQuality, String>((
-  ref,
-  rideId,
-) {
-  final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
-  if (points == null || points.isEmpty) return ElevationQuality.approximate;
+final elevationQualityProvider = Provider.autoDispose
+    .family<ElevationQuality, String>((ref, rideId) {
+      final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+      if (points == null || points.isEmpty) return ElevationQuality.approximate;
 
-  final accuracies = <double>[];
-  for (final point in points) {
-    final accuracy = point.verticalAccuracy;
-    // Zero and negative both mean the platform did not report one.
-    if (accuracy != null && accuracy > 0 && accuracy.isFinite) {
-      accuracies.add(accuracy);
-    }
-  }
+      final accuracies = <double>[];
+      for (final point in points) {
+        final accuracy = point.verticalAccuracy;
+        // Zero and negative both mean the platform did not report one.
+        if (accuracy != null && accuracy > 0 && accuracy.isFinite) {
+          accuracies.add(accuracy);
+        }
+      }
 
-  // A ride where most fixes carried no vertical accuracy is an unknown, and
-  // unknown is treated as the pessimistic case.
-  if (accuracies.length < points.length ~/ 2) {
-    return ElevationQuality.approximate;
-  }
+      // A ride where most fixes carried no vertical accuracy is an unknown, and
+      // unknown is treated as the pessimistic case.
+      if (accuracies.length < points.length ~/ 2) {
+        return ElevationQuality.approximate;
+      }
 
-  accuracies.sort();
-  return ElevationTuning.forVerticalAccuracy(
-    accuracies[accuracies.length ~/ 2],
-  ).quality;
-});
+      accuracies.sort();
+      return ElevationTuning.forVerticalAccuracy(
+        accuracies[accuracies.length ~/ 2],
+      ).quality;
+    });
 
 /// Elevation samples for the profile chart, bucketed for drawing.
 ///
 /// Averaged within each bucket rather than sampled at bucket boundaries: a
 /// point-sampled profile can miss a short steep ramp entirely, which is
 /// exactly the feature a rider is looking for.
-final elevationSamplesProvider = Provider.family<List<double>, String>((
-  ref,
-  rideId,
-) {
-  final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
-  if (points == null) return const [];
+final elevationSamplesProvider = Provider.autoDispose
+    .family<List<double>, String>((ref, rideId) {
+      final points = ref.watch(trackPointsProvider(rideId)).valueOrNull;
+      if (points == null) return const [];
 
-  final altitudes = <double>[];
-  for (final point in points) {
-    final altitude = point.altitude;
-    if (altitude != null && altitude.isFinite) altitudes.add(altitude);
-  }
-  if (altitudes.length < 2) return const [];
+      final altitudes = <double>[];
+      for (final point in points) {
+        final altitude = point.altitude;
+        if (altitude != null && altitude.isFinite) altitudes.add(altitude);
+      }
+      if (altitudes.length < 2) return const [];
 
-  const buckets = 120;
-  if (altitudes.length <= buckets) return altitudes;
+      const buckets = 120;
+      if (altitudes.length <= buckets) return altitudes;
 
-  final out = <double>[];
-  final step = altitudes.length / buckets;
-  for (var i = 0; i < buckets; i++) {
-    final start = (i * step).floor();
-    final end = ((i + 1) * step).ceil().clamp(0, altitudes.length);
-    if (end <= start) continue;
-    var sum = 0.0;
-    for (var j = start; j < end; j++) {
-      sum += altitudes[j];
-    }
-    out.add(sum / (end - start));
-  }
-  return out;
-});
+      final out = <double>[];
+      final step = altitudes.length / buckets;
+      for (var i = 0; i < buckets; i++) {
+        final start = (i * step).floor();
+        final end = ((i + 1) * step).ceil().clamp(0, altitudes.length);
+        if (end <= start) continue;
+        var sum = 0.0;
+        for (var j = start; j < end; j++) {
+          sum += altitudes[j];
+        }
+        out.add(sum / (end - start));
+      }
+      return out;
+    });
 
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
-final savedRoutesProvider = StreamProvider<List<Route>>(
-  (ref) => ref.watch(routeRepositoryProvider).watchRoutes(),
+final savedRoutesProvider = StreamProvider.autoDispose<List<RouteSummary>>(
+  (ref) => ref.watch(routeRepositoryProvider).watchRouteSummaries(),
 );
 
-final routeProvider = StreamProvider.family<Route?, String>(
+final routeProvider = StreamProvider.autoDispose.family<Route?, String>(
   (ref, id) => ref.watch(routeRepositoryProvider).watchRoute(id),
 );
 
@@ -878,11 +874,11 @@ final unfinishedRideProvider = FutureProvider<RideCheckpoint?>(
 );
 
 /// The dashboard configuration currently in effect.
-final dashboardConfigProvider = Provider<DashboardConfig>((ref) {
+final dashboardConfigProvider = Provider.autoDispose<DashboardConfig>((ref) {
   return ref.watch(currentSettingsProvider).dashboard;
 });
 
 /// Which navigation presentation the ride screen is in.
-final navigationModeProvider = Provider<NavigationMode?>((ref) {
+final navigationModeProvider = Provider.autoDispose<NavigationMode?>((ref) {
   return ref.watch(rideSessionProvider).navigation?.mode;
 });

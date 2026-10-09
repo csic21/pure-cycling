@@ -104,7 +104,6 @@ select public.push_ride(jsonb_build_object(
   'elevation_loss_meters', 480,
   'start_lat', 31.2304, 'start_lng', 121.4737,
   'end_lat', 31.2404, 'end_lng', 121.4837,
-  'gpx_path', 'rides/11111111-1111-7111-8111-111111111111/22222222-2222-7222-8222-222222222222/original.gpx',
   'route_geometry', jsonb_build_object(
     'type', 'LineString',
     'coordinates', jsonb_build_array(
@@ -492,15 +491,10 @@ begin
   raise notice 'admin can search, page, list accounts and read the audit log, but not rides';
 end $$;
 
--- The console derives 「已封禁」 from its own audit trail, so the state has to
--- follow the latest disable/enable row.
-reset role;
-insert into public.admin_audit (admin_id, action, target_user_id)
-values ('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
-        'disable_user',
-        '99999999-9999-7999-8999-999999999999');
-set role authenticated;
-set request.jwt.claim.sub = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa';
+-- State and audit now commit atomically through the authenticated admin RPC.
+-- A log row alone is not an access-control change.
+select public.admin_set_account_disabled(
+  '99999999-9999-7999-8999-999999999999', true);
 
 do $$
 declare v_state text;
@@ -509,11 +503,14 @@ begin
     from public.admin_list_users()
     where id = '99999999-9999-7999-8999-999999999999';
   if v_state <> 'disabled' then
-    raise exception 'access_state did not follow the audit trail: %',
+    raise exception 'access_state did not follow authoritative state: %',
       coalesce(v_state, 'NULL');
   end if;
-  raise notice 'access_state follows the console audit trail';
+  raise notice 'access_state follows authoritative account state';
 end $$;
+
+select public.admin_set_account_disabled(
+  '99999999-9999-7999-8999-999999999999', false);
 
 -- The membership table is not reachable through the Data API at all.
 do $$
@@ -676,5 +673,10 @@ begin
 end $$;
 reset role;
 SQL
+
+echo "==> account cleanup, bans, exact admin lookup, and sync conflicts"
+psql_stdin < "$REPO_ROOT/supabase/tests/account_cleanup.sql"
+psql_stdin < "$REPO_ROOT/supabase/tests/sync_conflicts.sql"
+CONTAINER="$CONTAINER" bash "$REPO_ROOT/supabase/tests/account_cleanup_concurrency.sh"
 
 echo "==> migrations OK"

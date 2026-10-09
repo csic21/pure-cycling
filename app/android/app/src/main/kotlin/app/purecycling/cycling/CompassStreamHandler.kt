@@ -5,6 +5,9 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.Build
+import android.view.Surface
+import android.view.WindowManager
 import io.flutter.plugin.common.EventChannel
 
 /**
@@ -19,11 +22,10 @@ import io.flutter.plugin.common.EventChannel
  *
  * ## What it reports, and what it deliberately does not
  *
- * The heading of the **device's +Y axis** — the top of the phone, the edge the
- * rider reads the numbers from. On handlebars that is the direction of travel,
- * which is the only case this app is for; the phone being in a pocket is
- * handled upstream by refusing to trust a compass more than the GPS course it
- * is standing in for.
+ * The heading of the top of the current display. Remap the sensor matrix
+ * before reading azimuth, so landscape works even on a tilted handlebar mount.
+ * Dart receives the display frame too, and discards an old mounting calibration
+ * when it changes. Only GPS determines the actual direction of travel.
  *
  * It does **not** smooth, filter, or decide whether to be believed. That is
  * the interesting part, it has a right answer that can be tested without a
@@ -32,7 +34,7 @@ import io.flutter.plugin.common.EventChannel
  * Neither `TYPE_ROTATION_VECTOR` nor the accelerometer/magnetometer fallback
  * needs any permission.
  */
-class CompassStreamHandler(context: Context) :
+class CompassStreamHandler(private val context: Context) :
     EventChannel.StreamHandler, SensorEventListener {
 
     private val sensorManager =
@@ -56,12 +58,14 @@ class CompassStreamHandler(context: Context) :
     private var sink: EventChannel.EventSink? = null
 
     private val rotationMatrix = FloatArray(9)
+    private val displayMatrix = FloatArray(9)
     private val orientation = FloatArray(3)
     private val accelerometer = FloatArray(3)
     private val magnetometer = FloatArray(3)
 
     private var hasAccelerometer = false
     private var hasMagnetometer = false
+    private var magneticAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
         val rotation = rotationSensor
@@ -90,6 +94,7 @@ class CompassStreamHandler(context: Context) :
         sink = events
         hasAccelerometer = false
         hasMagnetometer = false
+        magneticAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
         sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_UI)
         sensorManager.registerListener(this, magnetic, SensorManager.SENSOR_DELAY_UI)
     }
@@ -116,13 +121,14 @@ class CompassStreamHandler(context: Context) :
             Sensor.TYPE_ACCELEROMETER -> {
                 System.arraycopy(event.values, 0, accelerometer, 0, 3)
                 hasAccelerometer = true
-                report(event, accuracyFromStatus(event.accuracy))
+                report(event, accuracyFromStatus(magneticAccuracy))
             }
 
             Sensor.TYPE_MAGNETIC_FIELD -> {
                 System.arraycopy(event.values, 0, magnetometer, 0, 3)
                 hasMagnetometer = true
-                report(event, accuracyFromStatus(event.accuracy))
+                magneticAccuracy = event.accuracy
+                report(event, accuracyFromStatus(magneticAccuracy))
             }
         }
     }
@@ -148,36 +154,42 @@ class CompassStreamHandler(context: Context) :
             }
         }
 
-        // No `remapCoordinateSystem` call, deliberately: the azimuth below is
-        // the direction the *top of the phone* points, which is the direction
-        // of travel for a phone mounted the way the bike faces. In landscape
-        // that axis points sideways, so the heading would be 90° out — a
-        // real-device question, listed in docs/gps.md rather than guessed at
-        // here.
-        //
-        // Note also that this is a *magnetic* azimuth, and the GPS course it
-        // is blended with is true north. The blend anchors the compass to a
-        // recent GPS course, so a constant offset — declination, or the angle
-        // the phone is mounted at — is absorbed by the anchor rather than
-        // needing a declination model here.
-        SensorManager.getOrientation(rotationMatrix, orientation)
+        // Sensor axes never rotate with the display. Adding 90 degrees to
+        // an already-derived azimuth is wrong when the mount is tilted: remap
+        // the 3D frame first, then calculate its azimuth.
+        val rotation = displayRotation()
+        val (axisX, axisY) = when (rotation) {
+            Surface.ROTATION_90 -> SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
+            Surface.ROTATION_180 -> SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Y
+            Surface.ROTATION_270 -> SensorManager.AXIS_MINUS_Y to SensorManager.AXIS_X
+            else -> SensorManager.AXIS_X to SensorManager.AXIS_Y
+        }
+        if (!SensorManager.remapCoordinateSystem(rotationMatrix, axisX, axisY, displayMatrix)) return
+        SensorManager.getOrientation(displayMatrix, orientation)
 
-        // `orientation[0]` is the azimuth in radians, positive anticlockwise
-        // about the vertical; normalising it gives the compass bearing riders
-        // expect — 0 north, 90 east.
+        // Magnetic north here; the Dart GPS-course anchor absorbs declination.
         var degrees = Math.toDegrees(orientation[0].toDouble())
         if (degrees < 0) degrees += 360.0
         if (!degrees.isFinite()) return
 
         sink?.success(
-            hashMapOf<String, Any?>("heading" to degrees, "accuracy" to accuracyDegrees)
+            hashMapOf<String, Any?>(
+                "heading" to degrees,
+                "accuracy" to accuracyDegrees,
+                "orientationQuarterTurns" to rotation,
+            )
         )
     }
 
+    @Suppress("DEPRECATION")
+    private fun displayRotation(): Int = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        context.display?.rotation ?: Surface.ROTATION_0
+    } else {
+        (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.rotation
+    }
+
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // Nothing to do: the accuracy that matters is the one attached to each
-        // reading, and it is mapped in `accuracyFromStatus` as the reading
-        // goes out. A change here would only duplicate it.
+        if (sensor?.type == Sensor.TYPE_MAGNETIC_FIELD) magneticAccuracy = accuracy
     }
 
     /**
@@ -186,13 +198,13 @@ class CompassStreamHandler(context: Context) :
      * Android reports a category, not a figure, so these are honest
      * approximations rather than measurements: `HIGH` is good enough to use
      * on its own, `LOW` is the state a phone next to a steel frame or a
-     * speaker magnet is in, and `UNRELIABLE` is reported as null so the
+     * speaker magnet is in, and `UNRELIABLE` is reported as 180 degrees so the
      * reading is dropped rather than believed.
      */
-    private fun accuracyFromStatus(status: Int): Double? = when (status) {
+    private fun accuracyFromStatus(status: Int): Double = when (status) {
         SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> 5.0
         SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> 15.0
         SensorManager.SENSOR_STATUS_ACCURACY_LOW -> 30.0
-        else -> null
+        else -> 180.0
     }
 }

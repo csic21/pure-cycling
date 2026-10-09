@@ -20,8 +20,9 @@
 /// [docs/map.md] for the routing relay, `supabase/functions/delete-account`
 /// for self-service deletion, `supabase/functions/release` for update checks.
 abstract final class FunctionsConfig {
-  static const String baseUrl =
-      String.fromEnvironment('SUPABASE_FUNCTIONS_URL');
+  static const String baseUrl = String.fromEnvironment(
+    'SUPABASE_FUNCTIONS_URL',
+  );
 
   static bool get isConfigured => _trimmed.isNotEmpty;
 
@@ -31,6 +32,9 @@ abstract final class FunctionsConfig {
   /// Self-service account deletion.
   static String? get deleteAccountUrl =>
       isConfigured ? '$_trimmed/delete-account' : null;
+
+  static String? get wipeCloudDataUrl =>
+      isConfigured ? '$_trimmed/wipe-cloud-data' : null;
 
   /// The release relay: asks GitHub on the project's behalf and caches the
   /// answer. The app used to ask directly, which does not survive a shared

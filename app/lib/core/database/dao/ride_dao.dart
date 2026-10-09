@@ -72,6 +72,17 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
   Future<void> upsertRide(Ride ride) =>
       into(localRides).insertOnConflictUpdate(rideToCompanion(ride));
 
+  Future<DateTime> _nextEditTime(String id) async {
+    final previous = (await getRide(id))?.updatedAt;
+    final now = DateTime.fromMillisecondsSinceEpoch(
+      DateTime.now().millisecondsSinceEpoch ~/ 1000 * 1000,
+      isUtc: true,
+    );
+    return previous != null && !now.isAfter(previous)
+        ? previous.add(const Duration(seconds: 1))
+        : now;
+  }
+
   /// Applies a partial edit (name, notes, bike) without touching metrics.
   ///
   /// After a ride ends its recorded numbers are effectively immutable
@@ -83,12 +94,13 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
     String? notes,
     String? bikeId,
   }) async {
+    final editedAt = await _nextEditTime(id);
     await (update(localRides)..where((t) => t.id.equals(id))).write(
       LocalRidesCompanion(
         name: name == null ? const Value.absent() : Value(name),
         notes: notes == null ? const Value.absent() : Value(notes),
         bikeId: bikeId == null ? const Value.absent() : Value(bikeId),
-        updatedAt: Value(DateTime.now().toUtc()),
+        updatedAt: Value(editedAt),
       ),
     );
   }
@@ -109,7 +121,7 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
       LocalRidesCompanion(
         name: Value(name),
         notes: Value(notes),
-        updatedAt: Value(updatedAt?.toUtc() ?? DateTime.now().toUtc()),
+        updatedAt: Value(updatedAt?.toUtc() ?? await _nextEditTime(id)),
       ),
     );
   }
@@ -151,7 +163,7 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
     DateTime? deletedAt,
     DateTime? updatedAt,
   }) async {
-    final now = DateTime.now().toUtc();
+    final now = updatedAt?.toUtc() ?? await _nextEditTime(id);
     await transaction(() async {
       await (update(localRides)..where((t) => t.id.equals(id))).write(
         LocalRidesCompanion(

@@ -128,6 +128,26 @@ class RouteInstruction {
       );
 }
 
+/// Metadata for a saved-route row. Geometry and turn instructions are loaded
+/// only by the detail/navigation path, never to build the routes list.
+class RouteSummary {
+  const RouteSummary({
+    required this.id,
+    required this.name,
+    required this.distanceMeters,
+    required this.estimatedDuration,
+    this.elevationGainMeters,
+    this.favorite = false,
+  });
+
+  final String id;
+  final String name;
+  final double distanceMeters;
+  final Duration estimatedDuration;
+  final double? elevationGainMeters;
+  final bool favorite;
+}
+
 /// A route the user planned, imported, or is navigating.
 class Route {
   const Route({

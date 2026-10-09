@@ -100,7 +100,15 @@ DOOMED_TOKEN="$(signin "$DOOMED_EMAIL" "$PASSWORD")"
 BYSTANDER_TOKEN="$(signin "$BYSTANDER_EMAIL" "$PASSWORD")"
 DOOMED_RIDE="$(uuidgen | tr 'A-Z' 'a-z')"
 BYSTANDER_RIDE="$(uuidgen | tr 'A-Z' 'a-z')"
-DOOMED_OBJECT="rides/$DOOMED_ID/$DOOMED_RIDE/original.gpx"
+upload_path() {
+  curl -fsS -X POST "$API_URL/rest/v1/rpc/new_gpx_upload_path" \
+    -H "apikey: $ANON_KEY" -H "Authorization: Bearer $DOOMED_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg ride "$DOOMED_RIDE" --arg attempt "$(uuidgen | tr 'A-Z' 'a-z')" \
+      '{p_ride_id:$ride,p_attempt_id:$attempt}')" | jq -er '.'
+}
+DOOMED_OBJECT="$(upload_path)"
+ORPHAN_OBJECT="$(upload_path)"
 
 push_ride() { # push_ride <token> <ride-id> [gpx-path]
   local body
@@ -110,13 +118,11 @@ push_ride() { # push_ride <token> <ride-id> [gpx-path]
     distance_meters:5000,
     updated_at:"2026-09-25T07:00:00Z",
     gpx_path:(if $gpx == "" then null else $gpx end)}}')"
-  curl -sS -o /dev/null -X POST "$API_URL/rest/v1/rpc/push_ride" \
+  curl -fsS -o /dev/null -X POST "$API_URL/rest/v1/rpc/push_ride" \
     -H "apikey: $ANON_KEY" -H "Authorization: Bearer $1" \
     -H 'Content-Type: application/json' -d "$body"
 }
 
-push_ride "$DOOMED_TOKEN" "$DOOMED_RIDE" "$DOOMED_OBJECT"
-push_ride "$BYSTANDER_TOKEN" "$BYSTANDER_RIDE"
 
 printf '<?xml version="1.0"?><gpx version="1.1"><trk><name>t</name></trk></gpx>' \
   >"$WORK/ride.gpx"
@@ -127,7 +133,15 @@ STATUS="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' \
   -H "apikey: $ANON_KEY" -H "Authorization: Bearer $DOOMED_TOKEN" \
   -H 'Content-Type: application/gpx+xml' --data-binary @"$WORK/ride.gpx")"
 [ "$STATUS" = "200" ] || fail "上传测试 GPX 失败（HTTP ${STATUS}）"
-ok "两个账号各有数据，其中一个还有 GPX"
+# An upload whose push_ride never committed is still location data to remove.
+STATUS="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' \
+  -X POST "$API_URL/storage/v1/object/rides/$ORPHAN_OBJECT" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $DOOMED_TOKEN" \
+  -H 'Content-Type: application/gpx+xml' --data-binary @"$WORK/ride.gpx")"
+[ "$STATUS" = "200" ] || fail "上传孤立 GPX 失败（HTTP ${STATUS}）"
+push_ride "$DOOMED_TOKEN" "$DOOMED_RIDE" "$DOOMED_OBJECT"
+push_ride "$BYSTANDER_TOKEN" "$BYSTANDER_RIDE"
+ok "两个账号各有数据，待删除账号有一个引用 GPX 和一个孤立 GPX"
 
 # ---------------------------------------------------------------------------
 # The deletion
@@ -145,7 +159,7 @@ STATUS="$(curl -sS -m 30 -o "$WORK/result.json" -w '%{http_code}' \
 jq -e '.deleted == true' "$WORK/result.json" >/dev/null ||
   fail "响应没有确认删除：$(cat "$WORK/result.json")"
 FILES="$(jq -r '.files' "$WORK/result.json")"
-[ "$FILES" = "1" ] || fail "删除的文件数应为 1，实际 $FILES"
+[ "$FILES" = "2" ] || fail "删除的文件数应为 2，实际 $FILES"
 ok "账号删除成功，并带走了 $FILES 个 GPX"
 
 echo "==> asserting what is gone, and what is not"
@@ -160,7 +174,7 @@ ok "auth.users 行已删除"
   fail "骑行行还在（级联没生效？）"
 ok "骑行行随级联删除"
 
-[ "$(count "select count(*) from storage.objects where name = '$DOOMED_OBJECT'")" = "0" ] ||
+[ "$(count "select count(*) from storage.objects where name like 'rides/$DOOMED_ID/%'")" = "0" ] ||
   fail "GPX 还留在存储里——一条没人能看、也没人能删的位置轨迹"
 ok "GPX 已从存储删除"
 

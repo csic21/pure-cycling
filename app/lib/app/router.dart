@@ -69,9 +69,15 @@ final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>(
 
 BuildContext? get appNavigatorContext => _rootNavigatorKey.currentContext;
 
-GoRouter buildRouter() {
+GoRouter buildRouter({NavigatorObserver Function()? observerFactory}) {
+  // NavigatorObserver instances belong to one navigator. The root and each
+  // independent shell stack must receive their own observer.
+  List<NavigatorObserver> observers() => [
+    if (observerFactory != null) observerFactory(),
+  ];
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
+    observers: observers(),
     initialLocation: AppRoutes.home,
     routes: [
       StatefulShellRoute.indexedStack(
@@ -79,6 +85,7 @@ GoRouter buildRouter() {
             AppShell(navigationShell: navigationShell),
         branches: [
           StatefulShellBranch(
+            observers: observers(),
             routes: [
               GoRoute(
                 path: AppRoutes.home,
@@ -88,6 +95,7 @@ GoRouter buildRouter() {
             ],
           ),
           StatefulShellBranch(
+            observers: observers(),
             routes: [
               GoRoute(
                 path: AppRoutes.routes,
@@ -117,6 +125,7 @@ GoRouter buildRouter() {
             ],
           ),
           StatefulShellBranch(
+            observers: observers(),
             routes: [
               GoRoute(
                 path: AppRoutes.history,
@@ -134,6 +143,7 @@ GoRouter buildRouter() {
             ],
           ),
           StatefulShellBranch(
+            observers: observers(),
             routes: [
               GoRoute(
                 path: AppRoutes.settings,

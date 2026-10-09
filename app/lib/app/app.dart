@@ -19,15 +19,25 @@ class CyclingApp extends ConsumerStatefulWidget {
 
 class _CyclingAppState extends ConsumerState<CyclingApp>
     with WidgetsBindingObserver {
-  late final GoRouter _router = buildRouter();
+  late final GoRouter _router = buildRouter(
+    observerFactory: () => _UpdateDismissObserver(_resumeDeferredUpdate),
+  );
+  late final _updates = ref.read(appUpdateCoordinatorProvider);
   Timer? _updateTimer;
+  bool _foreground = true;
+  bool _updateResumeScheduled = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // A previous update may have left its APK behind if the process died
-    // before the grace timer ran. Nothing is being installed at cold start.
+    _foreground =
+        WidgetsBinding.instance.lifecycleState == null ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    _updates.hostIsEligible = _canPresentUpdate;
+    _router.routeInformationProvider.addListener(_resumeDeferredUpdate);
+    // Remove abandoned partials/extra packages. Retain one completed APK:
+    // Android may still own its URI even after this process was restarted.
     unawaited(ApkUpdater.discardDownloadedPackages());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -37,18 +47,54 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
     });
   }
 
+  bool _canPresentUpdate(bool automatic) {
+    if (!mounted || !_foreground) return false;
+    final session = ref.read(rideSessionProvider);
+    if (session.starting || session.ride.isRecording) return false;
+    final path = _router.routeInformationProvider.value.uri.path;
+    final allowed = automatic
+        ? {AppRoutes.home, AppRoutes.settings}
+        : {AppRoutes.settingsAbout};
+    if (!allowed.contains(path)) return false;
+    final context = appNavigatorContext;
+    // Recovery sheets and any other root modal take priority. Check this again
+    // when the release response arrives, not only before starting the request.
+    return context != null &&
+        context.mounted &&
+        !Navigator.of(context).canPop() &&
+        // Root tabs have no expected pushed page. This also detects a sheet
+        // on the active shell navigator, including crash recovery.
+        (!automatic || !_router.canPop());
+  }
+
   Future<void> _checkForUpdates() async {
-    // Let the ride-recovery sheet take priority over an optional update.
-    if (!mounted || ref.read(rideSessionProvider).ride.isRecording) return;
+    if (!mounted) return;
     final navigatorContext = appNavigatorContext;
     if (navigatorContext != null && navigatorContext.mounted) {
-      await checkForAppUpdate(navigatorContext, automatic: true);
+      await checkForAppUpdate(
+        navigatorContext,
+        coordinator: _updates,
+        automatic: true,
+      );
     }
+  }
+
+  void _resumeDeferredUpdate() {
+    if (!mounted || _updateResumeScheduled) return;
+    _updateResumeScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _updateResumeScheduled = false;
+      if (mounted) {
+        unawaited(_updates.resumeDeferred());
+      }
+    });
   }
 
   @override
   void dispose() {
     _updateTimer?.cancel();
+    _router.routeInformationProvider.removeListener(_resumeDeferredUpdate);
+    _updates.hostIsEligible = null;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -76,6 +122,8 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
   /// [RideRecorder.setForeground].
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
+    if (_foreground) _resumeDeferredUpdate();
     switch (state) {
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
@@ -114,9 +162,8 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
         // screen was off.
         ref.read(rideSessionProvider.notifier).setForeground(true);
         unawaited(ref.read(syncServiceProvider).syncNow());
-        // The package just handed to the installer stays for a minute, so a
-        // resume that races the installer does not delete it mid-read.
-        // Anything older is a finished or abandoned download.
+        // Retain the installer-owned completed APK regardless of elapsed time.
+        // Only abandoned partials and extra legacy packages are swept here.
         unawaited(
           ApkUpdater.discardDownloadedPackages(
             olderThan: ApkUpdater.downloadedPackageGrace,
@@ -133,6 +180,13 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
     ref.watch(settingsProvider);
     ref.watch(syncReportProvider);
     ref.watch(passwordRecoveryProvider);
+    ref.listen(rideSessionProvider, (previous, next) {
+      if ((previous?.ride.isRecording == true || previous?.starting == true) &&
+          !next.ride.isRecording &&
+          !next.starting) {
+        _resumeDeferredUpdate();
+      }
+    });
 
     // A reset link signs the rider in; it does not change the password. Route
     // to the step that does, so the app can never be in the state where the
@@ -167,5 +221,25 @@ class _CyclingAppState extends ConsumerState<CyclingApp>
         );
       },
     );
+  }
+}
+
+/// Dismissing a Navigator-owned sheet does not necessarily change GoRouter's
+/// URI. Wake deferred checks after the dismissal frame on every app stack.
+class _UpdateDismissObserver extends NavigatorObserver {
+  _UpdateDismissObserver(this.onDismissed);
+  final VoidCallback onDismissed;
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      onDismissed();
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      onDismissed();
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    if (oldRoute != null) onDismissed();
   }
 }

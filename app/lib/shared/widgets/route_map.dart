@@ -3,7 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart' hide Path;
+import 'package:latlong2/latlong.dart' hide Path, normalizeBearing;
 
 import '../../app/theme.dart';
 import '../../core/map/coord_transform.dart';
@@ -1010,6 +1010,11 @@ class _RiderHost extends StatelessWidget {
               point: point,
               width: 44,
               height: 44,
+              // Inherit flutter_map's clockwise map-layer rotation once.
+              // Effective screen bearing = travel - camera's geographic
+              // bearing (flutter_map.rotation is the opposite convention).
+              // Counter-rotation here would incorrectly keep north upright.
+              rotate: false,
               child: _PositionDot(bearing: mark.bearing),
             ),
           ],
@@ -1139,9 +1144,10 @@ class _PositionDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final heading = bearing;
-    if (heading == null) {
+    if (heading == null || !heading.isFinite) {
       return Center(
         child: Container(
+          key: const ValueKey('rider-location-dot'),
           width: 14,
           height: 14,
           decoration: BoxDecoration(
@@ -1154,8 +1160,15 @@ class _PositionDot extends StatelessWidget {
     }
     return Center(
       child: Transform.rotate(
-        angle: heading * math.pi / 180.0,
-        child: const CustomPaint(size: Size(26, 26), painter: _WedgePainter()),
+        angle: normalizeBearing(heading) * math.pi / 180.0,
+        child: Semantics(
+          label: '方向 ${normalizeBearing(heading).round() % 360} 度',
+          child: const CustomPaint(
+            key: ValueKey('rider-direction-arrow'),
+            size: Size(26, 26),
+            painter: _WedgePainter(),
+          ),
+        ),
       ),
     );
   }

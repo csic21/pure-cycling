@@ -8,9 +8,10 @@ class CompassSample {
     required this.headingDegrees,
     required this.timestamp,
     this.accuracyDegrees,
+    this.orientationQuarterTurns = 0,
   });
 
-  /// Degrees clockwise from north — the direction the **phone** is pointing.
+  /// Degrees clockwise from magnetic north, along the top of the display.
   ///
   /// Not the direction the rider is travelling. On a bike those are the same
   /// thing only while the phone is mounted the way the bike is facing, which
@@ -19,6 +20,10 @@ class CompassSample {
   final double headingDegrees;
 
   final DateTime timestamp;
+
+  /// The native display frame used for this heading (0, 1, 2, or 3).
+  /// A frame change invalidates the travel-course mounting calibration.
+  final int orientationQuarterTurns;
 
   /// How far the reading could be out, in degrees, when the platform says.
   ///
@@ -45,7 +50,7 @@ abstract interface class CompassSource {
   /// and says no.
   Future<bool> isAvailable();
 
-  /// Readings, in degrees clockwise from north.
+  /// Readings, in degrees clockwise from magnetic north.
   ///
   /// Errors are part of the contract: a device with no magnetometer reports
   /// one. Callers treat any error as "no compass" and carry on — recording
@@ -69,8 +74,8 @@ class NullCompassSource implements CompassSource {
 
 /// The phone's own compass, over an event channel.
 ///
-/// The platform reports a heading in degrees and an optional accuracy, and
-/// nothing else. Deciding *when* to believe it is deliberately not the
+/// The platform reports a display-frame heading, its frame ID and optional
+/// accuracy. Deciding *when* to believe it is deliberately not the
 /// platform's job: that is the interesting part, it differs per platform, and
 /// it lives in `GpsFilter` where it can be tested against numbers.
 ///
@@ -117,29 +122,35 @@ class PlatformCompassSource implements CompassSource {
   }
 
   @override
-  Stream<CompassSample> samples() async* {
-    await for (final event in _channel.receiveBroadcastStream()) {
-      final map = (event as Map).cast<Object?, Object?>();
-      final heading = map['heading'];
-      if (heading is! num) continue;
+  Stream<CompassSample> samples() => _samples;
 
-      final degrees = heading.toDouble();
-      // A heading outside the circle is a platform bug, not a direction.
-      // Dropping it here keeps every consumer free of the range check.
-      if (!degrees.isFinite) continue;
-
-      final accuracy = map['accuracy'];
-      yield CompassSample(
-        headingDegrees: degrees % 360,
-        // The platform's own clock would add a channel round trip's worth of
-        // skew for no benefit: what matters is how long ago the reading
-        // arrived, which is what staleness is measured against.
-        timestamp: DateTime.now().toUtc(),
-        accuracyDegrees:
-            (accuracy is num && accuracy.isFinite) ? accuracy.toDouble() : null,
-      );
-    }
+  static CompassSample? _decode(Object? event) {
+    if (event is! Map) return null;
+    final map = event.cast<Object?, Object?>();
+    final heading = map['heading'];
+    if (heading is! num || !heading.isFinite) return null;
+    final accuracy = map['accuracy'];
+    final orientation = map['orientationQuarterTurns'];
+    return CompassSample(
+      headingDegrees: heading.toDouble() % 360,
+      orientationQuarterTurns: orientation is int ? orientation % 4 : 0,
+      timestamp: DateTime.now().toUtc(),
+      accuracyDegrees: accuracy is num
+          ? (accuracy.isFinite ? accuracy.toDouble() : 180)
+          : null,
+    );
   }
 
   static const EventChannel _channel = EventChannel(channelName);
+
+  // Share one native subscription: a sensors-screen availability probe must
+  // not replace or cancel the compass stream of a ride already in progress.
+  // Use broadcast-preserving transforms instead of an async generator per
+  // listener. Cancelling a short availability probe must complete even when
+  // the rider's subscription remains open and no new sensor event arrives.
+  static final Stream<CompassSample> _samples = _channel
+      .receiveBroadcastStream()
+      .map(_decode)
+      .where((sample) => sample != null)
+      .cast<CompassSample>();
 }

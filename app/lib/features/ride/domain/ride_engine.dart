@@ -1031,24 +1031,25 @@ class RideEngine {
     double degrees, {
     DateTime? at,
     double? accuracyDegrees,
+    int orientationQuarterTurns = 0,
   }) {
-    if (!_status.isActive) return;
-    if (!degrees.isFinite) return;
-
+    if (!_status.isActive || !degrees.isFinite) return;
     final stamp = at ?? _now();
     _filter.onCompassHeading(
       degrees,
       at: stamp,
       accuracyDegrees: accuracyDegrees,
+      orientationQuarterTurns: orientationQuarterTurns,
     );
-
-    final previous = _bearing;
     final heading = _filter.advanceBearingFromCompass(stamp);
-    if (heading == null || heading == previous) return;
-
     _bearing = heading;
-    if (previous == null ||
-        bearingDelta(previous, heading) >= _compassPublishDegrees) {
+    // Compare to what the UI actually received, not the immediately previous
+    // sensor tick: many sub-threshold turns must eventually publish a change.
+    final published = _state.bearing;
+    if (heading != published &&
+        (heading == null ||
+            published == null ||
+            bearingDelta(published, heading) >= _compassPublishDegrees)) {
       _publish();
     }
   }
@@ -1234,7 +1235,15 @@ class RideEngine {
   /// a delayed or coalesced timer does not silently lose seconds — and so the
   /// clock keeps running while the phone is in a pocket with the screen off.
   void _tick() {
-    if (!_status.countsTime) return;
+    if (!_status.countsTime) {
+      // The countdown warms location without counting ride time, but an old
+      // direction must still expire if its sensor stream stops during setup.
+      if (_status == RideStatus.preparing &&
+          _filter.currentBearing(_now()) != _state.bearing) {
+        _publish();
+      }
+      return;
+    }
     final now = _now();
     final last = _lastTick ?? now;
     final dt = now.difference(last);
@@ -1320,6 +1329,7 @@ class RideEngine {
 
   void _publish({bool force = false}) {
     if (_stateController.isClosed) return;
+    _bearing = _status.isActive ? _filter.currentBearing(_now()) : null;
     _state = RideState(
       status: _status,
       rideId: _rideId.isEmpty ? null : _rideId,

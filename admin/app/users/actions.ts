@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 
 import { createAdminClient } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
+import { cleanupAccount, isUserId } from '../../../supabase/functions/_shared/account-cleanup';
 
 /// Where to send the operator after an action.
 ///
@@ -25,6 +26,9 @@ function backToList(formData: FormData, extra: { error?: string } = {}): string 
 
 /// Shared guard: who is asking, and may they act on this account?
 async function requireActingAdmin(targetUserId: string, formData: FormData) {
+  if (!isUserId(targetUserId)) {
+    redirect(backToList(formData, { error: '账号 ID 无效' }));
+  }
   const supabase = await createClient();
   const {
     data: { user },
@@ -53,7 +57,7 @@ async function requireActingAdmin(targetUserId: string, formData: FormData) {
   if (targetAdmin) {
     redirect(backToList(formData, { error: '不能对管理员账号执行这个操作' }));
   }
-  return { user, admin };
+  return { user, admin, supabase };
 }
 
 /**
@@ -69,29 +73,35 @@ export async function setUserDisabled(formData: FormData) {
   const userId = String(formData.get('userId') ?? '');
   const disabled = formData.get('disabled') === 'true';
 
-  const { user, admin } = await requireActingAdmin(userId, formData);
+  const { admin, supabase } = await requireActingAdmin(userId, formData);
+
+  // Disable Data/Storage first. An existing JWT remains cryptographically
+  // valid after GoTrue's ban; the database is the immediate access boundary.
+  // Enabling does the reverse, so a failed step never opens data access.
+  if (disabled) {
+    const { error } = await supabase.rpc('admin_set_account_disabled', {
+      p_user_id: userId, p_disabled: true,
+    });
+    if (error) redirect(backToList(formData, { error: error.message }));
+  }
   const { error } = await admin.auth.admin.updateUserById(userId, {
-    // GoTrue takes a duration string; `none` lifts an existing ban.
     ban_duration: disabled ? '876000h' : 'none',
   });
   if (error) {
-    redirect(backToList(formData, { error: error.message }));
+    redirect(backToList(formData, {
+      error: disabled ? '数据访问已封禁，但登录封禁未完成，请重试' : error.message,
+    }));
   }
-
-  // Appended after the action succeeded. The console's 「已封禁」 badge is
-  // derived from the latest of these rows, so a failed ban must not appear.
-  const { error: auditError } = await admin.from('admin_audit').insert({
-    admin_id: user.id,
-    action: disabled ? 'disable_user' : 'enable_user',
-    target_user_id: userId,
-  });
-  if (auditError) {
-    redirect(backToList(formData, { error: '封禁状态已更改，但审计日志写入失败，请检查后台' }));
+  if (!disabled) {
+    const { error } = await supabase.rpc('admin_set_account_disabled', {
+      p_user_id: userId, p_disabled: false,
+    });
+    if (error) redirect(backToList(formData, { error: '登录封禁已解除，数据访问仍被封禁，请重试' }));
   }
 
   revalidatePath('/users');
   revalidatePath('/audit');
-  redirect('/users');
+  redirect(backToList(formData));
 }
 
 /**
@@ -111,48 +121,20 @@ export async function deleteUser(formData: FormData) {
   const userId = String(formData.get('userId') ?? '');
   const { user, admin } = await requireActingAdmin(userId, formData);
 
-  // 1. The object paths, read before the rows that index them disappear.
-  const paths: string[] = [];
-  for (let offset = 0; ; offset += 500) {
-    const { data: rides, error: listError } = await admin
-      .from('rides')
-      .select('id, gpx_path')
-      .eq('user_id', userId)
-      .not('gpx_path', 'is', null)
-      .order('id')
-      .range(offset, offset + 499);
-    if (listError) {
-      redirect(backToList(formData, { error: '读取轨迹文件失败，账号未删除，请稍后重试' }));
-    }
-    for (const ride of rides ?? []) {
-      // A rider can supply gpx_path through sync. Never let a forged ride row
-      // point the service-role delete at someone else's private object.
-      const expected = `rides/${userId}/${ride.id}/original.gpx`;
-      if (ride.gpx_path !== expected) {
-        redirect(backToList(formData, { error: '轨迹文件路径异常，账号未删除' }));
-      }
-      paths.push(expected);
-    }
-    if ((rides?.length ?? 0) < 500) break;
-  }
-
-  // 2. Objects, in chunks — the Storage API takes a list per call.
-  let removedFiles = 0;
-  for (let i = 0; i < paths.length; i += 100) {
-    const slice = paths.slice(i, i + 100);
-    const { data: removed, error: removeError } = await admin.storage
-      .from('rides')
-      .remove(slice);
-    if (removeError) {
-      redirect(backToList(formData, { error: '删除轨迹文件失败，账号未删除，请稍后重试' }));
-    }
-    removedFiles += removed?.length ?? 0;
-  }
-
-  // 3. The account. Rows follow by cascade.
-  const { error } = await admin.auth.admin.deleteUser(userId);
-  if (error) {
-    redirect(backToList(formData, { error: error.message }));
+  let removedFiles: number;
+  try {
+    removedFiles = await cleanupAccount(userId, user.id, 'delete', {
+      fetch,
+      env: {
+        supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+        anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
+        serviceKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+      },
+    });
+  } catch (error) {
+    redirect(backToList(formData, {
+      error: error instanceof Error ? error.message : '账号清理尚未完成，请重试',
+    }));
   }
 
   const { error: auditError } = await admin.from('admin_audit').insert({
@@ -167,5 +149,5 @@ export async function deleteUser(formData: FormData) {
 
   revalidatePath('/users');
   revalidatePath('/audit');
-  redirect('/users');
+  redirect(backToList(formData));
 }

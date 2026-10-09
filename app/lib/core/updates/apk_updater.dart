@@ -22,43 +22,120 @@ class ApkUpdater {
   static const _maximumBytes = 250 * 1024 * 1024;
   static const _channel = MethodChannel('app.purecycling/update');
   static var _serial = 0;
+  static bool _downloading = false;
+  static final _activePaths = <String>{};
+  static String? _installerPath;
+  static DateTime? _installerUntil;
   final http.Client _client;
+  final _cancelled = Completer<void>();
 
-  void close() => _client.close();
+  void close() {
+    if (_cancelled.isCompleted) return;
+    _cancelled.complete();
+    _client.close();
+  }
+
+  void _checkCancelled() {
+    if (_cancelled.isCompleted) throw const ApkUpdateCancelled();
+  }
+
+  Future<T> _cancellable<T>(Future<T> operation) => Future.any([
+    operation,
+    _cancelled.future.then<T>((_) => throw const ApkUpdateCancelled()),
+  ]);
+
+  Stream<List<int>> _cancelWithClose(Stream<List<int>> source) {
+    late StreamSubscription<List<int>> subscription;
+    late StreamController<List<int>> body;
+    body = StreamController<List<int>>(
+      sync: true,
+      onListen: () {
+        subscription = source.listen(
+          (chunk) {
+            if (!body.isClosed) body.add(chunk);
+          },
+          onError: (Object error, StackTrace stack) {
+            if (!body.isClosed) body.addError(error, stack);
+          },
+          onDone: body.close,
+        );
+      },
+      onPause: () => subscription.pause(),
+      onResume: () => subscription.resume(),
+      onCancel: () => subscription.cancel(),
+    );
+    // One cancellation listener per response, not one retained Future.any
+    // listener for every network chunk in a potentially large APK.
+    unawaited(
+      _cancelled.future.then((_) {
+        if (!body.isClosed) {
+          body.addError(const ApkUpdateCancelled());
+          unawaited(body.close());
+        }
+      }),
+    );
+    return body.stream;
+  }
 
   Future<File> download(
     Uri url, {
     void Function(int received, int? total)? onProgress,
     Directory? destination,
   }) async {
+    _checkCancelled();
+    if (_downloading) throw const ApkUpdateException('已有更新正在下载');
+    if (_installerUntil?.isAfter(DateTime.now()) ?? false) {
+      throw const ApkUpdateException('已打开安装界面，请稍后重试');
+    }
     if (url.scheme != 'https') {
       throw const ApkUpdateException('安装包地址不安全');
     }
-
-    final directory = destination ?? await _updatesDirectory();
-    await directory.create(recursive: true);
-    // A new name every time. The system installer caches an APK by its
-    // content URI, and that URI is the path. Writing the next release over
-    // `update.apk` makes the installer open the package it already parsed —
-    // the one the rider installed last time — while this process, reading
-    // the file directly, sees the new bytes and lets the dialog through.
-    //
-    // The previous files go first, so a new download cannot stack on top of
-    // one the installer was still holding open.
-    await discardDownloadedPackages(directory: directory);
-    final stamp = '${DateTime.now().microsecondsSinceEpoch}${_serial++}';
-    final part = File('${directory.path}/update-$stamp.apk.part');
-    final apk = File('${directory.path}/update-$stamp.apk');
-
+    // This lock is taken before the first await, including cache cleanup.
+    _downloading = true;
+    File? part;
+    File? apk;
     try {
+      final directory = destination ?? await _updatesDirectory();
+      await directory.create(recursive: true);
+      // This is the explicit replacement boundary. Passive/cold sweeps keep
+      // one complete APK because Android may still be using its URI.
+      _installerPath = null;
+      _installerUntil = null;
+      await _sweepPackages(directory, preserveCompleted: false);
+      await for (final entity in directory.list()) {
+        if (entity is File &&
+            _isDownloadedPackage(entity.uri.pathSegments.last)) {
+          throw const ApkUpdateException('无法清理旧安装包，请稍后重试');
+        }
+      }
+      _checkCancelled();
+      // Each installer URI names immutable bytes. Reusing update.apk makes
+      // some Android installers serve a previously parsed package.
+      final stamp = '${DateTime.now().microsecondsSinceEpoch}${_serial++}';
+      part = File('${directory.path}/update-$stamp.apk.part');
+      apk = File('${directory.path}/update-$stamp.apk');
+      _activePaths.addAll([part.path, apk.path]);
       var current = url;
       http.StreamedResponse? response;
       for (var redirect = 0; redirect <= 5; redirect++) {
-        final request = http.Request('GET', current)..followRedirects = false;
-        response = await _client
-            .send(request)
-            .timeout(const Duration(seconds: 20));
+        _checkCancelled();
+        final request = http.AbortableRequest(
+          'GET',
+          current,
+          abortTrigger: _cancelled.future,
+        )..followRedirects = false;
+        response = await _cancellable(
+          _client.send(request).then((response) {
+            if (_cancelled.isCompleted) {
+              unawaited(response.stream.listen((_) {}).cancel());
+              throw const ApkUpdateCancelled();
+            }
+            return response;
+          }),
+        ).timeout(const Duration(seconds: 20));
         if (!{301, 302, 303, 307, 308}.contains(response.statusCode)) break;
+        // Redirect bodies are never buffered or allowed to hold a connection.
+        await response.stream.listen((_) {}).cancel();
         final location = response.headers['location'];
         if (location == null || redirect == 5) {
           throw const ApkUpdateException('安装包下载链接无效');
@@ -68,31 +145,42 @@ class ApkUpdater {
           throw const ApkUpdateException('安装包下载链接不安全');
         }
       }
-      if (response == null || response.statusCode != 200) {
+      if (response == null) {
         throw const ApkUpdateException('安装包下载失败，请稍后重试');
       }
-
       final total = response.contentLength;
-      if (total != null && (total <= 0 || total > _maximumBytes)) {
-        throw const ApkUpdateException('安装包大小异常');
+      if (response.statusCode != 200 ||
+          (total != null && (total <= 0 || total > _maximumBytes))) {
+        await response.stream.listen((_) {}).cancel();
+        throw const ApkUpdateException('安装包下载失败或大小异常');
       }
       var received = 0;
-      final sink = part.openWrite();
+      final reader = StreamIterator(_cancelWithClose(response.stream));
+      RandomAccessFile? output;
       try {
-        await for (final chunk in response.stream.timeout(
-          const Duration(seconds: 30),
-        )) {
+        output = await part.open(mode: FileMode.write);
+        while (await reader.moveNext().timeout(const Duration(seconds: 30))) {
+          _checkCancelled();
+          final chunk = reader.current;
           received += chunk.length;
           if (received > _maximumBytes) {
             throw const ApkUpdateException('安装包过大');
           }
-          sink.add(chunk);
+          // Await each disk write: a fast network cannot queue the entire APK
+          // in an IOSink while the filesystem is slow.
+          await output.writeFrom(chunk);
+          _checkCancelled();
           onProgress?.call(received, total);
         }
-        await sink.flush();
+        await output.flush();
       } finally {
-        await sink.close();
+        try {
+          await reader.cancel();
+        } finally {
+          await output?.close();
+        }
       }
+      _checkCancelled();
       if (received == 0 || (total != null && received != total)) {
         throw const ApkUpdateException('安装包下载不完整，请重试');
       }
@@ -106,31 +194,45 @@ class ApkUpdater {
           header[3] != 0x04) {
         throw const ApkUpdateException('下载内容不是有效的安装包');
       }
-      if (await apk.exists()) await apk.delete();
-      return await part.rename(apk.path);
+      _checkCancelled();
+      final result = await part.rename(apk.path);
+      _checkCancelled();
+      return result;
     } on ApkUpdateException {
+      close();
       rethrow;
     } catch (_) {
+      _checkCancelled();
+      // Timeout also aborts the underlying request; its late response must
+      // not retain a connection after the operation releases its slot.
+      close();
       throw const ApkUpdateException('安装包下载失败，请检查网络后重试');
     } finally {
-      if (await part.exists()) await part.delete();
+      try {
+        if (part != null && await part.exists()) await part.delete();
+        if (_cancelled.isCompleted && apk != null && await apk.exists()) {
+          await apk.delete();
+        }
+      } on FileSystemException {
+        // A locked abandoned file is retried by the next cache sweep.
+      } finally {
+        _activePaths.remove(part?.path);
+        _activePaths.remove(apk?.path);
+        _downloading = false;
+      }
     }
   }
 
-  /// How long a package handed to the installer is left on disk.
-  ///
-  /// Long enough for the installer to open it. After that the file is only
-  /// taking space: each download has its own name, so keeping every one would
-  /// grow the cache by the size of the APK on every update.
+  /// Grace for abandoned partial files during foreground cache sweeps.
+  /// Completed packages have ownership-based retention, never a timer expiry.
   static const downloadedPackageGrace = Duration(minutes: 1);
 
-  /// Deletes downloaded APKs and half-written parts.
+  /// Retains one completed package, including across process restarts.
   ///
-  /// [olderThan] keeps a file still inside that window. The installer is
-  /// reading the one just handed over; a lifecycle flicker must not unlink it
-  /// out from under that screen. Null deletes everything, which is what a new
-  /// download and a cold start want. A file the installer still has open is
-  /// skipped and tried again next time.
+  /// Starting Android's installer does not prove it has consumed the URI:
+  /// permission screens or a rider's confirmation can take arbitrarily long.
+  /// Only a deliberate new download replaces that package. Passive lifecycle
+  /// and cold-start sweeps remove extra completed APKs and abandoned parts.
   static Future<void> discardDownloadedPackages({
     Duration? olderThan,
     Directory? directory,
@@ -141,26 +243,68 @@ class ApkUpdater {
     } catch (_) {
       return;
     }
-    if (!await dir.exists()) return;
+    await _sweepPackages(dir, preserveCompleted: true, olderThan: olderThan);
+  }
+
+  static Future<void> _sweepPackages(
+    Directory directory, {
+    required bool preserveCompleted,
+    Duration? olderThan,
+  }) async {
+    if (!await directory.exists()) return;
+    final packages = await directory
+        .list()
+        .where(
+          (entity) =>
+              entity is File &&
+              _isDownloadedPackage(entity.uri.pathSegments.last),
+        )
+        .cast<File>()
+        .toList();
+    String? retained;
+    DateTime? newest;
+    if (preserveCompleted) {
+      for (final file in packages) {
+        if (!file.path.endsWith('.apk')) continue;
+        if (file.path == _installerPath) {
+          retained = file.path;
+          break;
+        }
+        try {
+          final modified = await file.lastModified();
+          if (newest == null || modified.isAfter(newest)) {
+            newest = modified;
+            retained = file.path;
+          }
+        } on FileSystemException {
+          // A concurrent owned download may already have replaced this file.
+        }
+      }
+    }
     final cutoff = olderThan == null
         ? null
         : DateTime.now().subtract(olderThan);
-    await for (final entity in dir.list()) {
-      if (entity is! File) continue;
-      final name = entity.uri.pathSegments.last;
-      if (!_isDownloadedPackage(name)) continue;
-      if (cutoff != null) {
+    for (final file in packages) {
+      if (file.path == retained || _activePaths.contains(file.path)) continue;
+      // The age window applies only to parts. Retaining one completed package
+      // already protects installer ownership and bounds legacy cache growth.
+      if (cutoff != null && file.path.endsWith('.part')) {
         try {
-          if (!((await entity.lastModified()).isBefore(cutoff))) continue;
+          if (!(await file.lastModified()).isBefore(cutoff)) continue;
         } on FileSystemException {
           continue;
         }
       }
+      // Ownership may have changed during directory/stat awaits.
+      if (_activePaths.contains(file.path) ||
+          (preserveCompleted && file.path == _installerPath)) {
+        continue;
+      }
       try {
-        await entity.delete();
+        await file.delete();
       } on FileSystemException {
-        // Unlink failed. The next resume or the next download tries again,
-        // which is what stops a locked file from becoming a permanent copy.
+        // Passive sweeps retry later. Explicit replacement checks for leftover
+        // packages and refuses to create another file if cleanup was blocked.
       }
     }
   }
@@ -184,26 +328,28 @@ class ApkUpdater {
     File apk, {
     required String expectedVersion,
   }) async {
+    _installerPath = apk.path;
+    _installerUntil = DateTime.now().add(downloadedPackageGrace);
     try {
       await _channel.invokeMethod<void>('install', {
         'path': apk.path,
         'version': expectedVersion,
       });
     } on PlatformException catch (error) {
+      _installerPath = null;
+      _installerUntil = null;
       throw ApkUpdateException(error.message ?? '无法打开系统安装界面');
     } on MissingPluginException {
+      _installerPath = null;
+      _installerUntil = null;
       throw const ApkUpdateException('当前设备不支持应用内安装');
     }
-    // The installer has the file now. Drop it once that screen has had time
-    // to open it. The grace window also covers a download the rider starts
-    // in that same minute: only files already older than the window go, so
-    // the new one is not unlinked mid-write. Coming back to the app sweeps
-    // anything this timer missed.
-    unawaited(
-      Future<void>.delayed(
-        downloadedPackageGrace,
-        () => discardDownloadedPackages(olderThan: downloadedPackageGrace),
-      ),
-    );
+    // No cleanup timer: the one completed APK survives confirmation delays,
+    // backgrounding and cold starts. An explicit replacement retires it.
   }
+}
+
+/// Cancellation is expected and must not surface as a network error.
+class ApkUpdateCancelled extends ApkUpdateException {
+  const ApkUpdateCancelled() : super('已取消更新下载');
 }

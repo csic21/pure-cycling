@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -75,9 +76,32 @@ class GitHubReleaseChecker {
 
     late http.Response response;
     try {
-      response = await _client
-          .get(api, headers: {'Accept': 'application/json'})
+      final request = http.Request('GET', api)
+        ..headers['Accept'] = 'application/json';
+      final streamed = await _client
+          .send(request)
           .timeout(const Duration(seconds: 10));
+      const maximumBytes = 1024 * 1024;
+      if ((streamed.contentLength ?? 0) > maximumBytes) {
+        await streamed.stream.listen((_) {}).cancel();
+        throw const ReleaseCheckException('更新服务响应过大');
+      }
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in streamed.stream.timeout(
+        const Duration(seconds: 10),
+      )) {
+        if (bytes.length + chunk.length > maximumBytes) {
+          throw const ReleaseCheckException('更新服务响应过大');
+        }
+        bytes.add(chunk);
+      }
+      response = http.Response.bytes(
+        bytes.takeBytes(),
+        streamed.statusCode,
+        headers: streamed.headers,
+      );
+    } on ReleaseCheckException {
+      rethrow;
     } catch (_) {
       throw const ReleaseCheckException('无法连接更新服务，请稍后重试');
     }
@@ -138,13 +162,44 @@ class GitHubReleaseChecker {
         tag: tag,
         pageUrl: pageUrl,
         androidApkUrl: apkUrl,
-        notes: (json['body'] as String? ?? '').trim(),
+        notes: _displayNotes(json['body'] as String? ?? '', tag),
       );
     } on ReleaseCheckException {
       rethrow;
     } catch (_) {
       throw const ReleaseCheckException('Release 数据格式不正确');
     }
+  }
+
+  /// GitHub hides the release pipeline's provenance comment, but a Flutter
+  /// Text widget does not interpret HTML. Remove only our matching metadata,
+  /// with a small size bound and an explicit shape check; ordinary comments,
+  /// malformed metadata, and the rider-facing notes remain untouched.
+  static String _displayNotes(String body, String tag) {
+    final comment = RegExp(
+      r'<!-- pure-cycling-release: (\{[^\r\n]{0,4096}?\}) -->',
+    );
+    final digest = RegExp(r'^[0-9a-f]{64}$');
+    final source = RegExp(r'^[0-9a-f]{40}$');
+    return body.replaceAllMapped(comment, (match) {
+      try {
+        final metadata = jsonDecode(match.group(1)!);
+        if (metadata is Map<String, dynamic> &&
+            metadata['tag'] == tag &&
+            metadata['source_sha'] is String &&
+            source.hasMatch(metadata['source_sha'] as String) &&
+            metadata['signer_sha256'] is String &&
+            digest.hasMatch(metadata['signer_sha256'] as String) &&
+            metadata['apk_sha256'] is String &&
+            digest.hasMatch(metadata['apk_sha256'] as String)) {
+          return '';
+        }
+      } catch (_) {
+        // An unknown or malformed comment is still release text, not trusted
+        // metadata. Avoid stripping unrelated rider-facing content.
+      }
+      return match.group(0)!;
+    }).trim();
   }
 
   static List<int>? _parseVersion(String input) {
@@ -173,7 +228,8 @@ class GitHubReleaseChecker {
     if (uri == null || uri.scheme != 'https' || uri.host != 'github.com') {
       return null;
     }
-    final expected = '/${ReleaseSource.repository.toLowerCase()}/releases/$kind/';
+    final expected =
+        '/${ReleaseSource.repository.toLowerCase()}/releases/$kind/';
     if (!uri.path.toLowerCase().startsWith(expected)) return null;
     return uri;
   }

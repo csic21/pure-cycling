@@ -40,11 +40,14 @@ class RoutesScreen extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, stack) => ErrorNotice(
           title: '读取路线失败',
-          message: ref.read(failureReporterProvider).report(
+          message: ref
+              .read(failureReporterProvider)
+              .report(
                 'routes.read',
                 e,
                 stack: stack,
-                message: '本机数据库没有响应。重启应用通常可以恢复；'
+                message:
+                    '本机数据库没有响应。重启应用通常可以恢复；'
                     '如果反复出现，可以在「设置 → 诊断日志」中导出日志。',
               ),
           onRetry: () => ref.invalidate(savedRoutesProvider),
@@ -52,25 +55,35 @@ class RoutesScreen extends ConsumerWidget {
         data: (list) {
           if (list.isEmpty) return const _EmptyRoutes();
 
-          // Favourites first, then most recently touched — the same order the
-          // DAO returns, so the list does not reshuffle between screens.
-          final favourites = list.where((r) => r.favorite).toList();
-          final rest = list.where((r) => !r.favorite).toList();
-
-          return ListView(
+          // DAO order is favourites first. Keep one metadata list and build
+          // only visible rows, rather than materialising every row widget.
+          final favoriteCount = list.takeWhile((r) => r.favorite).length;
+          final hasFavorites = favoriteCount > 0;
+          final hasRest = favoriteCount < list.length;
+          final headerCount = hasFavorites ? (hasRest ? 2 : 1) : 0;
+          return ListView.builder(
             padding: const EdgeInsets.only(bottom: 96),
-            children: [
-              if (favourites.isNotEmpty) ...[
-                const _ListHeader('收藏'),
-                for (final route in favourites)
-                  _RouteRow(route: route, formatter: formatter),
-              ],
-              if (rest.isNotEmpty) ...[
-                if (favourites.isNotEmpty) const _ListHeader('全部路线'),
-                for (final route in rest)
-                  _RouteRow(route: route, formatter: formatter),
-              ],
-            ],
+            itemCount: list.length + headerCount,
+            itemBuilder: (context, index) {
+              if (hasFavorites && index == 0) {
+                return const _ListHeader('收藏');
+              }
+              if (hasFavorites && hasRest && index == favoriteCount + 1) {
+                return const _ListHeader('全部路线');
+              }
+              final routeIndex =
+                  index -
+                  (hasFavorites ? 1 : 0) -
+                  (hasFavorites && hasRest && index > favoriteCount + 1
+                      ? 1
+                      : 0);
+              final route = list[routeIndex];
+              return _RouteRow(
+                key: ValueKey(route.id),
+                route: route,
+                formatter: formatter,
+              );
+            },
           );
         },
       ),
@@ -93,9 +106,9 @@ class _ListHeader extends StatelessWidget {
 }
 
 class _RouteRow extends ConsumerWidget {
-  const _RouteRow({required this.route, required this.formatter});
+  const _RouteRow({super.key, required this.route, required this.formatter});
 
-  final Route route;
+  final RouteSummary route;
   final UnitFormatter formatter;
 
   @override
@@ -151,8 +164,9 @@ class _RouteRow extends ConsumerWidget {
             size: 20,
             color: route.favorite ? AppColors.accent : AppColors.textTertiary,
           ),
-          onPressed: () =>
-              ref.read(routeRepositoryProvider).setFavorite(route.id, !route.favorite),
+          onPressed: () => ref
+              .read(routeRepositoryProvider)
+              .setFavorite(route.id, !route.favorite),
         ),
       ),
     );
@@ -195,8 +209,11 @@ class _EmptyRoutes extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.route_outlined,
-                size: 48, color: AppColors.textTertiary),
+            const Icon(
+              Icons.route_outlined,
+              size: 48,
+              color: AppColors.textTertiary,
+            ),
             const SizedBox(height: 16),
             const Text('还没有保存的路线', style: AppText.body),
             const SizedBox(height: 6),

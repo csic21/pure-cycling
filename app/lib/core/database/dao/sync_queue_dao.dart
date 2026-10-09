@@ -68,17 +68,10 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
       ),
       // Reconciliation discovers work; it is not a new user edit. Preserve an
       // existing entry's retry schedule and error when requested by the pull.
-      onConflict: resetExisting
-          ? DoUpdate(
-              (old) => SyncQueueItemsCompanion(
-                createdAt: Value(now),
-                retryCount: const Value(0),
-                nextAttemptAt: const Value(null),
-                lastError: const Value(null),
-              ),
-              target: target,
-            )
-          : DoNothing(target: target),
+      // A new edit gets a new ID. An acknowledgement for an upload already
+      // in flight must not remove or back off that replacement operation.
+      mode: resetExisting ? InsertMode.insertOrReplace : InsertMode.insert,
+      onConflict: resetExisting ? null : DoNothing(target: target),
     );
   }
 
@@ -95,6 +88,33 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
       ..limit(limit);
     final rows = await query.get();
     return rows.map(_toItem).toList();
+  }
+
+  /// Earliest durable wake, including a fresh enqueue whose deadline is null.
+  /// SQLite sorts null first; one result avoids loading the
+  /// entire outbox merely to arm a timer.
+  Stream<DateTime?> watchNextAttempt() =>
+      (select(syncQueueItems)
+            ..orderBy([(t) => OrderingTerm.asc(t.nextAttemptAt)])
+            ..limit(1))
+          .watch()
+          .map(
+            (rows) => rows.isEmpty
+                ? null
+                : rows.single.nextAttemptAt ??
+                      DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+          );
+
+  Future<DateTime?> nextAttempt() async {
+    final row =
+        await (select(syncQueueItems)
+              ..orderBy([(t) => OrderingTerm.asc(t.nextAttemptAt)])
+              ..limit(1))
+            .getSingleOrNull();
+    return row == null
+        ? null
+        : row.nextAttemptAt ??
+              DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
   }
 
   Future<List<PendingSyncItem>> all() async {
@@ -116,6 +136,12 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
     final query = selectOnly(syncQueueItems)..addColumns([count]);
     return query.watchSingle().map((row) => row.read(count) ?? 0);
   }
+
+  Future<bool> contains(int id) async =>
+      await (select(
+        syncQueueItems,
+      )..where((t) => t.id.equals(id))).getSingleOrNull() !=
+      null;
 
   Future<void> remove(int id) async {
     await (delete(syncQueueItems)..where((t) => t.id.equals(id))).go();

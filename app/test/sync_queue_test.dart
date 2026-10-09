@@ -14,10 +14,10 @@ void main() {
   tearDown(() => database.close());
 
   Future<void> enqueueRide(String id) => database.syncQueueDao.enqueue(
-        SyncEntityType.ride,
-        id,
-        SyncOperation.upsert,
-      );
+    SyncEntityType.ride,
+    id,
+    SyncOperation.upsert,
+  );
 
   test('enqueuing the same ride twice keeps one row', () async {
     await enqueueRide('ride-1');
@@ -38,11 +38,7 @@ void main() {
     final failed = (await database.syncQueueDao.all()).single;
     expect(failed.retryCount, 1);
     expect(failed.lastError, 'network down');
-    expect(
-      await database.syncQueueDao.due(),
-      isEmpty,
-      reason: '失败后有退避，不该立刻重试',
-    );
+    expect(await database.syncQueueDao.due(), isEmpty, reason: '失败后有退避，不该立刻重试');
 
     // The rider edits the ride again. That is a new reason to try, so the
     // failed attempt must not hold the upload back.
@@ -70,4 +66,32 @@ void main() {
     final items = await database.syncQueueDao.all();
     expect(items, hasLength(3));
   });
+  test('acknowledging an old attempt cannot remove a fresh edit', () async {
+    await enqueueRide('ride-1');
+    final old = (await database.syncQueueDao.all()).single;
+    await enqueueRide('ride-1');
+    await database.syncQueueDao.remove(old.id);
+    await database.syncQueueDao.markFailed(old.id, 'late failure');
+    final current = (await database.syncQueueDao.all()).single;
+    expect(current.id, isNot(old.id));
+    expect(current.retryCount, 0);
+  });
+
+  test(
+    'one failed item exposes its next deadline; enqueue resets it',
+    () async {
+      expect(await database.syncQueueDao.nextAttempt(), isNull);
+      await enqueueRide('ride-1');
+      final item = (await database.syncQueueDao.all()).single;
+      final before = DateTime.now().toUtc();
+      await database.syncQueueDao.markFailed(item.id, 'offline');
+      final next = (await database.syncQueueDao.nextAttempt())!;
+      expect(next.difference(before).inSeconds, inInclusiveRange(14, 15));
+      await enqueueRide('ride-2');
+      expect(
+        (await database.syncQueueDao.nextAttempt())!.isBefore(before),
+        isTrue,
+      );
+    },
+  );
 }

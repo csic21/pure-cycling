@@ -28,87 +28,143 @@ Future<void> showResumeRideSheet(
   final formatter = ref.read(unitFormatterProvider);
   final startedAt = checkpoint.startedAt.toLocal();
 
+  var busy = false;
+  String? error;
   return showModalBottomSheet<void>(
     context: context,
     isDismissible: false,
     enableDrag: false,
-    builder: (sheetContext) {
-      return SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text('发现未完成的骑行', style: AppText.title),
-              const SizedBox(height: 8),
-              Text(
-                '上次骑行（${UnitFormatter.shortDate(startedAt)} '
-                '${UnitFormatter.clock(startedAt)} 开始）没有正常结束，'
-                '可能是应用被系统关闭或闪退。已记录的数据都在。',
-                style: AppText.caption,
-              ),
-              const SizedBox(height: 20),
-              _CheckpointFigures(checkpoint: checkpoint, formatter: formatter),
-              const SizedBox(height: 24),
-              FilledButton(
-                onPressed: () async {
-                  Navigator.of(sheetContext).pop();
-                  await ref
-                      .read(rideSessionProvider.notifier)
-                      .start(resumeFrom: checkpoint);
-                  if (context.mounted) unawaited(context.push(AppRoutes.ride));
-                },
-                child: const Text('继续这次骑行'),
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton(
-                onPressed: () => _finishInstead(
-                  context,
-                  ref,
-                  sheetContext,
-                  checkpoint,
+    builder: (sheetContext) => StatefulBuilder(
+      builder: (sheetContext, setState) => PopScope(
+        canPop: !busy,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('发现未完成的骑行', style: AppText.title),
+                const SizedBox(height: 8),
+                Text(
+                  '上次骑行（${UnitFormatter.shortDate(startedAt)} '
+                  '${UnitFormatter.clock(startedAt)} 开始）没有正常结束，'
+                  '可能是应用被系统关闭或闪退。已记录的数据都在。',
+                  style: AppText.caption,
                 ),
-                child: const Text('结束并保存'),
-              ),
-            ],
+                const SizedBox(height: 20),
+                _CheckpointFigures(
+                  checkpoint: checkpoint,
+                  formatter: formatter,
+                ),
+                const SizedBox(height: 24),
+                if (error != null) ...[
+                  Text(
+                    error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                FilledButton(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          setState(() {
+                            busy = true;
+                            error = null;
+                          });
+                          try {
+                            final started = await ref
+                                .read(rideSessionProvider.notifier)
+                                .start(resumeFrom: checkpoint);
+                            if (!sheetContext.mounted) return;
+                            if (!started) {
+                              setState(() {
+                                busy = false;
+                                error = '暂时无法获取定位。请检查定位权限，或选择结束并保存。';
+                              });
+                              return;
+                            }
+                            Navigator.of(sheetContext).pop();
+                            if (context.mounted) {
+                              unawaited(context.push(AppRoutes.ride));
+                            }
+                          } catch (e, stack) {
+                            final message = ref
+                                .read(failureReporterProvider)
+                                .report(
+                                  'ride.recovery.resume',
+                                  e,
+                                  stack: stack,
+                                  message: '恢复失败，已记录的数据仍保留，请重试。',
+                                );
+                            if (sheetContext.mounted) {
+                              setState(() {
+                                busy = false;
+                                error = message;
+                              });
+                            }
+                          }
+                        },
+                  child: const Text('继续这次骑行'),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          setState(() {
+                            busy = true;
+                            error = null;
+                          });
+                          try {
+                            final ride = await ref
+                                .read(rideRecorderProvider)
+                                .finishRecoveredRide(checkpoint);
+                            if (!sheetContext.mounted) return;
+                            Navigator.of(sheetContext).pop();
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    '已保存 ${ride.distanceMeters ~/ 1000} 公里的记录',
+                                  ),
+                                ),
+                              );
+                              context.go(AppRoutes.history);
+                            }
+                          } catch (e, stack) {
+                            final message = ref
+                                .read(failureReporterProvider)
+                                .report(
+                                  'ride.recovery.save',
+                                  e,
+                                  stack: stack,
+                                  message: '保存失败，已记录的数据仍保留，请重试。',
+                                );
+                            if (sheetContext.mounted) {
+                              setState(() {
+                                busy = false;
+                                error = message;
+                              });
+                            }
+                          }
+                        },
+                  child: const Text('结束并保存'),
+                ),
+              ],
+            ),
           ),
         ),
-      );
-    },
+      ),
+    ),
   );
 }
 
-/// Ends the interrupted ride on the spot, keeping everything it recorded.
-Future<void> _finishInstead(
-  BuildContext context,
-  WidgetRef ref,
-  BuildContext sheetContext,
-  RideCheckpoint checkpoint,
-) async {
-  Navigator.of(sheetContext).pop();
-
-  final notifier = ref.read(rideSessionProvider.notifier);
-  final started = await notifier.start(resumeFrom: checkpoint);
-  if (started) {
-    await notifier.stop();
-  }
-
-  if (context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('已保存 ${checkpoint.distanceMeters ~/ 1000} 公里的记录'),
-      ),
-    );
-    context.go(AppRoutes.history);
-  }
-}
-
 class _CheckpointFigures extends StatelessWidget {
-  const _CheckpointFigures({
-    required this.checkpoint,
-    required this.formatter,
-  });
+  const _CheckpointFigures({required this.checkpoint, required this.formatter});
 
   final RideCheckpoint checkpoint;
   final UnitFormatter formatter;
@@ -128,10 +184,7 @@ class _CheckpointFigures extends StatelessWidget {
             unit: formatter.system.distanceSuffix,
             label: '已骑',
           ),
-          _Cell(
-            value: UnitFormatter.duration(checkpoint.elapsed),
-            label: '用时',
-          ),
+          _Cell(value: UnitFormatter.duration(checkpoint.elapsed), label: '用时'),
           _Cell(
             value: formatter.elevation(checkpoint.elevationGainMeters),
             unit: formatter.system.elevationSuffix,

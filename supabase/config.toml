@@ -407,6 +407,10 @@ verify_jwt = true
 # that names a user), but the identity is the whole operation.
 verify_jwt = true
 
+[functions.wipe-cloud-data]
+# Authoritative Storage cleanup for the verified caller only.
+verify_jwt = true
+
 [functions.release]
 # The one function that is deliberately open, and the exception is the point:
 # it serves the latest Release of a public repository — the same bytes GitHub

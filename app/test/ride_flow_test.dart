@@ -704,43 +704,93 @@ void main() {
       await shutdownApp(tester, database);
     });
 
-    testWidgets('finishing an interrupted ride saves it and opens history', (
-      tester,
-    ) async {
-      await seedCheckpoint(database);
-      final ride = await seedRide(database, id: 'unfinished', trackPoints: 0);
-
-      final location = await pumpApp(
-        tester,
-        extraOverrides: [
-          selectedMonthProvider.overrideWith((ref) => ride.startedAt.toLocal()),
-        ],
-      );
-
-      await tester.tap(find.text('结束并保存'));
-
-      // Stopping runs a chain of awaited writes — flush the trace, clear the
-      // checkpoint, cancel the location subscription, commit the ride, re-read
-      // it. That chain is real asynchronous work, and `runAsync` is the only
-      // way to let it drain inside a widget test: the fake-async zone schedules
-      // timers and flushes microtasks, but it does not advance the event loop
-      // the database and the file system actually complete on.
-      for (var i = 0; i < 6; i++) {
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    testWidgets(
+      'failed recovery save keeps its sheet and only confirms a successful retry',
+      (tester) async {
+        await seedCheckpoint(database);
+        await seedRide(database, id: 'unfinished', trackPoints: 0);
+        final repository = _FailOnceRideRepository(database);
+        final location = await pumpApp(
+          tester,
+          extraOverrides: [
+            rideRepositoryProvider.overrideWithValue(repository),
+          ],
         );
-        await settle(tester);
-      }
+        await tester.tap(find.text('结束并保存'));
+        for (var i = 0; i < 6; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)),
+          );
+          await settle(tester);
+        }
+        expect(find.text('发现未完成的骑行'), findsOneWidget);
+        expect(find.textContaining('保存失败'), findsOneWidget);
+        expect(find.textContaining('已保存'), findsNothing);
+        expect(
+          await tester.runAsync(() => database.activeRideDao.loadUnfinished()),
+          isNotNull,
+        );
+        await tester.tap(find.text('结束并保存'));
+        for (var i = 0; i < 6; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)),
+          );
+          await settle(tester);
+        }
+        expect(find.text('发现未完成的骑行'), findsNothing);
+        expect(
+          await tester.runAsync(() => database.activeRideDao.loadUnfinished()),
+          isNull,
+        );
+        expect(repository.attempts, 2);
+        await location.dispose();
+        await shutdownApp(tester, database);
+      },
+    );
 
-      // The rider lands in history with the ride they nearly lost.
-      expect(find.text('本月还没有骑行'), findsNothing);
+    testWidgets(
+      'finishing an interrupted ride saves without location permission',
+      (tester) async {
+        await seedCheckpoint(database);
+        final ride = await seedRide(database, id: 'unfinished', trackPoints: 0);
 
-      final saved = await tester.runAsync(() => database.rideDao.getRides());
-      expect(saved, isNotEmpty);
+        final location = await pumpApp(
+          tester,
+          extraOverrides: [
+            selectedMonthProvider.overrideWith(
+              (ref) => ride.startedAt.toLocal(),
+            ),
+          ],
+        );
 
-      await location.dispose();
-      await shutdownApp(tester, database);
-    });
+        location.permission = LocationPermissionStatus.denied;
+        await tester.tap(find.text('结束并保存'));
+
+        // Stopping runs a chain of awaited writes — flush the trace, clear the
+        // checkpoint, cancel the location subscription, commit the ride, re-read
+        // it. That chain is real asynchronous work, and `runAsync` is the only
+        // way to let it drain inside a widget test: the fake-async zone schedules
+        // timers and flushes microtasks, but it does not advance the event loop
+        // the database and the file system actually complete on.
+        for (var i = 0; i < 6; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)),
+          );
+          await settle(tester);
+        }
+
+        // The rider lands in history with the ride they nearly lost.
+        expect(find.text('本月还没有骑行'), findsNothing);
+
+        final saved = await tester.runAsync(() => database.rideDao.getRides());
+        expect(saved, isNotEmpty);
+        expect(location.permissionRequests, isEmpty);
+        expect(location.streamOpened, isFalse);
+
+        await location.dispose();
+        await shutdownApp(tester, database);
+      },
+    );
   });
 }
 
@@ -753,10 +803,15 @@ class _FailOnceRideRepository extends RideRepository {
   Future<void> saveFinishedRide(
     Ride ride, {
     List<TrackPoint> unflushed = const [],
+    bool writeExport = true,
   }) async {
     attempts++;
     if (attempts == 1) throw StateError('injected save failure');
-    await super.saveFinishedRide(ride, unflushed: unflushed);
+    await super.saveFinishedRide(
+      ride,
+      unflushed: unflushed,
+      writeExport: writeExport,
+    );
   }
 }
 

@@ -74,8 +74,9 @@ scripts/verify-admin-flow.sh
   函数内部先判 `is_admin()`，非管理员直接 `42501`。
 - 封禁/解封走 server action：先用调用者的会话确认「是不是管理员」，
   再用 `service_role` 执行 GoTrue 的 ban —— 两个凭据各做一件对方做不到的事。
-- 「已封禁」状态从审计日志派生，不依赖 GoTrue 的 `banned_until` 列
-  （那个列是 auth 服务启动时才加的，裸镜像里没有）。
+- 封禁状态由数据库内的账号访问状态提供，并检查 GoTrue 的 `banned_until`。
+  Data/Storage 每次请求都检查当前状态，已签发的 JWT 也不能绕过封禁。
+  状态更改与审计记录同事务提交；登录封禁额外调用 GoTrue，失败时数据仍保持封禁。
 - 审计表没有外键：管理员或目标账号被删掉后，日志必须还在。
 - **删除账号先删文件、再删人**：`auth.users` 会级联带走行，但**不会**带走
   Storage 里的对象。跳过这一步，GPX 就变成一条没人能看、没人能删、还占着
@@ -85,10 +86,16 @@ scripts/verify-admin-flow.sh
 
 - 生成类型（`supabase gen types typescript`）—— 现在 `admin_list_users` 的结果
   类型是手写在页面里的；出现第二个 RPC 时应该换掉。
-- 分页 UI（RPC 支持 `p_limit` / `p_offset`，页面写死 100）。
+- 更完整的账号详情（现有列表已支持搜索、分页；删除确认按 UUID 精确查询）。
 - 改邮箱、重置密码：同样是 `auth.admin`，需要时按封禁那条路加。
 
 ## 设计
 
 配色和排版 token 逐条抄自 App 的主题（纯黑、`#C8FF3D`、发丝线、等宽数字），
 两边必须一起改。规则和反模式见 [docs/design.md](../docs/design.md)。
+
+
+账号删除与 App 共用 `supabase/functions/_shared/account-cleanup.ts`：先设置持久清理
+栅栏，再枚举 Storage 中完整的用户前缀，包括未写入骑行表的孤立上传。部分失败时
+保留账号与栅栏，可重试；列表显示「清理待完成」。确认页使用 `admin_get_user(UUID)`，
+不受前 200 个账号限制，服务端仍拒绝对自己或管理员执行后台操作。

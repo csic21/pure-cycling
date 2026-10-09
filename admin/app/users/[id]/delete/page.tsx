@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 
 import { ConsoleShell } from '@/components/console-shell';
 import { createClient } from '@/lib/supabase/server';
+import { isUserId } from '../../../../../supabase/functions/_shared/account-cleanup';
 
 import { deleteUser } from '../../actions';
 
@@ -35,10 +36,9 @@ export default async function DeleteUserPage({
   } = await supabase.auth.getUser();
   if (!user) redirect('/login');
 
-  const { data, error } = await supabase.rpc('admin_list_users', {
-    p_limit: 200,
-    p_offset: 0,
-  });
+  const { data, error } = isUserId(id)
+    ? await supabase.rpc('admin_get_user', { p_user_id: id })
+    : { data: [], error: null };
   const who = user.email ?? user.id.slice(0, 8);
 
   if (error) {
@@ -63,7 +63,7 @@ export default async function DeleteUserPage({
         <main className="page">
           <div className="notice">
             <strong>找不到这个账号</strong>
-            <p>列表最多显示 200 个账号；如果账号更多，先在列表里翻到它再试。</p>
+            <p>这个账号不存在，或已经被删除。</p>
           </div>
           <Link href="/users">返回账号列表</Link>
         </main>
@@ -71,13 +71,13 @@ export default async function DeleteUserPage({
     );
   }
 
-  if (target.is_admin) {
+  if (target.id === user.id || target.is_admin) {
     return (
       <ConsoleShell active="users" email={who}>
         <main className="page">
           <div className="notice">
             <strong>这是管理员账号</strong>
-            <p>先从通知名单里移除，再来删除。避免后台把自己锁在外面。</p>
+            <p>不能删除自己或管理员账号。请由另一位管理员核实账号权限后再处理。</p>
           </div>
           <Link href="/users">返回账号列表</Link>
         </main>

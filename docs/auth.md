@@ -25,7 +25,7 @@ App 完整可用。记录、码表、历史、GPX 导入导出全部在本地完
 | 退出登录 | ✅ 不删除任何本地记录 |
 | **云同步开关** | ✅ 默认关闭；关闭时不上传任何内容，手动同步也不能绕过（`sync_gate_test.dart`） |
 | **删除云端数据** | ✅ 清空云端的行与 GPX，本机保留；删除即关闭云同步（`verify` 在 `local-stack.sh`） |
-| **删除账号** | ✅ 自助：App 内确认后删除账号与云端全部数据，本机记录保留、旧会话立即失效（`verify-account-deletion.sh`） |
+| **删除账号** | ✅ 自助：App 内确认后删除账号与云端全部数据，本机记录保留、旧 JWT 立即失去数据与 Storage 访问权限（`verify-account-deletion.sh`） |
 | 会话持久化 | ✅ SDK 默认存储在本地 |
 | 会话自动刷新 | ✅ `autoRefreshToken: true` |
 | `profiles` 行 | ✅ 数据库触发器 + 客户端兜底 |
@@ -250,3 +250,44 @@ App 会提示「注册成功，请到邮箱点击验证链接后再登录」。
 | `features/settings/presentation/sync_screen.dart` | 同步状态与手动同步 |
 | `test/auth_test.dart` | 深链配置、账号标签、错误翻译 |
 | `test/account_section_test.dart` | 匿名 / 实名两种状态的界面 |
+
+
+## 云端清理的服务端边界
+
+清空云端调用 `wipe-cloud-data`，删除账号调用 `delete-account`；均只接受 POST，
+身份只来自经过 Auth 验证的调用者。前者成功返回 `{ "wiped": true, "files": N }`，
+后者返回 `{ "deleted": true, "files": N }`。错误或不完整响应不能清除本地待同步队列。
+
+两条路径和后台删除共用一套清理逻辑：先在数据库设置写入栅栏，再按
+`storage.objects` 中完整的 `rides/{user_id}/` 前缀分批清理。孤立上传、版本化 GPX、
+嵌套文件和 FIT 都包含在内，不依赖可能不存在的 `rides.gpx_path`。
+删除对象必须调用 Storage API，不能只删元数据。每批都从剩余对象第一页继续，
+数据库复核空桶前缀之后才清除行；删除账号时栅栏保留到 Auth 删除完成。
+
+失败会保留栅栏和账号。普通失败可立即重试；执行进程中断时，清理工作租约最多
+15 分钟后可接管，栅栏本身不会自动到期。大账号单次清理达到时间预算会返回错误，
+重试从剩余文件继续，不能把部分完成显示为成功。
+
+部署顺序：先应用账号访问/清理迁移，再部署 `delete-account`、`wipe-cloud-data`
+及后台，最后分发使用新端点的客户端。未应用迁移时新端点失败关闭，不回退到不完整的
+客户端文件枚举。生产上线前需通过真实 Supabase 的迁移、Auth 与 Storage 流程测试。
+
+
+### 上传代际与旧客户端
+
+新客户端先调用 `new_gpx_upload_path(ride_id, attempt_id)` 获取
+`rides/{user}/{ride}/{epoch}/{attempt}.gpx`，随后以 `upsert: false` 上传。
+每次开始清理都会更换 epoch；部分失败也不会恢复旧 epoch。Storage 在上传前检查 RLS，
+但最终写入可能使用服务权限，因此 `storage.objects` 上另加一个只校验、不改动数据的
+INSERT/UPDATE 触发器。它在最终提交时检查当前账号状态和 epoch，防止清理前开始的
+慢上传在清理结束后重新出现。已经提交的版本化文件不能覆盖，只能新建另一个版本。
+
+旧版 `original.gpx` 仍可读取、下载和删除，但新增/覆盖不再接受；旧客户端必须升级后
+继续上传轨迹。上线需明确接受这一兼容性限制。旧版客户端的直接硬删除骑行/路线请求也被拒绝，避免不完整清理却显示成功；
+升级后改用完整的服务端清理端点。
+
+这是对 Supabase 建议「Storage schema 只读」的有限兼容性例外：触发器不自行写入或
+删除任何 Storage 元数据。升级 Storage 时必须跑真实 HTTP 的慢上传/清理重叠测试，
+同时确认 Storage 对被拒绝的最终提交会回收该次上传的底层文件版本。参考：
+[Storage schema](https://supabase.com/docs/guides/storage/schema/design)、
+[Storage uploader](https://github.com/supabase/storage/blob/master/src/storage/uploader.ts)。
