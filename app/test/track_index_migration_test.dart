@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cycling_app/core/database/database.dart';
 import 'package:cycling_app/features/ride/domain/ride.dart';
+import 'package:cycling_app/core/sync/sync_status.dart';
 import 'package:cycling_app/features/ride/domain/track_point.dart';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,6 +30,7 @@ void main() {
         ]);
         // v1 has exactly these tables, but no trace index. Persist its old
         // schema version, then reopen through the actual upgrade callback.
+        await db.syncQueueDao.enqueue(SyncEntityType.ride, 'old-ride', SyncOperation.upsert);
         await db.customStatement('DROP INDEX track_points_ride_sequence_idx');
         for (final table in ['local_rides', 'saved_routes', 'sync_queue_items']) {
           await db.customStatement('ALTER TABLE $table DROP COLUMN owner_user_id');
@@ -36,6 +38,10 @@ void main() {
         await db.customStatement('PRAGMA user_version = 1');
         await db.close();
         db = AppDatabase.forTesting(NativeDatabase(file));
+        db.resolveOwner = () => 'new-account';
+        expect((await db.rideDao.getRide('old-ride'))!.ownerUserId, isNull);
+        expect((await db.syncQueueDao.all()).single.ownerUserId, isNull);
+        expect(await db.syncQueueDao.due(ownerUserId: 'new-account'), isEmpty);
         expect(
           (await db.rideDao.getTrackPoints('old-ride')).map((p) => p.sequence),
           [1, 2, 3],

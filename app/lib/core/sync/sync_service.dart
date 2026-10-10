@@ -788,7 +788,7 @@ class SyncService {
     final xml = await remote.downloadGpx(ride.gpxPath!);
     if (xml == null) return 0;
 
-    final parsed = GpxCodec.decode(xml);
+    final parsed = await GpxCodec.decodeAsync(xml);
     if (parsed.isEmpty) return 0;
 
     // Sequences are renumbered from 1 rather than trusted from the file: the

@@ -95,19 +95,26 @@ class RouteRepository {
   Future<Route> importGpx(String xml, {String? name}) async {
     ParsedGpx parsed;
     try {
-      parsed = GpxCodec.decode(xml);
+      parsed = await GpxCodec.decodeAsync(xml);
     } catch (e) {
       throw GpxImportException('无法解析 GPX 文件：${_brief(e)}');
     }
 
+    return importParsedGpx(parsed, name: name);
+  }
+
+  /// Saves the already-validated preview without retaining/re-parsing its XML.
+  Future<Route> importParsedGpx(ParsedGpx parsed, {String? name}) async {
+    if (parsed.points.length > GpxCodec.maxPoints) {
+      throw const GpxImportException('GPX 最多支持 100000 个轨迹点');
+    }
     if (parsed.points.length < 2) {
       throw const GpxImportException('GPX 文件里没有足够的轨迹点（至少需要 2 个）');
     }
 
-    final route = GpxCodec.toRoute(
-      parsed,
-      id: generateId(),
-      name: name ?? parsed.name,
+    final id = generateId();
+    final route = await GpxCodec.toRouteAsync(
+      parsed, id: id, name: name ?? parsed.name,
     );
 
     await saveRoute(route);

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -7,6 +6,7 @@ import '../../features/ride/domain/ride.dart';
 import '../../features/routes/domain/route.dart';
 import '../../features/settings/domain/app_settings.dart';
 import '../utils/geo.dart';
+import '../gpx/gpx_codec.dart';
 import '../utils/ids.dart';
 import 'supabase_config.dart';
 
@@ -177,9 +177,8 @@ class SupabaseRemote {
   /// Downloads a ride's GPX, or null when no object exists.
   Future<String?> downloadGpx(String objectPath) async {
     try {
-      final bytes = await _bucket
-          .download(objectPath);
-      return utf8.decode(bytes);
+      final bytes = await GpxCodec.readBytesBounded(_bucket.downloadStream(objectPath));
+      return GpxCodec.decodeUtf8Async(bytes);
     } on StorageException {
       // A missing object is a normal state for a ride uploaded before the
       // storage write succeeded, or deleted out from under us.

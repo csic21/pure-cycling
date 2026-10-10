@@ -8,6 +8,10 @@ Migration `20261010082529_scrub_ride_tombstones.sql` is prepared for a separatel
 
 Synthetic regression coverage runs against in-memory SQLite, temporary export directories, fake authenticated HTTP transports, mock platform channels, and disposable Supabase Postgres containers. No real accounts, locations, or production data are used.
 
+## GPX input budget
+
+Files and cloud GPX downloads are stream-limited to 16 MiB; clipboard text uses the same UTF-8 byte budget. The pull parser rejects DTD/custom entities, nesting deeper than 32, metadata text over 16,384 characters, and more than 100,000 incoming points (including malformed/discarded points). Parsing and route construction run in a worker isolate, and saving reuses the validated preview model. These are tested resource bounds, not device-specific frame-rate or memory benchmarks.
+
 ## Android supply chain
 
 Gradle is pinned to 8.14.4 with the official distribution SHA-256 from https://services.gradle.org/distributions/gradle-8.14.4-all.zip.sha256. The [8.14.4 release notes](https://docs.gradle.org/8.14.4/release-notes.html) document both repository-failure vulnerabilities fixed by this patch. Android/AndroidX/Google Android dependency groups are scoped to Google Maven; Kotlin plugin resolution is scoped in the plugin portal. Flutter's own pinned engine repository remains controlled by Flutter 3.41.9.
