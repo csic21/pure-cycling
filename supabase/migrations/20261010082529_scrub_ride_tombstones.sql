@@ -28,8 +28,8 @@ begin
         where bucket_id = 'rides' and name = p_ride->>'gpx_path')) then
     raise exception 'GPX_OBJECT_MISSING' using errcode = 'PC001';
   end if;
-  -- Deletes retain only synchronization metadata and the opaque GPX cleanup
-  -- pointer. Never retain coordinates/descriptions in a tombstone, even when
+  -- Deletes clear precise coordinates and free text while retaining activity
+  -- metrics, timestamps and the opaque GPX cleanup pointer, even when
   -- an older client sends its complete former ride as the delete payload.
   if nullif(p_ride->>'deleted_at', '') is not null then
     p_ride := p_ride || jsonb_build_object(

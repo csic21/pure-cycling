@@ -418,7 +418,7 @@ class _GpxPointBuilder {
   }
   ParsedGpxPoint? build() {
     if (lat == null || lng == null || !lat!.isFinite || !lng!.isFinite ||
-        lat!.abs() > 90 || lng!.abs() > 180) return null;
+        lat!.abs() > 90 || lng!.abs() > 180) { return null; }
     double? finite(String key) {
       final value = double.tryParse(fields[key] ?? '');
       return value != null && value.isFinite ? value : null;
