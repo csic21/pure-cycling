@@ -75,8 +75,15 @@ class RouteDao extends DatabaseAccessor<AppDatabase> with _$RouteDaoMixin {
     return query.watchSingleOrNull().map((row) => row?.toDomain());
   }
 
-  Future<void> upsertRoute(Route route) =>
-      into(savedRoutes).insertOnConflictUpdate(routeToCompanion(route));
+  Future<void> upsertRoute(Route route) async {
+    final existing = await getRoute(route.id);
+    final owner = existing == null
+        ? (route.ownerUserId ?? attachedDatabase.resolveOwner())
+        : existing.ownerUserId;
+    await into(savedRoutes).insertOnConflictUpdate(
+      routeToCompanion(route).copyWith(ownerUserId: Value(owner)),
+    );
+  }
 
   Future<DateTime> nextEditTime(String id) async {
     final previous = (await getRoute(id))?.updatedAt;

@@ -30,6 +30,9 @@ void main() {
         // v1 has exactly these tables, but no trace index. Persist its old
         // schema version, then reopen through the actual upgrade callback.
         await db.customStatement('DROP INDEX track_points_ride_sequence_idx');
+        for (final table in ['local_rides', 'saved_routes', 'sync_queue_items']) {
+          await db.customStatement('ALTER TABLE $table DROP COLUMN owner_user_id');
+        }
         await db.customStatement('PRAGMA user_version = 1');
         await db.close();
         db = AppDatabase.forTesting(NativeDatabase(file));
@@ -42,7 +45,7 @@ void main() {
         final version = await db
             .customSelect('PRAGMA user_version')
             .getSingle();
-        expect(version.read<int>('user_version'), 2);
+        expect(version.read<int>('user_version'), 3);
         for (final query in [
           "SELECT * FROM track_points WHERE ride_id = 'old-ride' ORDER BY sequence",
           "SELECT * FROM track_points WHERE ride_id = 'old-ride' ORDER BY sequence DESC LIMIT 1",

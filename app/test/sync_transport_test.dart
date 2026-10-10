@@ -277,6 +277,7 @@ void main() {
       }),
     );
     await client.auth.signInAnonymously();
+    db.resolveOwner = () => client.auth.currentUser?.id;
     remote = SupabaseRemote(client, userId);
     wipeClient = CloudDataWipeClient(
       endpoint: 'https://sync-test.invalid/functions/v1/wipe-cloud-data',
@@ -800,7 +801,7 @@ void main() {
 }
 
 class _ExportRepository extends RideRepository {
-  _ExportRepository(super.db, this.file);
+  _ExportRepository(AppDatabase db, this.file) : super(db, documentsDirectory: () async => file.parent);
   final File file;
   @override
   Future<File> exportGpx(Ride ride) async {

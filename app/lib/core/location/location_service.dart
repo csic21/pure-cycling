@@ -162,8 +162,10 @@ class LocationService {
   }) async {
     try {
       final position = await Geolocator.getCurrentPosition(
-        locationSettings: _settingsFor(mode, background: false),
-      ).timeout(timeout);
+        // The plugin owns cancellation. Future.timeout only abandons the
+        // Dart result and leaves Android's native location listener running.
+        locationSettings: _settingsFor(mode, background: false, timeLimit: timeout),
+      );
       return fixFromPosition(position);
     } on TimeoutException {
       return null;
@@ -229,11 +231,13 @@ class LocationService {
   LocationSettings _settingsFor(
     GpsAccuracyMode mode, {
     required bool background,
+    Duration? timeLimit,
     Duration? interval,
   }) {
     final resolvedInterval = interval ?? _defaultInterval(mode);
 
     final android = AndroidSettings(
+      timeLimit: timeLimit,
       accuracy: switch (mode) {
         GpsAccuracyMode.high => LocationAccuracy.best,
         GpsAccuracyMode.balanced => LocationAccuracy.high,
@@ -262,6 +266,7 @@ class LocationService {
     );
 
     final apple = AppleSettings(
+      timeLimit: timeLimit,
       accuracy: switch (mode) {
         GpsAccuracyMode.high => LocationAccuracy.bestForNavigation,
         GpsAccuracyMode.balanced => LocationAccuracy.high,
@@ -284,6 +289,7 @@ class LocationService {
       TargetPlatform.android => android,
       TargetPlatform.iOS || TargetPlatform.macOS => apple,
       _ => LocationSettings(
+        timeLimit: timeLimit,
         accuracy: switch (mode) {
           GpsAccuracyMode.high => LocationAccuracy.best,
           GpsAccuracyMode.balanced => LocationAccuracy.high,

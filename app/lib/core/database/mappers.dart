@@ -16,6 +16,7 @@ import 'database.dart';
 extension LocalRideRowMapper on LocalRide {
   Ride toDomain() => Ride(
         id: id,
+        ownerUserId: ownerUserId,
         name: name,
         startedAt: startedAt.toUtc(),
         endedAt: endedAt?.toUtc(),
@@ -51,6 +52,7 @@ LocalRidesCompanion rideToCompanion(Ride ride) {
   final now = DateTime.now().toUtc();
   return LocalRidesCompanion(
     id: Value(ride.id),
+    ownerUserId: Value(ride.ownerUserId),
     name: Value(ride.name),
     startedAt: Value(ride.startedAt.toUtc()),
     endedAt: Value(ride.endedAt?.toUtc()),
@@ -119,6 +121,7 @@ TrackPointsCompanion trackPointToCompanion(TrackPoint point) =>
 extension SavedRouteRowMapper on SavedRouteRow {
   Route toDomain() => Route(
         id: id,
+        ownerUserId: ownerUserId,
         name: name,
         points: decodeGeometry(geometryJson),
         instructions: decodeInstructions(instructionsJson),
@@ -139,6 +142,7 @@ SavedRoutesCompanion routeToCompanion(Route route) {
   final now = DateTime.now().toUtc();
   return SavedRoutesCompanion(
     id: Value(route.id),
+    ownerUserId: Value(route.ownerUserId),
     name: Value(route.name),
     distanceMeters: Value(route.distanceMeters),
     estimatedSeconds: Value(route.estimatedDuration.inSeconds),

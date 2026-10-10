@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:drift/drift.dart' show Value;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -149,6 +150,38 @@ class SyncService {
   bool _disposed = false;
   bool _running = false;
   bool _started = false;
+  bool _syncAfterIdentityChange = false;
+  StreamSubscription<AuthState>? _authSub;
+  SupabaseClient? _observedClient;
+  int _identityGeneration = 0;
+
+  void _observeIdentity(SupabaseClient client) {
+    if (identical(_observedClient, client)) return;
+    unawaited(_authSub?.cancel());
+    _observedClient = client;
+    _identityGeneration++;
+    String? lastUser = client.auth.currentUser?.id;
+    _authSub = client.auth.onAuthStateChange.listen((event) {
+      final next = event.session?.user.id;
+      if (lastUser == next) return;
+      lastUser = next;
+      _identityGeneration++;
+      _scheduleGeneration++;
+      _wake.cancel();
+      if (_running) { _syncAfterIdentityChange = true; }
+      else { unawaited(syncNow()); }
+    }, onError: (Object error, StackTrace stack) {
+      _identityGeneration++;
+    });
+  }
+
+  void _checkIdentity(SupabaseClient client, String userId, int generation) {
+    if (_disposed || generation != _identityGeneration ||
+        !identical(_resolveClient(), client) ||
+        client.auth.currentUser?.id != userId) {
+      throw StateError('账号已切换，已暂停旧账号的同步；本机记录保留');
+    }
+  }
 
   AppSettings _settings = const AppSettings();
 
@@ -208,6 +241,8 @@ class SyncService {
   Future<void> dispose() async {
     _disposed = true;
     await stop();
+    _identityGeneration++;
+    await _authSub?.cancel();
     _wake.dispose();
     await _controller.close();
   }
@@ -245,6 +280,9 @@ class SyncService {
       return _report;
     }
 
+    _observeIdentity(client);
+    final generation = _identityGeneration;
+    void checkIdentity() => _checkIdentity(client, userId, generation);
     _running = true;
     _scheduleGeneration++;
     try {
@@ -266,13 +304,16 @@ class SyncService {
 
       _emit(_report.copyWith(phase: SyncPhase.syncing, message: null));
 
-      final remote = SupabaseRemote(client, userId);
+      checkIdentity();
+      final remote = SupabaseRemote(client, userId, checkIdentity: checkIdentity);
       var uploaded = 0;
       var downloaded = 0;
 
       try {
-        uploaded = await _push(remote);
-        downloaded = await _pull(remote);
+        uploaded = await _push(remote, checkIdentity);
+        checkIdentity();
+        downloaded = await _pull(remote, checkIdentity);
+        checkIdentity();
 
         _emit(
           SyncReport(
@@ -297,6 +338,10 @@ class SyncService {
       return _report;
     } finally {
       _running = false;
+      if (_syncAfterIdentityChange && !_disposed) {
+        _syncAfterIdentityChange = false;
+        unawaited(syncNow());
+      }
       // A blocked network/preference waits for connectivity/settings changes.
       if (_report.phase != SyncPhase.offline &&
           _report.message != '已设置为仅 Wi-Fi 上传') {
@@ -310,7 +355,9 @@ class SyncService {
   }) async {
     final generation = ++_scheduleGeneration;
     if (!_started || _disposed || _running || !_settings.cloudSync) return;
-    final deadline = await _db.syncQueueDao.nextAttempt();
+    final owner = _resolveClient()?.auth.currentUser?.id;
+    if (owner == null) return;
+    final deadline = await _db.syncQueueDao.nextAttempt(ownerUserId: owner);
     if (generation != _scheduleGeneration ||
         !_started ||
         _disposed ||
@@ -321,27 +368,63 @@ class SyncService {
     _wake.schedule(deadline, minimumDelay: minimumDelay);
   }
 
+  /// Explicit UI consent binds only unassigned local records. Existing owners
+  /// are immutable; signing in or enabling sync never invokes this method.
+  Future<int> assignUnownedDataToAccount(String confirmedUserId) async {
+    final client = _resolveClient();
+    if (client == null || client.auth.currentUser?.id != confirmedUserId) {
+      throw StateError('账号已切换，请重新确认');
+    }
+    _observeIdentity(client);
+    final generation = _identityGeneration;
+    return _db.transaction(() async {
+      _checkIdentity(client, confirmedUserId, generation);
+      final rides = await (_db.select(_db.localRides)
+        ..where((t) => t.ownerUserId.isNull())).get();
+      final routes = await (_db.select(_db.savedRoutes)
+        ..where((t) => t.ownerUserId.isNull())).get();
+      for (final ride in rides) {
+        await (_db.update(_db.localRides)..where((t) => t.id.equals(ride.id)))
+          .write(LocalRidesCompanion(ownerUserId: Value(confirmedUserId)));
+        await _db.syncQueueDao.enqueue(SyncEntityType.ride, ride.id,
+          ride.deletedAt == null ? SyncOperation.upsert : SyncOperation.delete);
+      }
+      for (final route in routes) {
+        await (_db.update(_db.savedRoutes)..where((t) => t.id.equals(route.id)))
+          .write(SavedRoutesCompanion(ownerUserId: Value(confirmedUserId)));
+        await _db.syncQueueDao.enqueue(SyncEntityType.route, route.id,
+          route.deletedAt == null ? SyncOperation.upsert : SyncOperation.delete);
+      }
+      // A sign-out while the transaction awaited SQLite rolls everything back.
+      _checkIdentity(client, confirmedUserId, generation);
+      return rides.length + routes.length;
+    });
+  }
+
   // ---- Push ----
 
-  Future<int> _push(SupabaseRemote remote) async {
-    final due = await _db.syncQueueDao.due(limit: 25);
+  Future<int> _push(SupabaseRemote remote, void Function() checkIdentity) async {
+    final due = await _db.syncQueueDao.due(limit: 25, ownerUserId: remote.userId);
     var uploaded = 0;
 
     for (final item in due) {
+      checkIdentity();
       if (_disposed || !_settings.cloudSync) break;
       if (!await _db.syncQueueDao.contains(item.id)) continue;
       try {
         switch (item.entityType) {
           case SyncEntityType.ride:
-            if (await _pushRide(remote, item)) uploaded++;
+            if (await _pushRide(remote, item, checkIdentity)) uploaded++;
           case SyncEntityType.route:
-            if (await _pushRoute(remote, item)) uploaded++;
+            if (await _pushRoute(remote, item, checkIdentity)) uploaded++;
           case SyncEntityType.settings:
             await remote.pushSettings(_settings);
             uploaded++;
         }
+        checkIdentity();
         await _db.syncQueueDao.remove(item.id);
       } catch (e) {
+        checkIdentity();
         // Mark failed and move on. One poisoned entry must not stall the rest
         // of the queue — a ride deleted on the server, a malformed id — and
         // the backoff keeps a persistent failure from hammering the network.
@@ -352,9 +435,10 @@ class SyncService {
     return uploaded;
   }
 
-  Future<bool> _pushRide(SupabaseRemote remote, PendingSyncItem item) async {
+  Future<bool> _pushRide(SupabaseRemote remote, PendingSyncItem item,
+      void Function() checkIdentity) async {
     final ride = await _rides.getRide(item.entityId);
-    if (ride == null) return false;
+    if (ride == null || ride.ownerUserId != remote.userId || item.ownerUserId != remote.userId) return false;
     String? candidate;
     var path =
         SupabaseConfig.isRideGpxPath(ride.gpxPath, remote.userId, ride.id)
@@ -388,6 +472,7 @@ class SyncService {
       );
       result = await remote.pushRide(ride.copyWith(gpxPath: candidate));
     }
+    checkIdentity();
     final winner = result.winner;
     if (candidate != null &&
         (winner.isDeleted || winner.gpxPath != candidate)) {
@@ -400,30 +485,33 @@ class SyncService {
     await _db.transaction(() async {
       // A user edit made while the HTTP request was in flight replaced this
       // outbox ID. Its new content/status must survive the old acknowledgement.
+      checkIdentity();
       if (!await _db.syncQueueDao.contains(item.id)) return;
       final current = await _rides.getRide(ride.id);
       if (current?.updatedAt != ride.updatedAt ||
           current?.deletedAt != ride.deletedAt) {
         return;
       }
-      await _mergeRemoteRide(winner, authoritative: true);
+      await _mergeRemoteRide(winner, authoritative: true, ownerUserId: remote.userId);
       await _rides.setSyncStatus(ride.id, SyncStatus.synced);
     });
     return result.accepted;
   }
 
-  Future<bool> _pushRoute(SupabaseRemote remote, PendingSyncItem item) async {
+  Future<bool> _pushRoute(SupabaseRemote remote, PendingSyncItem item,
+      void Function() checkIdentity) async {
     final route = await _routes.getRoute(item.entityId);
-    if (route == null) return false;
+    if (route == null || route.ownerUserId != remote.userId || item.ownerUserId != remote.userId) return false;
     final result = await remote.pushRoute(route);
     await _db.transaction(() async {
+      checkIdentity();
       if (!await _db.syncQueueDao.contains(item.id)) return;
       final current = await _routes.getRoute(route.id);
       if (current?.updatedAt != route.updatedAt ||
           current?.deletedAt != route.deletedAt) {
         return;
       }
-      await _mergeRemoteRoute(result.winner, authoritative: true);
+      await _mergeRemoteRoute(result.winner, authoritative: true, ownerUserId: remote.userId);
       await _db.routeDao.setSyncStatus(route.id, SyncStatus.synced);
     });
     return result.accepted;
@@ -431,7 +519,7 @@ class SyncService {
 
   // ---- Pull ----
 
-  Future<int> _pull(SupabaseRemote remote) async {
+  Future<int> _pull(SupabaseRemote remote, void Function() checkIdentity) async {
     var applied = 0;
 
     // Conflict policy (spec §28): the local copy of a ride wins whenever it is
@@ -440,12 +528,14 @@ class SyncService {
     // the later edit is the one the rider meant.
     final remoteRides = await remote.fetchRides();
     for (final remoteRide in remoteRides) {
-      if (await _mergeRemoteRide(remoteRide)) applied++;
+      checkIdentity();
+      if (await _mergeRemoteRide(remoteRide, ownerUserId: remote.userId)) applied++;
     }
 
     final remoteRoutes = await remote.fetchRoutes();
     for (final route in remoteRoutes) {
-      if (await _mergeRemoteRoute(route)) applied++;
+      checkIdentity();
+      if (await _mergeRemoteRoute(route, ownerUserId: remote.userId)) applied++;
     }
 
     return applied;
@@ -454,15 +544,18 @@ class SyncService {
   Future<bool> _mergeRemoteRoute(
     routes.Route remote, {
     bool authoritative = false,
+    String? ownerUserId,
   }) => _db.transaction(
-    () => _mergeRemoteRouteInTransaction(remote, authoritative: authoritative),
+    () => _mergeRemoteRouteInTransaction(remote, authoritative: authoritative, ownerUserId: ownerUserId),
   );
 
   Future<bool> _mergeRemoteRouteInTransaction(
     routes.Route remote, {
     required bool authoritative,
+    String? ownerUserId,
   }) async {
     final local = await _routes.getRoute(remote.id);
+    if (local != null && local.ownerUserId != ownerUserId) return false;
     if (remote.isDeleted) {
       if (local == null ||
           (local.isDeleted && local.updatedAt == remote.updatedAt)) {
@@ -498,6 +591,7 @@ class SyncService {
     }
     await _routes.saveRoute(
       remote.copyWith(
+        ownerUserId: ownerUserId,
         favorite: local?.favorite,
         instructions: local?.instructions,
       ),
@@ -519,15 +613,18 @@ class SyncService {
   Future<bool> _mergeRemoteRide(
     RemoteRide remote, {
     bool authoritative = false,
+    String? ownerUserId,
   }) => _db.transaction(
-    () => _mergeRemoteRideInTransaction(remote, authoritative: authoritative),
+    () => _mergeRemoteRideInTransaction(remote, authoritative: authoritative, ownerUserId: ownerUserId),
   );
 
   Future<bool> _mergeRemoteRideInTransaction(
     RemoteRide remote, {
     required bool authoritative,
+    String? ownerUserId,
   }) async {
     final local = await _rides.getRide(remote.id);
+    if (local != null && local.ownerUserId != ownerUserId) return false;
 
     // A tombstone must never pass through the new-device live-row insertion
     // path. Full metadata pulls revisit it, so already deleted rows are no-ops.
@@ -549,6 +646,7 @@ class SyncService {
       await _rides.insertRemoteRide(
         Ride(
           id: remote.id,
+          ownerUserId: ownerUserId,
           name: remote.name,
           notes: remote.notes,
           startedAt: remote.startedAt,
@@ -678,11 +776,14 @@ class SyncService {
     final userId = client.auth.currentUser?.id;
     if (userId == null) return 0;
 
+    _observeIdentity(client);
+    final generation = _identityGeneration;
+    void checkIdentity() => _checkIdentity(client, userId, generation);
     final ride = await _rides.getRide(rideId);
-    if (ride?.gpxPath == null) return 0;
+    if (ride?.gpxPath == null || ride!.ownerUserId != userId || ride.isDeleted) return 0;
     if (await _rides.trackPointCount(rideId) > 1) return 0;
 
-    final remote = SupabaseRemote(client, userId);
+    final remote = SupabaseRemote(client, userId, checkIdentity: checkIdentity);
     final xml = await remote.downloadGpx(ride!.gpxPath!);
     if (xml == null) return 0;
 
@@ -708,7 +809,13 @@ class SyncService {
       );
     }
 
-    await _rides.importTrackPoints(rideId, points);
+    checkIdentity();
+    await _db.transaction(() async {
+      final current = await _rides.getRide(rideId);
+      checkIdentity();
+      if (current == null || current.isDeleted || current.ownerUserId != userId) return;
+      await _rides.importTrackPoints(rideId, points);
+    });
     return points.length;
   }
 
@@ -744,6 +851,7 @@ class SyncService {
       return const CloudDeleteReport(message: '未登录，无法确认云端数据属于谁');
     }
 
+    final accessToken = client.auth.currentSession?.accessToken;
     _running = true;
     _scheduleGeneration++;
     _wake.cancel();
@@ -756,7 +864,7 @@ class SyncService {
           _cloudWipeClient ??
           CloudDataWipeClient(
             endpoint: endpoint!,
-            accessToken: () => client.auth.currentSession?.accessToken,
+            accessToken: () => accessToken,
           );
       final int files;
       try {
@@ -766,7 +874,7 @@ class SyncService {
       }
       // Server success means its fenced, authoritative object inventory and
       // row cleanup completed. A partial cleanup never changes local state.
-      await forgetCloudCopy();
+      await forgetCloudCopy(ownerUserId: userId);
 
       return CloudDeleteReport(ok: true, files: files);
     } catch (e) {
@@ -789,18 +897,20 @@ class SyncService {
   /// * `false` — used when the account itself is gone. There is nowhere to
   ///   upload to, and a queue that can never drain would sit there showing
   ///   「待上传 N 条」 for the rest of the install's life.
-  Future<void> forgetCloudCopy({bool requeue = true}) =>
-      _db.transaction(() async {
-        await _db.rideDao.markCloudCopyGone();
-        await _db.routeDao.markCloudCopyGone();
+  Future<void> forgetCloudCopy({bool requeue = true, String? ownerUserId}) {
+    final owner = ownerUserId ?? _resolveClient()?.auth.currentUser?.id;
+    return _db.transaction(() async {
+        await _db.rideDao.markCloudCopyGone(ownerUserId: owner);
+        await _db.routeDao.markCloudCopyGone(ownerUserId: owner);
 
         if (!requeue) {
-          await _db.syncQueueDao.clear();
+          await (_db.delete(_db.syncQueueItems)..where((t) => owner == null
+              ? t.ownerUserId.isNull() : t.ownerUserId.equals(owner))).go();
           return;
         }
 
         for (final ride in await _db.rideDao.getRides(limit: 1 << 30)) {
-          if (ride.isDeleted) continue;
+          if (ride.isDeleted || ride.ownerUserId != owner) continue;
           await _db.syncQueueDao.enqueue(
             SyncEntityType.ride,
             ride.id,
@@ -808,7 +918,7 @@ class SyncService {
           );
         }
         for (final route in await _db.routeDao.getRoutes()) {
-          if (route.isDeleted) continue;
+          if (route.isDeleted || route.ownerUserId != owner) continue;
           await _db.syncQueueDao.enqueue(
             SyncEntityType.route,
             route.id,
@@ -816,6 +926,7 @@ class SyncService {
           );
         }
       });
+  }
 }
 
 /// Resolves the current Supabase client, or null when unavailable.

@@ -7,6 +7,8 @@ import 'package:drift/drift.dart';
 /// independent: the cloud copy is a backup, never a prerequisite.
 @DataClassName('LocalRide')
 class LocalRides extends Table {
+  /// Null means unassigned local data; only explicit consent may bind it.
+  TextColumn get ownerUserId => text().nullable()();
   TextColumn get id => text()();
 
   TextColumn get name => text().nullable()();
@@ -89,6 +91,7 @@ class TrackPoints extends Table {
 /// Routes the user planned or imported.
 @DataClassName('SavedRouteRow')
 class SavedRoutes extends Table {
+  TextColumn get ownerUserId => text().nullable()();
   TextColumn get id => text()();
 
   TextColumn get name => text()();
@@ -123,6 +126,7 @@ class SavedRoutes extends Table {
 /// Durable outbox. Survives restarts; drained whenever the network allows.
 @DataClassName('SyncQueueRow')
 class SyncQueueItems extends Table {
+  TextColumn get ownerUserId => text().nullable()();
   IntColumn get id => integer().autoIncrement()();
 
   TextColumn get entityType => text()();

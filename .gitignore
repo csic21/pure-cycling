@@ -77,3 +77,7 @@ Thumbs.db
 
 # Screenshots from the design/UI check. Regenerable, not source.
 .preview/
+
+# Local Python verification
+__pycache__/
+*.pyc

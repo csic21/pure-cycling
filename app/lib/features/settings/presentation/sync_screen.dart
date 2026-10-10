@@ -55,6 +55,12 @@ class SyncScreen extends ConsumerWidget {
                 title: '云端数据',
                 rows: [
                   SettingsTile(
+                    title: '关联未归属的本地记录',
+                    subtitle: '旧版本或未登录时的记录不会自动上传。由你确认归属后，才会同步到当前账号。',
+                    leading: const Icon(Icons.folder_shared_outlined),
+                    onTap: () => _confirmAssignLocalData(context, ref, user.id, user.label),
+                  ),
+                  SettingsTile(
                     title: '删除云端数据',
                     subtitle: '删除云端保存的全部骑行、路线和 GPX 文件。'
                         '本机记录不受影响，会变成「待上传」；云同步会同时关闭。',
@@ -117,6 +123,28 @@ class SyncScreen extends ConsumerWidget {
         ],
       ),
     );
+  }
+}
+
+Future<void> _confirmAssignLocalData(BuildContext context, WidgetRef ref,
+    String userId, String label) async {
+  final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+    title: const Text('将未归属记录关联到这个账号？'),
+    content: Text('账号：$label\n\n旧版本或未登录时留下的全部未归属骑行、路线及精确位置轨迹，将归属此账号，并在启用云同步后上传。请仅在这些记录确实属于你时确认。其他账号已有归属的记录不会转移。'),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('保留在本机')),
+      FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('确认关联到此账号')),
+    ],
+  ));
+  if (confirmed != true) return;
+  try {
+    final count = await ref.read(syncServiceProvider).assignUnownedDataToAccount(userId);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已关联 $count 条本地记录')));
+    await ref.read(syncServiceProvider).syncNow();
+  } catch (_) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('关联未完成，请检查当前账号后重试')));
   }
 }
 
