@@ -179,6 +179,9 @@ class RideRecorder {
 
   RideEngine? _engine;
   StreamSubscription<LocationFix>? _locationSub;
+  Future<void> _locationWork = Future<void>.value();
+  int _locationGeneration = 0;
+  bool _locationWanted = false;
   StreamSubscription<SensorReading>? _sensorSub;
   StreamSubscription<BarometerSample>? _barometerSub;
   StreamSubscription<CompassSample>? _compassSub;
@@ -270,6 +273,7 @@ class RideRecorder {
     );
 
     _subscribeLocation();
+    await _locationWork;
     _subscribeSensors();
     _subscribeBarometer();
     _subscribeCompass();
@@ -327,6 +331,7 @@ class RideRecorder {
     );
 
     _subscribeLocation();
+    await _locationWork;
     _subscribeSensors();
     _subscribeBarometer();
     _subscribeCompass();
@@ -562,29 +567,31 @@ class RideRecorder {
     });
   }
 
-  /// Opens (or re-opens) the fix stream.
-  ///
-  /// Deliberately synchronous, and that is load-bearing rather than incidental:
-  /// it is reached both from the 1 Hz state publish and from the watchdog's
-  /// timer, and because there is no `await` the old subscription is always
-  /// cancelled and `_locationSub` reassigned in the same microtask. Two
-  /// overlapping calls therefore cannot leave an orphaned subscription feeding
-  /// a second copy of every fix into the engine. Making this `async` to await
-  /// the cancel would need a reconcile loop to be safe again.
+  /// Native EventChannel cancellation is asynchronous and channel-wide.
+  /// Serialize complete teardown before any replacement, and fence every
+  /// continuation so rapid profile changes converge on the latest request.
   void _subscribeLocation() {
-    final request = _sampling.request;
-    _requested = request;
-    _streamAliveAt = _now();
-    _stallReported = false;
-    // Hand off from the home-screen prewarm to the ride stream. Cancelling
-    // first avoids two GPS_PROVIDER listeners delivering the same epochs;
-    // the chip stays warm across the gap.
-    unawaited(_location.stopPrewarm());
-    _locationSub?.cancel();
+    _locationWanted = true;
+    final generation = ++_locationGeneration;
+    _locationWork = _locationWork.then((_) async {
+      if (generation != _locationGeneration || !_locationWanted || _disposed) return;
+      final previous = _locationSub;
+      _locationSub = null;
+      await previous?.cancel();
+      await _location.stopPrewarm();
+      if (generation != _locationGeneration || !_locationWanted || _disposed) return;
+      // Cancellation may finish after the app loses foreground eligibility.
+      // Wait for resume instead of attempting an illegal service promotion.
+      if (!_foreground) return;
+      final request = _sampling.request;
+      _requested = request;
+      _streamAliveAt = _now();
+      _stallReported = false;
     _locationSub = _location
         .fixes(mode: request.accuracy, interval: request.interval)
         .listen(
           (fix) {
+            if (generation != _locationGeneration || !_locationWanted || _disposed) return;
             _streamAliveAt = _now();
             // A fix is the only proof that a rebuild worked, so this is where
             // the backoff unwinds.
@@ -609,12 +616,18 @@ class RideRecorder {
           },
           cancelOnError: false,
         );
-    _startWatchdog();
+      _startWatchdog();
+    }).catchError((Object error, StackTrace stack) {
+      unawaited(_diagnostics?.error('location_reconcile', error, stack));
+    });
   }
 
   Future<void> _cancelLocation() async {
+    _locationWanted = false;
+    _locationGeneration++;
     _watchdog?.cancel();
     _watchdog = null;
+    await _locationWork;
     await _location.stopPrewarm();
     await _locationSub?.cancel();
     _locationSub = null;
@@ -642,12 +655,12 @@ class RideRecorder {
   /// profile waits: the rider is not looking at the screen, and correctness
   /// beats the battery the frugal profile would have saved.
   void _syncSamplingProfile() {
-    if (_locationSub == null) return;
+    if (!_locationWanted) return;
     if (!_foreground) return;
     // Nothing to remember on the way out: `request` is the policy's own
     // answer, so returning to the foreground and comparing it against the
     // subscription in force is the whole reconciliation.
-    if (_requested == _sampling.request) return;
+    if (_locationSub != null && _requested == _sampling.request) return;
     _subscribeLocation();
   }
 

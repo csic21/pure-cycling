@@ -677,6 +677,7 @@ SQL
 echo "==> account cleanup, bans, exact admin lookup, and sync conflicts"
 psql_stdin < "$REPO_ROOT/supabase/tests/account_cleanup.sql"
 psql_stdin < "$REPO_ROOT/supabase/tests/sync_conflicts.sql"
+psql_stdin < "$REPO_ROOT/supabase/tests/ride_tombstone_privacy.sql"
 CONTAINER="$CONTAINER" bash "$REPO_ROOT/supabase/tests/account_cleanup_concurrency.sh"
 
 echo "==> migrations OK"

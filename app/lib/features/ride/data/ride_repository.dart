@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
@@ -10,6 +11,7 @@ import '../../../core/fit/fit_codec.dart';
 import '../../../core/gpx/gpx_codec.dart';
 import '../../../core/sync/sync_status.dart';
 import '../../../core/utils/geo.dart';
+import '../../../core/utils/ids.dart';
 import '../../../core/utils/geometry_codec.dart';
 import '../domain/ride.dart';
 import '../domain/track_point.dart';
@@ -21,7 +23,13 @@ import '../domain/track_point.dart';
 /// fail — a ride whose GPX could not be written is still a ride, and the
 /// export can be regenerated from the stored trace at any time.
 class RideRepository {
-  RideRepository(this._db);
+  RideRepository(this._db, {Future<Directory> Function()? documentsDirectory})
+      : _documentsDirectory = documentsDirectory ?? getApplicationDocumentsDirectory;
+
+  final Future<Directory> Function() _documentsDirectory;
+  static final _exportStates = Expando<Map<String, _RideExportState>>();
+  _RideExportState _exportState(String id) =>
+      (_exportStates[_db] ??= {}).putIfAbsent(id, _RideExportState.new);
 
   final AppDatabase _db;
 
@@ -183,6 +191,9 @@ class RideRepository {
   Future<void> purgeAbandonedRide(String id) => _rides.purgeAbandonedRide(id);
 
   Future<void> deleteRide(String id) async {
+    final state = _exportState(id);
+    state.generation++;
+    final old = await _rides.getRide(id);
     await _db.transaction(() async {
       await _rides.softDeleteRide(id);
       await _db.syncQueueDao.enqueue(
@@ -191,6 +202,7 @@ class RideRepository {
         SyncOperation.delete,
       );
     });
+    await _removeRideExports(id, old);
   }
 
   // ---- Cloud reconciliation ----
@@ -245,8 +257,12 @@ class RideRepository {
     DateTime? deletedAt,
     DateTime? updatedAt,
   }) async {
+    final state = _exportState(id);
+    state.generation++;
+    final old = await _rides.getRide(id);
     await _rides.softDeleteRide(id, deletedAt: deletedAt, updatedAt: updatedAt);
     await _rides.setSyncStatus(id, SyncStatus.synced);
+    await _removeRideExports(id, old);
   }
 
   /// Bulk-inserts track points recovered from a GPX file.
@@ -271,10 +287,7 @@ class RideRepository {
   /// Writes the ride's GPX to the app documents directory and returns the
   /// absolute path.
   Future<String> writeGpxFile(Ride ride, List<TrackPoint> trace) async {
-    final dir = await _exportsDirectory();
-    final file = File('${dir.path}/${_safeFileName(ride)}.gpx');
-    await file.writeAsString(GpxCodec.encode(ride, trace), flush: true);
-    return file.path;
+    return _writeOwnedExport(ride, 'gpx', () => utf8.encode(GpxCodec.encode(ride, trace)));
   }
 
   /// Writes a regenerable local GPX off the critical path. Local filenames
@@ -306,10 +319,7 @@ class RideRepository {
   /// trace every time the rider exports it, which is also what keeps it
   /// correct after a rename.
   Future<String> writeFitFile(Ride ride, List<TrackPoint> trace) async {
-    final dir = await _exportsDirectory();
-    final file = File('${dir.path}/${_safeFileName(ride)}.fit');
-    await file.writeAsBytes(FitCodec.encode(ride, trace), flush: true);
-    return file.path;
+    return _writeOwnedExport(ride, 'fit', () => FitCodec.encode(ride, trace));
   }
 
   /// Re-generates the FIT from the stored trace, for the export action.
@@ -320,12 +330,76 @@ class RideRepository {
   }
 
   Future<Directory> _exportsDirectory() async {
-    final base = await getApplicationDocumentsDirectory();
+    final base = await _documentsDirectory();
     final dir = Directory('${base.path}/exports');
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
     return dir;
+  }
+
+  // Only this directory is ride-owned. Never delete a path supplied by the
+  // user, a share target, or an arbitrary gpxPath/fitPath from the cloud.
+  String _ownedDirectoryName(String id) => base64Url.encode(utf8.encode(id)).replaceAll('=', '');
+
+  Future<String> _writeOwnedExport(Ride ride, String extension,
+      List<int> Function() encode) async {
+    final state = _exportState(ride.id);
+    final generation = state.generation;
+    // Database work precedes the filesystem lease. A remote merge can hold a
+    // DB transaction while waiting for old writers without a lock inversion.
+    final current = await _rides.getRide(ride.id);
+    if (current == null || current.isDeleted || generation != state.generation) {
+      throw StateError('骑行已删除，不能导出');
+    }
+    final completer = Completer<String>();
+    state.pending = state.pending.then((_) async {
+      File? temporary;
+      try {
+        if (generation != state.generation) throw StateError('骑行已删除，不能导出');
+        final exports = await _exportsDirectory();
+        final dir = Directory('${exports.path}/rides/${_ownedDirectoryName(ride.id)}');
+        await dir.create(recursive: true);
+        final file = File('${dir.path}/${_safeFileName(ride)}.$extension');
+        temporary = File('${file.path}.${generateId()}.tmp');
+        await temporary.writeAsBytes(encode(), flush: true);
+        if (generation != state.generation) throw StateError('骑行已删除，不能导出');
+        await temporary.rename(file.path);
+        if (generation != state.generation) {
+          if (await file.exists()) await file.delete();
+          throw StateError('骑行已删除，不能导出');
+        }
+        completer.complete(file.path);
+      } catch (error, stack) {
+        if (temporary != null && await temporary.exists()) await temporary.delete();
+        completer.completeError(error, stack);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _removeRideExports(String id, Ride? previous) async {
+    await _exportState(id).pending;
+    final exports = await _exportsDirectory();
+    final owned = Directory('${exports.path}/rides/${_ownedDirectoryName(id)}');
+    if (await owned.exists()) await owned.delete(recursive: true);
+    if (previous == null) return;
+    // Legacy files lacked a ride directory. Only recognize our own GPX header
+    // with this ride's exact UTC start. Bound the read, never parse user XML.
+    final stamp = '${previous.startedAt.toUtc().toIso8601String().split('.').first}Z';
+    await for (final entry in exports.list(followLinks: false)) {
+      if (entry is! File || !entry.path.endsWith('.gpx')) continue;
+      final handle = await entry.open();
+      late String header;
+      try { header = utf8.decode(await handle.read(8192), allowMalformed: true); }
+      finally { await handle.close(); }
+      if (!header.contains('creator="PureCycling"') ||
+          !header.contains('<time>$stamp</time>')) { continue; }
+      await entry.delete();
+      // FIT files generated beside an identified legacy GPX share its stem.
+      final fit = File('${entry.path.substring(0, entry.path.length - 4)}.fit');
+      if (await fit.exists()) await fit.delete();
+    }
   }
 
   static String _safeFileName(Ride ride) {
@@ -349,4 +423,9 @@ class RideRepository {
   /// Convenience for the export flow: the trace as a WKT-encoded line.
   static String lineStringWkt(List<GeoPoint> points) =>
       trackToLineStringWkt(points);
+}
+
+class _RideExportState {
+  int generation = 0;
+  Future<void> pending = Future<void>.value();
 }

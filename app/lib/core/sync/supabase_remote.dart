@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -7,6 +6,7 @@ import '../../features/ride/domain/ride.dart';
 import '../../features/routes/domain/route.dart';
 import '../../features/settings/domain/app_settings.dart';
 import '../utils/geo.dart';
+import '../gpx/gpx_codec.dart';
 import '../utils/ids.dart';
 import 'supabase_config.dart';
 
@@ -117,7 +117,24 @@ class PushResult<T> {
 /// project. The functions are `security invoker`, so row level security still
 /// applies — the RPC is a convenience, not a bypass.
 class SupabaseRemote {
-  SupabaseRemote(this._client, this.userId);
+  SupabaseRemote(this._client, this.userId, {void Function()? checkIdentity})
+      : _token = _client.auth.currentUser?.id == userId
+          ? _client.auth.currentSession?.accessToken : null,
+        _checkIdentity = checkIdentity;
+
+  final String? _token;
+  final void Function()? _checkIdentity;
+  String get _authorization {
+    _checkIdentity?.call();
+    if (_token == null) throw StateError('登录状态已失效，请重新登录');
+    return 'Bearer $_token';
+  }
+
+  // Every request gets this captured token, including SDK retries. Never
+  // mutate the shared client's headers: its login can change while awaiting.
+  StorageFileApi get _bucket => _client.storage
+      .from(SupabaseConfig.gpxBucket)
+      .setHeader('Authorization', _authorization);
 
   final SupabaseClient _client;
   final String userId;
@@ -138,12 +155,11 @@ class SupabaseRemote {
     final objectPath = await _client.rpc<String>(
       'new_gpx_upload_path',
       params: {'p_ride_id': rideId, 'p_attempt_id': generateId()},
-    );
+    ).setHeader('Authorization', _authorization);
     if (!SupabaseConfig.isRideGpxPath(objectPath, userId, rideId)) {
       throw StateError('云端返回了无效的 GPX 上传路径');
     }
-    await _client.storage
-        .from(SupabaseConfig.gpxBucket)
+    await _bucket
         .upload(
           objectPath,
           file,
@@ -161,10 +177,8 @@ class SupabaseRemote {
   /// Downloads a ride's GPX, or null when no object exists.
   Future<String?> downloadGpx(String objectPath) async {
     try {
-      final bytes = await _client.storage
-          .from(SupabaseConfig.gpxBucket)
-          .download(objectPath);
-      return utf8.decode(bytes);
+      final bytes = await GpxCodec.readBytesBounded(_bucket.downloadStream(objectPath));
+      return GpxCodec.decodeUtf8Async(bytes);
     } on StorageException {
       // A missing object is a normal state for a ride uploaded before the
       // storage write succeeded, or deleted out from under us.
@@ -175,7 +189,7 @@ class SupabaseRemote {
   Future<void> deleteGpx(String objectPath) async {
     // Storage returns an empty result for an already absent object. Genuine
     // failures must keep the outbox entry so the private trace is retried.
-    await _client.storage.from(SupabaseConfig.gpxBucket).remove([objectPath]);
+    await _bucket.remove([objectPath]);
   }
 
   /// Every GPX object path this account references.
@@ -189,7 +203,7 @@ class SupabaseRemote {
     const pageSize = 500;
     for (var offset = 0; ; offset += pageSize) {
       final rows = await _client
-          .from('rides')
+          .from('rides').setHeader('Authorization', _authorization)
           .select('gpx_path')
           .eq('user_id', userId)
           .not('gpx_path', 'is', null)
@@ -212,8 +226,7 @@ class SupabaseRemote {
     for (var i = 0; i < paths.length; i += chunk) {
       final end = i + chunk < paths.length ? i + chunk : paths.length;
       final slice = paths.sublist(i, end);
-      final deleted = await _client.storage
-          .from(SupabaseConfig.gpxBucket)
+      final deleted = await _bucket
           .remove(slice);
       removed += deleted.length;
     }
@@ -227,7 +240,7 @@ class SupabaseRemote {
   /// the delete is what makes PostgREST report the rows it removed.
   Future<int> deleteAllRides() async {
     final deleted = await _client
-        .from('rides')
+        .from('rides').setHeader('Authorization', _authorization)
         .delete()
         .eq('user_id', userId)
         .select('id');
@@ -236,7 +249,7 @@ class SupabaseRemote {
 
   Future<int> deleteAllRoutes() async {
     final deleted = await _client
-        .from('routes')
+        .from('routes').setHeader('Authorization', _authorization)
         .delete()
         .eq('user_id', userId)
         .select('id');
@@ -244,7 +257,7 @@ class SupabaseRemote {
   }
 
   Future<void> deleteSettings() async {
-    await _client.from('user_settings').delete().eq('user_id', userId);
+    await _client.from('user_settings').setHeader('Authorization', _authorization).delete().eq('user_id', userId);
   }
 
   /// Upserts a ride row, including its PostGIS geometry.
@@ -277,14 +290,16 @@ class SupabaseRemote {
       'updated_at': (ride.updatedAt ?? DateTime.now().toUtc())
           .toUtc()
           .toIso8601String(),
-      if (ride.routeGeometryWkt != null)
+      if (ride.isDeleted)
+        'route_geometry': null
+      else if (ride.routeGeometryWkt != null)
         'route_geometry': _wktToGeoJson(ride.routeGeometryWkt!),
     };
 
     final response = await _client.rpc<dynamic>(
       'push_ride_v2',
       params: {'p_ride': payload},
-    );
+    ).setHeader('Authorization', _authorization);
     final result = _pushResponse(response);
     return PushResult(
       accepted: result['accepted'] as bool,
@@ -319,7 +334,7 @@ class SupabaseRemote {
     final response = await _client.rpc<dynamic>(
       'push_route_v2',
       params: {'p_route': payload},
-    );
+    ).setHeader('Authorization', _authorization);
     final result = _pushResponse(response);
     return PushResult(
       accepted: result['accepted'] as bool,
@@ -404,7 +419,7 @@ class SupabaseRemote {
     const pageSize = 500;
     for (var offset = 0; ; offset += pageSize) {
       final rows = await _client
-          .from(table)
+          .from(table).setHeader('Authorization', _authorization)
           .select(columns)
           .eq('user_id', userId)
           .order('id', ascending: true)
@@ -415,7 +430,7 @@ class SupabaseRemote {
   }
 
   Future<void> pushSettings(AppSettings settings) async {
-    await _client.from('user_settings').upsert({
+    await _client.from('user_settings').setHeader('Authorization', _authorization).upsert({
       'user_id': userId,
       'units': settings.units.id,
       'auto_pause': settings.autoPause,
@@ -430,7 +445,7 @@ class SupabaseRemote {
   /// Remote settings, or null when the account has none yet.
   Future<Map<String, dynamic>?> fetchSettings() async {
     final row = await _client
-        .from('user_settings')
+        .from('user_settings').setHeader('Authorization', _authorization)
         .select()
         .eq('user_id', userId)
         .maybeSingle();

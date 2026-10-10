@@ -14,6 +14,7 @@ class PendingSyncItem {
     required this.operation,
     required this.retryCount,
     this.lastError,
+    this.ownerUserId,
   });
 
   final int id;
@@ -22,6 +23,7 @@ class PendingSyncItem {
   final SyncOperation operation;
   final int retryCount;
   final String? lastError;
+  final String? ownerUserId;
 }
 
 /// The durable upload outbox.
@@ -53,6 +55,11 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
     SyncOperation operation, {
     bool resetExisting = true,
   }) async {
+    final owner = switch (type) {
+      SyncEntityType.ride => (await attachedDatabase.rideDao.getRide(entityId))?.ownerUserId,
+      SyncEntityType.route => (await attachedDatabase.routeDao.getRoute(entityId))?.ownerUserId,
+      SyncEntityType.settings => attachedDatabase.resolveOwner(),
+    };
     final now = DateTime.now().toUtc();
     final target = [
       syncQueueItems.entityType,
@@ -61,6 +68,7 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
     ];
     await into(syncQueueItems).insert(
       SyncQueueItemsCompanion.insert(
+        ownerUserId: Value(owner),
         entityType: type.id,
         entityId: entityId,
         operation: operation.id,
@@ -76,13 +84,14 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
   }
 
   /// Items whose backoff has elapsed, oldest first.
-  Future<List<PendingSyncItem>> due({int limit = 10}) async {
+  Future<List<PendingSyncItem>> due({int limit = 10, String? ownerUserId}) async {
     final now = DateTime.now().toUtc();
     final query = select(syncQueueItems)
       ..where(
         (t) =>
-            t.nextAttemptAt.isNull() |
-            t.nextAttemptAt.isSmallerOrEqualValue(now),
+            (ownerUserId == null ? const Constant(true) : t.ownerUserId.equals(ownerUserId)) &
+            (t.nextAttemptAt.isNull() |
+            t.nextAttemptAt.isSmallerOrEqualValue(now)),
       )
       ..orderBy([(t) => OrderingTerm.asc(t.createdAt)])
       ..limit(limit);
@@ -105,9 +114,10 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
                       DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
           );
 
-  Future<DateTime?> nextAttempt() async {
+  Future<DateTime?> nextAttempt({String? ownerUserId}) async {
     final row =
         await (select(syncQueueItems)
+              ..where((t) => ownerUserId == null ? const Constant(true) : t.ownerUserId.equals(ownerUserId))
               ..orderBy([(t) => OrderingTerm.asc(t.nextAttemptAt)])
               ..limit(1))
             .getSingleOrNull();
@@ -197,5 +207,6 @@ class SyncQueueDao extends DatabaseAccessor<AppDatabase>
     operation: SyncOperation.fromId(row.operation),
     retryCount: row.retryCount,
     lastError: row.lastError,
+    ownerUserId: row.ownerUserId,
   );
 }

@@ -11,9 +11,27 @@ pluginManagement {
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
+        google {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("androidx\\..*")
+                includeGroupByRegex("com\\.google\\.android\\..*")
+                includeGroupByRegex("com\\.google\\.firebase.*")
+                includeGroupByRegex("com\\.google\\.testing.*")
+            }
+        }
+        mavenCentral {
+            content {
+                excludeGroupByRegex("com\\.android.*")
+                excludeGroupByRegex("androidx\\..*")
+                excludeGroupByRegex("com\\.google\\.android\\..*")
+                excludeGroupByRegex("com\\.google\\.firebase.*")
+                excludeGroupByRegex("com\\.google\\.testing.*")
+            }
+        }
+        gradlePluginPortal {
+            content { includeGroupByRegex("org\\.jetbrains\\.kotlin.*") }
+        }
     }
 }
 

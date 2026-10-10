@@ -69,8 +69,17 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
     return query.watch().map((rows) => rows.map((r) => r.toDomain()).toList());
   }
 
-  Future<void> upsertRide(Ride ride) =>
-      into(localRides).insertOnConflictUpdate(rideToCompanion(ride));
+  Future<void> upsertRide(Ride ride) async {
+    final existing = await getRide(ride.id);
+    // Finishing/recovering a ride must retain the owner captured at its start,
+    // including null. A login during a ride is not a transfer decision.
+    final owner = existing == null
+        ? (ride.ownerUserId ?? attachedDatabase.resolveOwner())
+        : existing.ownerUserId;
+    await into(localRides).insertOnConflictUpdate(
+      rideToCompanion(ride).copyWith(ownerUserId: Value(owner)),
+    );
+  }
 
   Future<DateTime> _nextEditTime(String id) async {
     final previous = (await getRide(id))?.updatedAt;
@@ -145,8 +154,9 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
   /// `gpx_path` is cleared because it addresses a Storage object that has just
   /// been removed — a path pointing at a 404 is worse than no path. The sync
   /// queue is *not* touched here; re-queueing is the caller's decision.
-  Future<void> markCloudCopyGone() async {
-    await update(localRides).write(
+  Future<void> markCloudCopyGone({String? ownerUserId}) async {
+    await (update(localRides)..where((t) => ownerUserId == null
+        ? t.ownerUserId.isNull() : t.ownerUserId.equals(ownerUserId))).write(
       LocalRidesCompanion(
         syncStatus: Value(SyncStatus.localOnly.id),
         gpxPath: const Value(null),
@@ -168,6 +178,11 @@ class RideDao extends DatabaseAccessor<AppDatabase> with _$RideDaoMixin {
       await (update(localRides)..where((t) => t.id.equals(id))).write(
         LocalRidesCompanion(
           deletedAt: Value(deletedAt?.toUtc() ?? now),
+          name: const Value(null), notes: const Value(null), bikeId: const Value(null),
+          startLat: const Value(null), startLng: const Value(null),
+          endLat: const Value(null), endLng: const Value(null),
+          routeGeometryWkt: const Value(null),
+          gpxPath: const Value(null), fitPath: const Value(null),
           syncStatus: Value(SyncStatus.pendingUpload.id),
           updatedAt: Value(updatedAt?.toUtc() ?? now),
         ),

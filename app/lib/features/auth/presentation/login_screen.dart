@@ -198,7 +198,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       }
 
       if (!mounted) return;
-      await ref.read(syncServiceProvider).syncNow(force: true);
+      await ref.read(syncServiceProvider).syncNow();
       if (mounted) context.pop();
     } on AuthFailure catch (e) {
       if (!mounted) return;

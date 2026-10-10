@@ -152,6 +152,7 @@ class RouteSummary {
 class Route {
   const Route({
     required this.id,
+    this.ownerUserId,
     required this.name,
     required this.points,
     this.instructions = const [],
@@ -168,6 +169,7 @@ class Route {
   });
 
   final String id;
+  final String? ownerUserId;
   final String name;
 
   /// Full geometry, in order.
@@ -215,6 +217,7 @@ class Route {
   }
 
   Route copyWith({
+    String? ownerUserId,
     String? name,
     List<GeoPoint>? points,
     List<RouteInstruction>? instructions,
@@ -229,6 +232,7 @@ class Route {
   }) {
     return Route(
       id: id,
+      ownerUserId: ownerUserId ?? this.ownerUserId,
       name: name ?? this.name,
       points: points ?? this.points,
       instructions: instructions ?? this.instructions,

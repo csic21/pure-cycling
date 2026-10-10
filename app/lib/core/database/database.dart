@@ -44,7 +44,10 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
+
+  /// Resolved at creation time only. Never used to claim existing records.
+  String? Function() resolveOwner = () => null;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -54,6 +57,13 @@ class AppDatabase extends _$AppDatabase {
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) await _createTrackSequenceIndex();
+      if (from < 3) {
+        // Deliberately no backfill: the current login cannot prove ownership
+        // of pre-upgrade or signed-out records.
+        await m.addColumn(localRides, localRides.ownerUserId);
+        await m.addColumn(savedRoutes, savedRoutes.ownerUserId);
+        await m.addColumn(syncQueueItems, syncQueueItems.ownerUserId);
+      }
     },
     beforeOpen: (details) async {
       // Track points cascade from their ride; without this pragma the

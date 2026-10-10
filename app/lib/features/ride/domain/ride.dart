@@ -105,6 +105,7 @@ class RideStats {
 class Ride {
   const Ride({
     required this.id,
+    this.ownerUserId,
     required this.startedAt,
     this.endedAt,
     this.name,
@@ -124,6 +125,7 @@ class Ride {
   });
 
   final String id;
+  final String? ownerUserId;
   final String? name;
   final DateTime startedAt;
   final DateTime? endedAt;
@@ -167,6 +169,7 @@ class Ride {
       (name != null && name!.trim().isNotEmpty) ? name!.trim() : fallback;
 
   Ride copyWith({
+    String? ownerUserId,
     String? name,
     DateTime? endedAt,
     RideStats? stats,
@@ -184,6 +187,7 @@ class Ride {
   }) {
     return Ride(
       id: id,
+      ownerUserId: ownerUserId ?? this.ownerUserId,
       name: name ?? this.name,
       startedAt: startedAt,
       endedAt: endedAt ?? this.endedAt,

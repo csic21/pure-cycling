@@ -1,6 +1,9 @@
 import 'dart:math' as math;
+import 'dart:convert';
+import 'dart:isolate';
+import 'dart:typed_data';
 
-import 'package:xml/xml.dart';
+import 'package:xml/xml_events.dart';
 
 import '../../features/ride/domain/ride.dart';
 import '../../features/ride/domain/track_point.dart';
@@ -113,65 +116,132 @@ abstract final class GpxCodec {
   /// Accepts both `<trkpt>` (recorded tracks) and `<rtept>` (planned routes),
   /// because riders import both: a friend's ride and a route someone built in
   /// another tool.
+  /// Shared resource budget for files, clipboard text and cloud hydration.
+  static const maxBytes = 16 * 1024 * 1024;
+  static const maxPoints = 100000;
+  static const maxDepth = 32;
+  static const maxTextLength = 16384;
+
+  static Future<Uint8List> readBytesBounded(Stream<List<int>> source,
+      {int? knownLength}) async {
+    if (knownLength != null && knownLength > maxBytes) {
+      throw const FormatException('GPX 文件不能超过 16 MiB');
+    }
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in source) {
+      if (bytes.length + chunk.length > maxBytes) {
+        throw const FormatException('GPX 文件不能超过 16 MiB');
+      }
+      bytes.add(chunk);
+    }
+    return bytes.takeBytes();
+  }
+
+  static Future<ParsedGpx> decodeAsync(String source) async {
+    if (source.length > maxBytes) throw const FormatException('GPX 文件不能超过 16 MiB');
+    return Isolate.run(() => decode(source));
+  }
+
+  static Future<String> decodeUtf8Async(Uint8List bytes) async {
+    if (bytes.length > maxBytes) throw const FormatException('GPX 文件不能超过 16 MiB');
+    return Isolate.run(() => utf8.decode(bytes));
+  }
+
+  static Future<Route> toRouteAsync(ParsedGpx parsed, {required String id, String? name}) =>
+      Isolate.run(() => toRoute(parsed, id: id, name: name));
+
+  static Future<ParsedGpx> decodeBytesAsync(Uint8List bytes) async {
+    if (bytes.length > maxBytes) throw const FormatException('GPX 文件不能超过 16 MiB');
+    return Isolate.run(() => decode(utf8.decode(bytes)));
+  }
+
+  /// Pull parsing avoids a second full XML DOM in memory. Only the bounded
+  /// point models and small metadata fields survive; no DTD or custom entity
+  /// declarations are accepted, and the parser never resolves network URLs.
   static ParsedGpx decode(String xmlSource) {
-    final document = XmlDocument.parse(xmlSource);
+    if (xmlSource.length > maxBytes) throw const FormatException('GPX 文件不能超过 16 MiB');
+    var byteCount = 0;
+    for (final rune in xmlSource.runes) {
+      byteCount += rune <= 0x7f ? 1 : rune <= 0x7ff ? 2 : rune <= 0xffff ? 3 : 4;
+      if (byteCount > maxBytes) throw const FormatException('GPX 文件不能超过 16 MiB');
+    }
+    if (RegExp(r'<!\s*(DOCTYPE|ENTITY)', caseSensitive: false).hasMatch(xmlSource)) {
+      throw const FormatException('GPX 不支持 DTD 或自定义实体');
+    }
+    final stack = <String>[];
+    final tracks = <ParsedGpxPoint>[];
+    final routes = <ParsedGpxPoint>[];
+    _GpxPointBuilder? point;
+    String? name;
+    StringBuffer? nameText;
+    int? nameDepth;
+    var pointsSeen = 0;
+    var eventsSeen = 0;
+    var sawRoot = false;
 
-    final name = _firstText(document, 'name');
+    void endElement() {
+      if (nameDepth == stack.length) {
+        name = nameText.toString().trim();
+        nameText = null;
+        nameDepth = null;
+      }
+      final active = point;
+      if (active != null) {
+        active.endField(stack.length);
+        if (active.depth == stack.length) {
+          final parsed = active.build();
+          if (parsed != null) (active.track ? tracks : routes).add(parsed);
+          point = null;
+        }
+      }
+      stack.removeLast();
+    }
 
-    final points = <ParsedGpxPoint>[];
-
-    // Tracks first — a file with both is almost always a recorded ride with a
-    // stray route in it, and the track is what the rider means.
-    for (final trkseg in document.findAllElements('trkseg')) {
-      for (final trkpt in trkseg.findElements('trkpt')) {
-        final point = _parsePoint(trkpt);
-        if (point != null) points.add(point);
+    for (final event in parseEvents(xmlSource, validateNesting: true,
+        validateDocument: true)) {
+      if (++eventsSeen > 2000000) throw const FormatException('GPX 结构过于复杂');
+      if (event is XmlDoctypeEvent) throw const FormatException('GPX 不支持 DTD');
+      if (event is XmlStartElementEvent) {
+        final local = event.localName;
+        if (!sawRoot) {
+          if (local != 'gpx') throw const FormatException('不是 GPX 文档');
+          sawRoot = true;
+        }
+        stack.add(local);
+        if (stack.length > maxDepth || event.attributes.length > 32 ||
+            event.name.length > 256 || event.attributes.any((a) =>
+              a.name.length > 256 || a.value.length > maxTextLength)) {
+          throw const FormatException('GPX 嵌套或属性超过安全限制');
+        }
+        if (local == 'name' && name == null && nameText == null) {
+          nameDepth = stack.length;
+          nameText = StringBuffer();
+        }
+        if (local == 'trkpt' || local == 'rtept') {
+          if (++pointsSeen > maxPoints) throw const FormatException('GPX 最多支持 100000 个轨迹点');
+          if (stack.take(stack.length - 1).any((name) => name == 'trkpt' || name == 'rtept')) {
+            throw const FormatException('GPX 轨迹点不能互相嵌套');
+          }
+          if (local == 'rtept' || stack.contains('trkseg')) {
+            final attributes = {for (final a in event.attributes) a.localName: a.value};
+            point = _GpxPointBuilder(stack.length, local == 'trkpt', attributes);
+          }
+        } else {
+          point?.startField(local, stack.length);
+        }
+        if (event.isSelfClosing) endElement();
+      } else if (event is XmlEndElementEvent) {
+        endElement();
+      } else if (event is XmlTextEvent || event is XmlCDATAEvent) {
+        final text = event is XmlTextEvent ? event.value : (event as XmlCDATAEvent).value;
+        if (text.length > maxTextLength) throw const FormatException('GPX 文本字段过长');
+        nameText?.write(text);
+        if ((nameText?.length ?? 0) > maxTextLength) throw const FormatException('GPX 名称过长');
+        point?.addText(text);
       }
     }
-
-    if (points.isEmpty) {
-      for (final rtept in document.findAllElements('rtept')) {
-        final point = _parsePoint(rtept);
-        if (point != null) points.add(point);
-      }
-    }
-
-    return ParsedGpx(name: name, points: points);
-  }
-
-  static ParsedGpxPoint? _parsePoint(XmlElement element) {
-    final lat = double.tryParse(element.getAttribute('lat') ?? '');
-    final lon = double.tryParse(element.getAttribute('lon') ?? '');
-    if (lat == null || lon == null) return null;
-    if (lat.isNaN || lon.isNaN || lat.abs() > 90 || lon.abs() > 180) return null;
-
-    double? ele;
-    final eleText = _firstText(element, 'ele');
-    if (eleText != null) ele = double.tryParse(eleText);
-
-    DateTime? time;
-    final timeText = _firstText(element, 'time');
-    if (timeText != null) time = DateTime.tryParse(timeText)?.toUtc();
-
-    double? speed;
-    final speedText = _firstText(element, 'speed');
-    if (speedText != null) speed = double.tryParse(speedText);
-
-    return ParsedGpxPoint(
-      point: GeoPoint(lat, lon),
-      elevation: ele,
-      time: time,
-      speed: speed,
-    );
-  }
-
-  /// First descendant element with the given local name, ignoring namespace
-  /// prefixes — GPX files in the wild use several.
-  static String? _firstText(XmlNode parent, String localName) {
-    for (final e in parent.descendantElements) {
-      if (e.name.local == localName) return e.innerText.trim();
-    }
-    return null;
+    if (!sawRoot) throw const FormatException('不是 GPX 文档');
+    return ParsedGpx(name: name, points: tracks.isNotEmpty ? tracks : routes);
   }
 
   /// Builds a `Route` from a parsed GPX file, computing distance and climb.
@@ -314,4 +384,46 @@ class ParsedGpx {
   final List<ParsedGpxPoint> points;
 
   bool get isEmpty => points.length < 2;
+}
+
+class _GpxPointBuilder {
+  _GpxPointBuilder(this.depth, this.track, Map<String, String> attributes)
+      : lat = double.tryParse(attributes['lat'] ?? ''),
+        lng = double.tryParse(attributes['lon'] ?? '');
+  final int depth;
+  final bool track;
+  final double? lat;
+  final double? lng;
+  final fields = <String, String>{};
+  String? field;
+  int? fieldDepth;
+  StringBuffer? text;
+  void startField(String local, int atDepth) {
+    if (field == null && !fields.containsKey(local) &&
+        const ['ele', 'time', 'speed'].contains(local)) {
+      field = local; fieldDepth = atDepth; text = StringBuffer();
+    }
+  }
+  void addText(String value) {
+    text?.write(value);
+    if ((text?.length ?? 0) > GpxCodec.maxTextLength) {
+      throw const FormatException('GPX 文本字段过长');
+    }
+  }
+  void endField(int atDepth) {
+    if (field != null && fieldDepth == atDepth) {
+      fields[field!] = text.toString().trim();
+      field = null; fieldDepth = null; text = null;
+    }
+  }
+  ParsedGpxPoint? build() {
+    if (lat == null || lng == null || !lat!.isFinite || !lng!.isFinite ||
+        lat!.abs() > 90 || lng!.abs() > 180) { return null; }
+    double? finite(String key) {
+      final value = double.tryParse(fields[key] ?? '');
+      return value != null && value.isFinite ? value : null;
+    }
+    return ParsedGpxPoint(point: GeoPoint(lat!, lng!), elevation: finite('ele'),
+      time: DateTime.tryParse(fields['time'] ?? '')?.toUtc(), speed: finite('speed'));
+  }
 }

@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart' hide Route;
 import 'package:flutter/services.dart';
@@ -39,7 +37,6 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
 
   /// The original file text, kept so saving re-parses the same bytes the
   /// preview was built from.
-  String? _rawContent;
 
   String? _error;
   String? _sourceName;
@@ -113,6 +110,7 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
     setState(() {
       _busy = true;
       _error = null;
+      _parsed = null;
     });
 
     try {
@@ -122,25 +120,29 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
         dialogTitle: '选择 GPX 文件',
       );
 
+      if (!mounted) return;
       if (files.isEmpty) {
         setState(() => _busy = false);
         return;
       }
 
       final file = files.first;
-      // Read through `readAsBytes` rather than a path: on iOS and on Android
-      // with a content:// URI the picked file is a temporary copy that may
-      // already be gone by the time a path is opened.
-      final bytes = await file.readAsBytes();
-      _parse(utf8.decode(bytes, allowMalformed: true), file.name);
+      // Use the picker's URI-aware stream; reject metadata oversize before
+      // reading and enforce the cap while streaming even if size is unknown.
+      final bytes = await GpxCodec.readBytesBounded(file.readAsByteStream(),
+        knownLength: file.lengthSync());
+      final parsed = await GpxCodec.decodeBytesAsync(bytes);
+      if (!mounted) return;
+      _acceptParsed(parsed, file.name);
     } catch (e, stack) {
+      if (!mounted) return;
       setState(() {
         _busy = false;
         _error = ref.read(failureReporterProvider).report(
               'gpx_import.read_file',
               e,
               stack: stack,
-              message: '读取文件失败。换一个文件再试；'
+              message: e is FormatException ? e.message.toString() : '读取文件失败。换一个文件再试；'
                   '如果是从文件管理器分享进来的，先保存到本机再导入。',
             );
       });
@@ -151,10 +153,12 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
     setState(() {
       _busy = true;
       _error = null;
+      _parsed = null;
     });
 
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
+    if (!mounted) return;
 
     if (text == null || text.trim().isEmpty) {
       setState(() {
@@ -164,12 +168,25 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
       return;
     }
 
-    _parse(text, '剪贴板');
+    await _parse(text, '剪贴板');
   }
 
-  void _parse(String content, String sourceName) {
+  Future<void> _parse(String content, String sourceName) async {
     try {
-      final parsed = GpxCodec.decode(content);
+      final parsed = await GpxCodec.decodeAsync(content);
+      if (!mounted) return;
+      _acceptParsed(parsed, sourceName);
+    } catch (e, stack) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = ref.read(failureReporterProvider).report('gpx_import.parse', e,
+          stack: stack, message: 'GPX 无效或超过限制（16 MiB、100000 点）。请选择较小的 GPX 文件。');
+      });
+    }
+  }
+
+  void _acceptParsed(ParsedGpx parsed, String sourceName) {
       if (parsed.isEmpty) {
         setState(() {
           _busy = false;
@@ -180,49 +197,32 @@ class _GpxImportScreenState extends ConsumerState<GpxImportScreen> {
       }
       setState(() {
         _parsed = parsed;
-        _rawContent = content;
         _sourceName = sourceName;
         _busy = false;
         _error = null;
       });
-    } catch (e, stack) {
-      setState(() {
-        _busy = false;
-        _error = ref.read(failureReporterProvider).report(
-              'gpx_import.parse',
-              e,
-              stack: stack,
-              message: '这个文件不是有效的 GPX，或者内容已经损坏。'
-                  '换一个文件，或者把 GPX 文本粘贴进来。',
-            );
-      });
-    }
   }
 
   Future<void> _save() async {
     final parsed = _parsed;
-    final content = _rawContent;
-    if (parsed == null || content == null) return;
+    if (parsed == null) return;
 
     setState(() => _busy = true);
 
     try {
-      // The repository does its own parse rather than accepting the one
-      // already held here: it is the single place that decides what a usable
-      // GPX is, and two parsers drifting apart is exactly how an import
-      // previews correctly and then saves something else.
-      final route = await ref.read(routeRepositoryProvider).importGpx(
-            content,
-            name: parsed.name ?? _sourceName,
-          );
+      final route = await ref.read(routeRepositoryProvider).importParsedGpx(
+        parsed, name: parsed.name ?? _sourceName,
+      );
       if (!mounted) return;
       context.pushReplacement(AppRoutes.routeDetailFor(route.id));
     } on GpxImportException catch (e) {
+      if (!mounted) return;
       setState(() {
         _busy = false;
         _error = e.message;
       });
     } catch (e, stack) {
+      if (!mounted) return;
       setState(() {
         _busy = false;
         _error = ref.read(failureReporterProvider).report(

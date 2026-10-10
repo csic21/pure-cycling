@@ -61,6 +61,7 @@ import '../features/settings/domain/app_settings.dart';
 /// connection pooling and WAL.
 final databaseProvider = Provider<AppDatabase>((ref) {
   final db = AppDatabase();
+  db.resolveOwner = () => ref.read(authRepositoryProvider).currentUser?.id;
   ref.onDispose(db.close);
   return db;
 });

@@ -41,6 +41,7 @@ void main() {
   late List<Map<String, dynamic>> cloudRoutes;
   late List<http.Request> requests;
   late bool failStorage;
+  late String sessionUserId;
   late bool failPush;
   late CloudDataWipeClient wipeClient;
   late Directory temp;
@@ -96,6 +97,7 @@ void main() {
     cloudRoutes = [];
     requests = [];
     failStorage = false;
+    sessionUserId = userId;
     failPush = false;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(connectivity, (_) async => ['wifi']);
@@ -115,14 +117,14 @@ void main() {
               .replaceAll('=', '');
           final token =
               '${jwtPart({'alg': 'HS256', 'typ': 'JWT'})}.'
-              '${jwtPart({'sub': userId, 'exp': DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600})}.test-signature';
+              '${jwtPart({'sub': sessionUserId, 'exp': DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600})}.test-signature';
           return jsonResponse(request, {
             'access_token': token,
             'refresh_token': 'test-refresh-token',
             'token_type': 'bearer',
             'expires_in': 3600,
             'user': {
-              'id': userId,
+              'id': sessionUserId,
               'aud': 'authenticated',
               'role': 'authenticated',
               'created_at': recordedAt.toIso8601String(),
@@ -277,6 +279,7 @@ void main() {
       }),
     );
     await client.auth.signInAnonymously();
+    db.resolveOwner = () => client.auth.currentUser?.id;
     remote = SupabaseRemote(client, userId);
     wipeClient = CloudDataWipeClient(
       endpoint: 'https://sync-test.invalid/functions/v1/wipe-cloud-data',
@@ -774,6 +777,61 @@ void main() {
     },
   );
 
+  test('A outbox is never uploaded as B after login, including force sync', () async {
+    await rides.saveFinishedRide(Ride(id: rideId, startedAt: recordedAt), writeExport: false);
+    await RouteRepository(db).saveRoute(route_model.Route(id: 'route-a', name: 'A route',
+      points: const []));
+    sessionUserId = '00000000-0000-4000-8000-000000000099';
+    await client.auth.signInAnonymously();
+    requests.clear();
+    await service.syncNow(force: true);
+    expect(requests.where((r) => r.url.path.contains('/rpc/push_')), isEmpty);
+    expect((await rides.getRide(rideId))!.ownerUserId, userId);
+    expect((await db.syncQueueDao.all()).every((item) => item.ownerUserId == userId), isTrue);
+  });
+
+  test('ownerless legacy records remain local until explicit account decision', () async {
+    db.resolveOwner = () => null;
+    await rides.saveFinishedRide(Ride(id: rideId, startedAt: recordedAt), writeExport: false);
+    db.resolveOwner = () => client.auth.currentUser?.id;
+    requests.clear();
+    await service.syncNow(force: true);
+    expect(requests.where((r) => r.url.path.contains('/rpc/push_')), isEmpty);
+    expect((await rides.getRide(rideId))!.ownerUserId, isNull);
+    expect(await service.assignUnownedDataToAccount(userId), 1);
+    expect((await db.syncQueueDao.all()).single.ownerUserId, userId);
+    await service.syncNow(force: true);
+    expect(requests.where((r) => r.url.path.endsWith('/push_ride_v2')), hasLength(1));
+  });
+
+  test('in-flight A request keeps A token and is not acknowledged after B login', () async {
+    await rides.saveFinishedRide(Ride(id: rideId, startedAt: recordedAt,
+      updatedAt: recordedAt.add(const Duration(hours: 3))), writeExport: false);
+    final tokenA = client.auth.currentSession!.accessToken;
+    duringRidePush = () async {
+      sessionUserId = '00000000-0000-4000-8000-000000000099';
+      await client.auth.signInAnonymously();
+    };
+    await service.syncNow(force: true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final pushes = requests.where((r) => r.url.path.endsWith('/push_ride_v2')).toList();
+    expect(pushes, hasLength(1));
+    expect(pushes.single.headers['authorization'], 'Bearer $tokenA');
+    expect((await rides.getRide(rideId))!.ownerUserId, userId);
+    expect((await db.syncQueueDao.all()).any((item) => item.entityId == rideId), isTrue,
+      reason: 'an old in-flight completion cannot consume an account-owned operation');
+    expect((await rides.getRide(rideId))!.syncStatus, SyncStatus.pendingUpload);
+  });
+
+  test('a login during an unfinished offline ride does not claim its owner', () async {
+    db.resolveOwner = () => null;
+    await rides.beginRide(id: 'offline-start', startedAt: recordedAt);
+    db.resolveOwner = () => userId;
+    await rides.saveFinishedRide(Ride(id: 'offline-start', startedAt: recordedAt), writeExport: false);
+    expect((await rides.getRide('offline-start'))!.ownerUserId, isNull);
+    expect((await db.syncQueueDao.all()).single.ownerUserId, isNull);
+  });
+
   test('cloud wipe path listing reads every page', () async {
     cloudRows = {
       for (var i = 0; i < 1001; i++)
@@ -800,7 +858,7 @@ void main() {
 }
 
 class _ExportRepository extends RideRepository {
-  _ExportRepository(super.db, this.file);
+  _ExportRepository(super.db, this.file) : super(documentsDirectory: () async => file.parent);
   final File file;
   @override
   Future<File> exportGpx(Ride ride) async {

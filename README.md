@@ -68,7 +68,7 @@ flutter build apk --release
 
 ## 发布
 
-在 `app/pubspec.yaml` 更新版本号和构建号，推送同版本标签（例如 `v0.1.5`）会触发 [发布工作流](.github/workflows/release.yml)，构建签名 Android APK 并发布到 GitHub Releases。所需密钥、更新服务和发布步骤见 [CI 与发布](docs/ci.md)。
+在 `app/pubspec.yaml` 更新版本号及递增的构建号，通过 CI 后合并。在 main 单独提交 `.github/release-request.json`，指定版本标签与完整 source_sha，由[受保护的发布控制器](.github/workflows/publish-request.yml)核验源码、APK 包名/版本、签名连续性和下载哈希后发布。旧标签发布工作流已停用；不要手动推送标签来发布。
 
 Android 应用会检查新版本并在应用内下载 APK，随后由系统安装器确认安装；iOS 仍通过原安装渠道更新。
 
