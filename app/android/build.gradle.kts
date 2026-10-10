@@ -4,7 +4,7 @@ allprojects {
             content {
                 includeGroupByRegex("com\\.android.*")
                 includeGroupByRegex("androidx\\..*")
-                includeGroupByRegex("com\\.google\\.android.*")
+                includeGroupByRegex("com\\.google\\.android\\..*")
                 includeGroupByRegex("com\\.google\\.firebase.*")
                 includeGroupByRegex("com\\.google\\.testing.*")
             }
@@ -13,7 +13,7 @@ allprojects {
             content {
                 excludeGroupByRegex("com\\.android.*")
                 excludeGroupByRegex("androidx\\..*")
-                excludeGroupByRegex("com\\.google\\.android.*")
+                excludeGroupByRegex("com\\.google\\.android\\..*")
                 excludeGroupByRegex("com\\.google\\.firebase.*")
                 excludeGroupByRegex("com\\.google\\.testing.*")
             }

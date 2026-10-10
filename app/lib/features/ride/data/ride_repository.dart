@@ -394,7 +394,7 @@ class RideRepository {
       try { header = utf8.decode(await handle.read(8192), allowMalformed: true); }
       finally { await handle.close(); }
       if (!header.contains('creator="PureCycling"') ||
-          !header.contains('<time>$stamp</time>')) continue;
+          !header.contains('<time>$stamp</time>')) { continue; }
       await entry.delete();
       // FIT files generated beside an identified legacy GPX share its stem.
       final fit = File('${entry.path.substring(0, entry.path.length - 4)}.fit');

@@ -118,7 +118,8 @@ class PushResult<T> {
 /// applies — the RPC is a convenience, not a bypass.
 class SupabaseRemote {
   SupabaseRemote(this._client, this.userId, {void Function()? checkIdentity})
-      : _token = _client.auth.currentSession?.accessToken,
+      : _token = _client.auth.currentUser?.id == userId
+          ? _client.auth.currentSession?.accessToken : null,
         _checkIdentity = checkIdentity;
 
   final String? _token;

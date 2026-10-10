@@ -602,6 +602,7 @@ void main() {
       recorder.applySettings(
         const AppSettings(gpsAccuracy: GpsAccuracyMode.balanced),
       );
+      await Future<void>.delayed(Duration.zero);
 
       expect(
         location.requestedModes,
@@ -672,6 +673,7 @@ void main() {
       recorder.applySettings(
         const AppSettings(gpsAccuracy: GpsAccuracyMode.balanced),
       );
+      await Future<void>.delayed(Duration.zero);
 
       expect(
         location.requestedModes,
@@ -681,6 +683,7 @@ void main() {
       expect(location.requestedIntervals, [const Duration(seconds: 5)]);
 
       recorder.setForeground(true);
+      await Future<void>.delayed(Duration.zero);
 
       expect(
         location.requestedModes,
@@ -810,6 +813,7 @@ void main() {
       );
 
       recorder.setForeground(true);
+      await Future<void>.delayed(Duration.zero);
 
       expect(
         location.requestedModes.length,

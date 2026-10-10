@@ -119,10 +119,10 @@ class RouteDao extends DatabaseAccessor<AppDatabase> with _$RouteDaoMixin {
 
   /// Records that the cloud no longer holds a copy of anything. See
   /// `RideDao.markCloudCopyGone` — the two tables move together.
-  Future<void> markCloudCopyGone() async {
-    await update(
-      savedRoutes,
-    ).write(SavedRoutesCompanion(syncStatus: Value(SyncStatus.localOnly.id)));
+  Future<void> markCloudCopyGone({String? ownerUserId}) async {
+    await (update(savedRoutes)..where((t) => ownerUserId == null
+        ? t.ownerUserId.isNull() : t.ownerUserId.equals(ownerUserId)))
+        .write(SavedRoutesCompanion(syncStatus: Value(SyncStatus.localOnly.id)));
   }
 
   /// Tombstones the route. The geometry is kept: a delete still has to reach

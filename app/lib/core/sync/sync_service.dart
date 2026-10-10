@@ -607,7 +607,8 @@ class SyncService {
   /// because a mistake here is silent: the rider sees a ride whose name went
   /// back to what it was on another device, or a note that will not go away.
   @visibleForTesting
-  Future<bool> mergeRemoteRide(RemoteRide remote) => _mergeRemoteRide(remote);
+  Future<bool> mergeRemoteRide(RemoteRide remote) => _mergeRemoteRide(remote,
+      ownerUserId: _resolveClient()?.auth.currentUser?.id);
 
   /// Returns true when the local store changed.
   Future<bool> _mergeRemoteRide(
@@ -784,7 +785,7 @@ class SyncService {
     if (await _rides.trackPointCount(rideId) > 1) return 0;
 
     final remote = SupabaseRemote(client, userId, checkIdentity: checkIdentity);
-    final xml = await remote.downloadGpx(ride!.gpxPath!);
+    final xml = await remote.downloadGpx(ride.gpxPath!);
     if (xml == null) return 0;
 
     final parsed = GpxCodec.decode(xml);
